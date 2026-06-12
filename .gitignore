@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Runtime state
+prefs.json
+
+# Video clips (drop your own into clips/)
+clips/*.mp4
+clips/*.mov
+clips/*.mkv
+clips/*.avi
+clips/*.webm
+
+# Recordings output
+recordings/*
+!recordings/.gitkeep
+
+# macOS artifacts
+.DS_Store
+._*
+
+# Pi artifacts
+.lgd-nfy0
+
+# Local boot config backup
+config.txt.backup
+
+# Temp shader files
+/tmp/recur_trail_*.glsl

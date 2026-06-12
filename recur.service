@@ -1,0 +1,39 @@
+[Unit]
+Description=recur-recur video instrument
+After=multi-user.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
+Conflicts=getty@tty1.service
+After=getty@tty1.service
+
+[Service]
+Type=simple
+# User and paths are substituted by install-service.sh — do not edit here.
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/recur-recur
+
+# Release vtcon1 from fbcon (requires root) before starting.
+PermissionsStartOnly=true
+ExecStartPre=/bin/sh -c 'echo 0 > /sys/class/vtconsole/vtcon1/bind 2>/dev/null; true'
+
+ExecStart=/usr/bin/python3 /home/YOUR_USER/recur-recur/main.py --output hdmi --mode SAMPLER
+
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+
+# spi + gpio needed for ILI9486 display and MCP3008 ADC
+SupplementaryGroups=video render input audio spi gpio
+
+# CAP_SYS_NICE: scheduler priority for mpv.
+# CAP_SYS_ADMIN: required by ffmpeg kmsgrab (GPIO13 recording).
+AmbientCapabilities=CAP_SYS_NICE CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_ADMIN
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

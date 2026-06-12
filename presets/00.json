@@ -1,0 +1,6 @@
+{
+  "name": "tape_warm",
+  "shader": "vhs.frag",
+  "fx": "vhs.frag",
+  "params": { "p1": 0.4, "p2": 0.5, "p3": 0.25, "p4": 0.3 }
+}
