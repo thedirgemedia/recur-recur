@@ -1,6 +1,7 @@
 # recur-recur
 
-A cyberboy666 r_e_c_u_r-inspired live video instrument for the **Raspberry Pi 5**.
+A cyberboy666 r_e_c_u_r - inspired live video instrument for the **Raspberry Pi 5**.
+cobbled together by dirge and claude code, mainly claude code.
 
 **→ See [MANUAL.md](MANUAL.md) for all controls, workflows, and operation.**
 
