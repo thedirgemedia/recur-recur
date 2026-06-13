@@ -89,7 +89,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **Num** | Toggle the menu (while the menu is open, no key reaches the video) |
 | **Enter** | Cycle instrument mode (SAMPLER → SHADER → LIVE → …; LIVE skipped if disabled in SETTINGS) |
 | **000** or **.** | Toggle the temporal trail (echo time delay) |
-| **Bksp** | Switch param layer: SHADER params ↔ FX controls. The top-bar chip shows `SHDR` / `FX` |
+| **Bksp** | Cycle param layer: SHADER params → FX controls → COLOUR (hue/sat). The top-bar chip shows `SHDR` / `FX` / `COLOR` |
 | **1** | Cycle the selected parameter (see *Parameter editing*) |
 | **2** / **3** | Selected parameter − / + |
 | **0** | In/out points: 1st press = IN, 2nd = OUT, 3rd = clear |
@@ -119,9 +119,10 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 
 ## Parameter editing
 
-**Bksp** switches between two parameter layers. The active layer is shown in
+**Bksp** cycles between three parameter layers. The active layer is shown in
 the SPI display top bar (`SHDR` grey = shader layer, `FX` orange chip = FX
-layer) and as the four horizontal bars below the header.
+layer, `COLOR` orange chip = colour layer) and as the horizontal bars below
+the header.
 
 ### Layer SHDR — shader parameters
 
@@ -147,6 +148,21 @@ Key **1** cycles `BLD AMT` → `OVL FRM` → `TRL DEC`; **2/3** step:
 | `BLD AMT` | 0–1 | shader blend mix strength |
 | `OVL FRM` | 1–32 | overlay echo depth in frames |
 | `TRL DEC` | 0.80–0.99 | trail persistence (0.80 short ghost → 0.99 long tail) |
+
+### Layer COLOR — global colour
+
+Applies to the **final picture in every mode** (video, generative shader, or
+camera) via a GLSL pass appended last. Reach it with **Bksp** (SHADER → FX →
+COLOR); key **1** cycles `HUE` → `SAT`; **2/3** step. This is the only place
+colour is tuned — it is not duplicated on the SETTINGS menu.
+
+| Param | Range | Meaning |
+|---|---|---|
+| `HUE` | 0–360° | hue rotation (0 = no shift); wraps around |
+| `SAT` | 0–2 | saturation (0 = greyscale, 1 = normal, 2 = vivid) |
+
+At neutral (hue 0°, sat 1.0) no colour pass is added, so there is no cost when
+unused. Values persist in `prefs.json` (`color_hue`, `color_sat`).
 
 ---
 
@@ -260,16 +276,21 @@ shown as `CC 64` (highlighted).
 2. SETTINGS → **TRAIL TYPE** selects how the echo is rendered:
    - **MODE** — one continuous ghost blended on the luma plane using lagfun
      decay. TRAIL MODE and `TRL DEC` control the blend formula and persistence.
-   - **OPACITY** — four discrete echo copies at ¼, ½, ¾, and full delay
-     intervals, dissolving at 75 / 50 / 25 / 15 % opacity. No blend-mode
-     artefacts; works well for clean motion trails and stroboscopic effects.
+     `difference` is clean; the brightening/darkening modes (`screen`,
+     `addition`, `multiply`, `overlay`) are tamed toward the original on luma
+     (`trail_mode_opacity`, default 0.5) so they no longer wash out to white.
+   - **OPACITY** — a weighted average of the live frame plus **five**
+     progressively-delayed past echoes (mix). The echoes fall behind the
+     motion (no pre-echo); the live frame is the sharpest and older echoes
+     fade. Static areas stay clean — only motion ghosts — so it never washes
+     out. The tail spans ~1.7× the base delay (≈3.3 s by default).
 3. SETTINGS → **TRAIL MODE** (only active in MODE type) picks the luma blend:
    `screen` brightens ghosts, `difference` shows motion, etc.
 4. `TRL DEC` (FX layer) controls fade persistence in MODE type (0.80–0.99).
-5. The base delay (`trail_delay_s`, default 2 s) is set in `prefs.json`; the
-   four OPACITY echo steps are spaced evenly across that window. The per-step
-   opacities can also be tuned in `prefs.json` as `trail_step_opacities`
-   (default `[0.75, 0.50, 0.25, 0.15]`, most-recent first).
+5. The base delay (`trail_delay_s`, default 2 s) is set in `prefs.json`. The
+   OPACITY layer weights are `trail_step_weights` (default
+   `[1.0, 0.9, 0.8, 0.7, 0.6, 0.5]`, live first then oldest→ five echoes);
+   raise the echo weights for a stronger trail.
 
 ### Map a MIDI controller
 1. Plug in — connects automatically within 3 s.
@@ -294,19 +315,21 @@ only (chroma passed through — no colour shifts). One continuous fading ghost.
 Blend modes: screen, difference, multiply, overlay, addition. Decay 0.80–0.99
 via `TRL DEC`; delay via `trail_delay_s` in `prefs.json`.
 
-**OPACITY** — `split=5 → 4×tpad(step×1…4) → sequential normal-mode blend`.
-Four discrete echo copies at equal intervals across the delay window, at
-75 / 50 / 25 / 15 % opacity (plain dissolve, full RGB — no luma restriction).
-Clean stroboscopic feel with no chroma artefacts. Per-step opacities tunable
-as `trail_step_opacities` in `prefs.json`; TRAIL MODE and `TRL DEC` have no
-effect in this type.
+**OPACITY** — `split=6 → 5×tpad(step×1…5) → mix=inputs=6:weights=…`.
+A weighted average of the live frame plus five progressively-delayed past
+echoes, spaced `delay/3` apart (tail ≈1.7× the delay window). `mix` normalises
+by the weight sum, so brightness is preserved and identical static regions
+stay sharp — only moving content ghosts (no wash-out, no pre-echo).
+Layer weights tunable as `trail_step_weights` in `prefs.json` (live first,
+then five echoes); TRAIL MODE and `TRL DEC` have no effect in this type.
 
-**In SHADER mode** the lavfi trail can't run on the generative output (GLSL
-renders after the vf chain). Instead a GLSL temporal-decay shader is injected
-after the generative shader. It uses `//!SAVE trail_acc` to accumulate decay
-across frames — same algorithm as the MODE trail (blend mode + decay, no tpad
-delay). TRAIL MODE and `TRL DEC` both apply; TRAIL TYPE has no effect in
-SHADER mode. Works with all generative combinations (plain, FX stack, blend).
+**In SHADER mode the trail is unavailable.** The lavfi trail runs in the vf
+chain *before* the generative shader, which renders over it, so it never shows.
+A GLSL trail would need cross-frame feedback (this frame reading last frame's
+accumulator); the Pi 5 V3D / libplacebo renderer does not persist feedback
+textures between frames (verified with controlled render tests), so it cannot
+be done on this hardware. Toggling the trail in SHADER mode shows
+`TRAIL N/A IN SHADER` and does nothing. The trail is a SAMPLER / LIVE feature.
 
 ### V-overlay — self-blend smear (`/` in SAMPLER/LIVE)
 `split → lagfun(decay = 1 − 1/frames) → blend` on the luma plane (chroma
@@ -421,7 +444,7 @@ clip slot `note % 10` (only 4–9 are real slots).
 
 | File | Contents | Written |
 |---|---|---|
-| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `trail_delay_s`, `trail_blend_type`, `trail_step_opacities` | clean shutdown + SAVE PREFS |
+| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity` | clean shutdown + SAVE PREFS |
 | `presets/NN.json` | shader + fx + params snapshot | via Python API only; loaded by MIDI program change |
 | `/tmp/recur_s*.glsl` | live shader temp files (unique path per recompile — mpv caches by path) | automatic |
 

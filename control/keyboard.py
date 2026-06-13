@@ -92,9 +92,16 @@ NUMPAD_MAP = {
 TRIPLE_ZERO_WINDOW = 0.15   # seconds
 PARAM_STEP = 0.1
 
-# FX-layer slots exposed when BKSP toggles to FX param view
+# FX-layer slots exposed when BKSP cycles to the FX param view
 _FX_PARAMS = ("blend_amt", "ovl_frames", "trl_decay", None)
 _FX_LABELS = {"blend_amt": "BLD AMT", "ovl_frames": "OVL FRM", "trl_decay": "TRL DEC"}
+
+# COLOUR-layer slots (global hue / saturation), the third BKSP param view
+_COLOR_PARAMS = ("hue", "sat")
+_COLOR_LABELS = {"hue": "HUE", "sat": "SAT"}
+
+# BKSP cycles through these param views (2/3 keys adjust the selected slot)
+_PARAM_LAYERS = ("SHDR", "FX", "COLOR")
 
 
 class KeyboardController:
@@ -104,8 +111,8 @@ class KeyboardController:
         self._thread= None
         self.dev    = None
 
-        # Which parameter the 2/3 keys currently adjust.
-        # Layer 0 = shader p1-p4; layer 1 = FX controls (BKSP toggles).
+        # Which parameter the 2/3 keys currently adjust. BKSP cycles the layer:
+        # 0 = shader p1-p4, 1 = FX controls, 2 = COLOUR (hue/sat).
         self._param_layer = 0
         self._param_keys  = ("p1", "p2", "p3", "p4")
         self._param_idx   = 0
@@ -289,11 +296,14 @@ class KeyboardController:
             else:
                 inst.overlay_cycle_mode(+1)
         elif name == "BKSP":
-            self._param_layer = 1 - self._param_layer
+            self._param_layer = (self._param_layer + 1) % len(_PARAM_LAYERS)
             self._param_idx = 0
-            inst.osd.show("PARAMS: FX" if self._param_layer else "PARAMS: SHDR")
+            inst.osd.show(f"PARAMS: {_PARAM_LAYERS[self._param_layer]}")
         elif name == "1":
-            if self._param_layer == 0:
+            if self._param_layer == 2:
+                self._param_idx = (self._param_idx + 1) % len(_COLOR_PARAMS)
+                inst.osd.show(f"COLOR: {_COLOR_LABELS[_COLOR_PARAMS[self._param_idx]]}")
+            elif self._param_layer == 0:
                 cfg         = inst.cfg
                 _overlay_on   = getattr(cfg, 'overlay_on',   False)
                 _blend_active = _overlay_on or getattr(cfg, 'shader_blend', False)
@@ -391,6 +401,15 @@ class KeyboardController:
                 cfg.overlay_blend_amount = new
                 self.inst.osd.show(f"OVL OPC: {new:.2f}")
                 self.inst.sampler.refresh_overlay()
+        elif self._param_layer == 2:
+            key  = _COLOR_PARAMS[self._param_idx % len(_COLOR_PARAMS)]
+            sign = 1.0 if delta > 0 else -1.0
+            if key == "hue":
+                # finer than PARAM_STEP: ~7° per press (≈50 steps round the
+                # circle) so the bar moves smoothly instead of leaping.
+                self.inst.color_adjust_hue(sign * 0.02)
+            else:
+                self.inst.color_adjust_sat(sign * 0.05)
         else:
             key = _FX_PARAMS[self._param_idx]
             if key is None:

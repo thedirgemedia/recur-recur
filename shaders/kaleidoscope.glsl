@@ -5,12 +5,13 @@
 #define PARAM_1 0.5    /* sides         */
 #define PARAM_2 0.5    /* spin          */
 #define PARAM_3 0.5    /* zoom          */
-#define PARAM_4 0.5    /* color shift   */
+#define PARAM_4 0.5    /* palette       */
 
-vec3 hsv(float h, float s, float v) {
-    vec3 k = vec3(5.0, 3.0, 1.0);
-    vec3 p = abs(fract(h + k/6.0) * 6.0 - 3.0);
-    return v * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), s);
+vec3 palette(float t, float sel) {
+    vec3 a = vec3(0.5), b = vec3(0.5);
+    vec3 c = vec3(1.0);
+    vec3 d = mix(vec3(0.0, 0.33, 0.67), vec3(0.3, 0.2, 0.2), sel);
+    return a + b * cos(6.28318 * (c * t + d));
 }
 
 vec4 hook() {
@@ -29,5 +30,5 @@ vec4 hook() {
     float pat = sin(puv.x * 5.0 + t) + sin(puv.y * 5.0 - t);
     pat = pat * 0.25 + 0.5;
 
-    return vec4(hsv(pat + PARAM_4 + t * 0.1, 0.85, 0.95), 1.0);
+    return vec4(palette(pat + t * 0.1, PARAM_4), 1.0);
 }

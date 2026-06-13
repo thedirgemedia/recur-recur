@@ -5,7 +5,7 @@ Menu — recur-style navigable UI shown on the 3.5" SPI display.
 Modelled on the original r_e_c_u_r operate UI (cyberboy666/r_e_c_u_r), adapted
 to recur-recur's modes and engines. Four pages cycled with 7 / 9:
 
-  BROWSER  — clips list; 5 loads immediately; ENTER then a key 4–9 assigns
+  BROWSER  — clips list; 5 stages a pick (loads on menu close); ENTER+4–9 assigns
              the highlighted clip to that performance slot
   SHADERS  — generative shaders list; same bindings as BROWSER
   SETTINGS — editable options (mode, sampler mode, overlay, trail, blend,
@@ -17,7 +17,7 @@ Navigation (logical key names, mapped in keyboard.py for both NumLock states):
   8 / 2   move selection up / down
   4 / 6   adjust selected value (left / right)
   5 / ENTER  select / activate (the "■" action)
-  7 / 9   previous / next page
+  7 / 9   previous / next page (loops)
   NUM     exit menu (handled in keyboard.py)
 
 While the menu is active, NONE of these keys reach the perform handlers, so the
@@ -61,15 +61,29 @@ class Menu:
         self._midi_input_buf = ""      # digits typed so far
         self._assigning      = False   # True while waiting for a slot key (BROWSER/SHADERS)
         self._settings_count = None   # cached row count for SETTINGS (static list)
+        # Staged selections applied to the live output when the menu closes
+        # (the menu never changes the HDMI output while it is open).
+        self._pending_clip_idx = None
+        self._pending_shader   = None
 
     # ───────────────────────────────────────────────────────── lifecycle
     def toggle(self):
         self.active = not self.active
         if self.active:
-            self.page = 0
+            # Opening: land on SETTINGS. Menu keys only ever drive the menu
+            # (they never reach the perform handlers), but settings/params apply
+            # live so their effect is visible while editing.
+            self.page = PAGES.index("SETTINGS")
             self.sel  = 0
+            self._pending_clip_idx = None
+            self._pending_shader   = None
             threading.Thread(
                 target=self.inst.sampler.rescan_clips, daemon=True).start()
+        else:
+            # Closing: load any clip/shader picked on the BROWSER/SHADERS pages
+            # (those picks are deferred so browsing never yanks the live output).
+            self.inst.apply_menu_selection(clip_idx=self._pending_clip_idx,
+                                           gen_shader=self._pending_shader)
         self._cancel_edits()
         log.info("menu -> %s", "ON" if self.active else "OFF")
 
@@ -90,13 +104,11 @@ class Menu:
                 return
 
             # Page navigation (only reached when no edit mode is active).
-            if name in ("7", "9", "/"):
+            # 7 / 9 cycle through all four pages in each direction (wrapping).
+            if name in ("7", "9"):
                 self.page = (self.page + (-1 if name == "7" else +1)) % len(PAGES)
                 self.sel  = 0
                 if PAGES[self.page] == "BROWSER":
-                    # Non-blocking rescan: run in background so the keyboard
-                    # thread is never stalled (a stall buffers the next keypress
-                    # and causes a double page-advance).
                     threading.Thread(
                         target=self.inst.sampler.rescan_clips, daemon=True).start()
                 return
@@ -207,12 +219,13 @@ class Menu:
         return [os.path.basename(c) for c in self.inst.sampler.clips]
 
     def _browser_load(self):
-        """Load the selected clip for immediate playback."""
+        """Stage the selected clip; it loads to the live output on menu close."""
         clips = self.inst.sampler.clips
         if not clips or self.sel >= len(clips):
             return
-        self.inst.sampler.load(self.sel)
-        self.inst.sampler.trigger()
+        self._pending_clip_idx = self.sel
+        log.info("staged clip %d → %s", self.sel,
+                 os.path.basename(clips[self.sel]))
 
     # ───────────────────────────────────────────────────────── SHADERS browser
     def _shader_list(self):
@@ -220,12 +233,14 @@ class Menu:
         return self.inst.shader.list_shaders(kind="generative")
 
     def _shader_browser_load(self):
-        """Load the selected shader immediately."""
+        """Stage the selected shader; it loads to the live output on menu close."""
         lst = self._shader_list()
         if not lst or self.sel >= len(lst):
             return
         name = lst[self.sel]
-        self.inst.shader.load(name)
+        self._pending_shader = name
+        self.inst.cfg.current_shader = name   # so the ▶ marker tracks the pick
+        log.info("staged shader → %s", name)
 
     # ───────────────────────────────────────────────────────── MIDI
     def _midi_adjust(self, d):
@@ -394,6 +409,9 @@ class Menu:
             adjust=lambda d: inst.shader.cycle(d, kind="generative"),
             select=lambda: inst.shader.cycle(+1, kind="generative")))
 
+        # (Colour hue/saturation live on their own Bksp param layer — COLOR —
+        #  not here, so the perform colour page is the single place to tune it.)
+
         # params — labels come from the loaded shader's /* comment */ annotations
         # so they always reflect the active shader (e.g. "speed", "scale", etc.)
         param_names = inst.shader.param_labels()
@@ -451,7 +469,7 @@ class Menu:
                 draw.text((10, 44), "press 4–9 to assign slot   other = cancel",
                           font=font_sm, fill=C_HL)
             else:
-                draw.text((10, 44), "ENTER assign slot   5 load   8/2 scroll",
+                draw.text((10, 44), "ENTER assign slot   5 pick   8/2 scroll",
                           font=font_sm, fill=C_DIM)
             cfg            = self.inst.cfg
             clips_full     = self.inst.sampler.clips
@@ -481,7 +499,7 @@ class Menu:
                 draw.text((10, 44), "press 4–9 to assign slot   other = cancel",
                           font=font_sm, fill=C_HL)
             else:
-                draw.text((10, 44), "ENTER assign slot   5 load   8/2 scroll",
+                draw.text((10, 44), "ENTER assign slot   5 pick   8/2 scroll",
                           font=font_sm, fill=C_DIM)
             cfg          = self.inst.cfg
             slots        = getattr(cfg, 'shader_slots', {})

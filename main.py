@@ -103,6 +103,9 @@ class RecurInstrument:
             self.cfg.shader_blend = False
             self.shader.load(None)
             self.sampler.start_playback()   # no-op if clip already active
+            # SHADER mode forces loop-file=inf to keep frames flowing; restore
+            # the sampler's real loop mode (oneshot/playlist/etc.) on return.
+            self.sampler._apply_loop_mode()
             self.sampler.refresh_overlay()
             self.sampler.refresh_trail()
         elif self._mode == "SHADER":
@@ -129,6 +132,14 @@ class RecurInstrument:
                 # Trail is kept / restored according to cfg.trail_on so the
                 # 000 toggle works the same in every mode.
                 self.sampler.refresh_trail()
+            # Generative shaders animate via mpv's `frame` uniform, which only
+            # advances while mpv renders new frames. Force the (hidden) source
+            # to loop and play so it never pauses at EOF — otherwise oneshot /
+            # playlist modes freeze the shader on the last frame. A live camera
+            # streams continuously and has no loop concept, so skip it there.
+            if self.sampler._active_source != 'camera':
+                self.sampler._cmd_async("set_property", "loop-file", "inf")
+            self.sampler.resume()
             # Default to first generative shader if current one isn't in the set.
             cur  = self.cfg.current_shader
             gens = self.shader.list_shaders(kind="generative")
@@ -147,6 +158,26 @@ class RecurInstrument:
             self.sampler.play_camera()
         else:
             self.sampler.start_playback()
+
+    # ------------------------------------------------------------------ menu deferred load
+    def apply_menu_selection(self, clip_idx=None, gen_shader=None):
+        """Load a clip/shader the user picked on the BROWSER/SHADERS menu pages.
+
+        Called when the menu closes. Only the clip/shader *pick* is deferred to
+        menu-close so browsing never yanks the live output; every other menu
+        setting (overlay, trail, blend, params, mode) applies live while the
+        menu is open.
+
+        clip_idx   — a BROWSER selection to load as the live clip, or None.
+        gen_shader — a SHADERS selection to make the active generative, or None.
+        """
+        if gen_shader is not None:
+            self.cfg.current_shader = gen_shader
+            if self._mode == "SHADER":
+                self.shader.load(gen_shader)
+        if clip_idx is not None:
+            self.sampler.load(clip_idx)
+            self.sampler.trigger()
 
     # ------------------------------------------------------------------ shader blend (SHADER mode)
     def shader_blend_toggle(self):
@@ -248,13 +279,18 @@ class RecurInstrument:
                 ai += 1
 
     def trail_toggle(self):
-        """Toggle 2-second temporal echo trail. Works in all modes."""
+        """Toggle 2-second temporal echo trail. SAMPLER / LIVE only — a trail on
+        the generative shader needs cross-frame GPU feedback the Pi 5 V3D driver
+        does not support, so it is unavailable in SHADER mode."""
+        if self._mode == "SHADER":
+            log.info("trail toggle ignored in SHADER mode (no GPU feedback)")
+            self.osd.show("TRAIL N/A IN SHADER")
+            return
         self.cfg.trail_on = not self.cfg.trail_on
         state = self.cfg.trail_on
         log.info("trail -> %s (%s)", "ON" if state else "OFF", self.cfg.trail_mode)
+        self.osd.show(f"TRAIL {'ON' if state else 'OFF'} ({self.cfg.trail_mode})")
         self.sampler.refresh_trail()
-        if self._mode == "SHADER":
-            self.shader.reapply()   # add/remove trail GLSL after generative shader
 
     def trail_cycle_mode(self, direction=1):
         """Cycle trail blend mode."""
@@ -264,8 +300,6 @@ class RecurInstrument:
         log.info("trail mode -> %s", self.cfg.trail_mode)
         if self.cfg.trail_on:
             self.sampler.refresh_trail()
-            if self._mode == "SHADER":
-                self.shader.reapply()   # recompile trail GLSL with new blend mode
 
     def trail_cycle_blend_type(self):
         """Toggle trail blend type between 'mode' (lagfun decay) and 'opacity' (clean dissolve)."""
@@ -276,8 +310,20 @@ class RecurInstrument:
         log.info("trail blend type -> %s", self.cfg.trail_blend_type)
         if self.cfg.trail_on:
             self.sampler.refresh_trail()
-            if self._mode == "SHADER":
-                self.shader.reapply()
+
+    # ------------------------------------------------------------------ colour
+    def color_adjust_hue(self, delta):
+        """Rotate global hue. delta in turns; wraps 0..1. Works in all modes."""
+        new = (self.cfg.color_hue + delta) % 1.0
+        self.shader.set_color(hue=new)
+        self.osd.show(f"HUE: {new * 360:.0f}°")
+
+    def color_adjust_sat(self, delta):
+        """Scale global saturation. 0=grey, 1=normal, up to COLOR_SAT_MAX."""
+        hi  = getattr(self.cfg, 'COLOR_SAT_MAX', 2.0)
+        new = max(0.0, min(hi, round(self.cfg.color_sat + delta, 3)))
+        self.shader.set_color(sat=new)
+        self.osd.show(f"SAT: {new:.2f}")
 
     # ------------------------------------------------------------------ run
     def run(self):

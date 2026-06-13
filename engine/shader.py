@@ -45,15 +45,6 @@ BLEND_MODE_MAP = {
     "mix":        5,
 }
 
-# Blend mode indices for the GLSL trail shader (matches cfg.TRAIL_MODES order)
-TRAIL_BLEND_MAP = {
-    "screen":     0,
-    "difference": 1,
-    "multiply":   2,
-    "overlay":    3,
-    "addition":   4,
-}
-
 # Second-pass hook: reads the generative output (gen_out, saved by the first
 # shader) and the original clip (HOOKED/MAIN) and composites them.
 # __BLEND_MODE__ is substituted at write time with the integer mode.
@@ -86,46 +77,45 @@ vec4 hook() {
 }
 """
 
-# Temporal trail for SHADER mode: applied after the generative shader so the
-# trail runs on the generative output rather than the invisible source video.
-# Uses //!SAVE trail_acc to persist the accumulator across frames (same pattern
-# as hue_cycle.glsl).  __TRAIL_DECAY__ and __TRAIL_BLEND__ are substituted at
-# write time.  Alpha channel of trail_acc acts as an "initialised" flag so the
-# very first frame passes through cleanly with no trail artefact.
-TRAIL_SHADER_SRC = """\
-//!DESC trail temporal decay
+# NOTE: A GLSL temporal trail for SHADER mode was attempted but removed. It
+# needs cross-frame feedback (this frame reading last frame's accumulator),
+# which the Pi 5 V3D / libplacebo renderer does not persist — verified
+# empirically with controlled render tests. The lavfi trail (engine.sampler)
+# runs in the vf chain *before* the generative shader, which overwrites it, so
+# the trail is a SAMPLER / LIVE feature only.
+
+# Global colour control: a single MAIN-hook pass appended LAST in every mode so
+# it transforms the final picture (video, generative shader, or camera alike).
+# __HUE__ (turns, 0..1 = 0..360°) rotates hue; __SAT__ (0=grey, 1=normal, 2=
+# vivid) scales saturation. Substituted at write time; only added when non-
+# neutral so the default path stays shader-free.
+COLOR_SHADER_SRC = """\
+//!DESC colour — hue / saturation
 //!HOOK MAIN
 //!BIND HOOKED
-//!BIND trail_acc
-//!SAVE trail_acc
-//!WIDTH HOOKED.w
-//!HEIGHT HOOKED.h
-//!COMPONENTS 4
 
-#define TRAIL_DECAY __TRAIL_DECAY__
-#define TRAIL_BLEND __TRAIL_BLEND__
+#define HUE __HUE__
+#define SAT __SAT__
 
-vec3 trail_fn(vec3 cur, vec3 t) {
-#if TRAIL_BLEND == 0
-    return 1.0 - (1.0 - cur) * (1.0 - t);
-#elif TRAIL_BLEND == 1
-    return abs(cur - t);
-#elif TRAIL_BLEND == 2
-    return cur * t;
-#elif TRAIL_BLEND == 3
-    return mix(2.0*cur*t, 1.0-2.0*(1.0-cur)*(1.0-t), step(0.5, cur));
-#else
-    return min(cur + t, vec3(1.0));
-#endif
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0/3.0, 2.0/3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    return vec3(abs(q.z + (q.w - q.y) / (6.0*d + 1e-10)),
+                d / (q.x + 1e-10), q.x);
 }
-
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
 vec4 hook() {
-    vec4 cur  = HOOKED_texOff(vec2(0.0));
-    vec4 prev = trail_acc_texOff(vec2(0.0));
-    // alpha == 0 means zero-initialised (first frame) — pass through unchanged
-    if (prev.a < 0.5) return vec4(cur.rgb, 1.0);
-    vec3 faded = prev.rgb * TRAIL_DECAY;
-    return vec4(trail_fn(cur.rgb, faded), 1.0);
+    vec3 c   = HOOKED_texOff(vec2(0.0)).rgb;
+    vec3 hsv = rgb2hsv(c);
+    hsv.x = fract(hsv.x + HUE);
+    hsv.y = clamp(hsv.y * SAT, 0.0, 1.0);
+    return vec4(hsv2rgb(hsv), 1.0);
 }
 """
 
@@ -139,7 +129,9 @@ class ShaderEngine:
         self._debounce_thread = None
         self._stop = threading.Event()
         self._tmp_counter = 0            # monotonically increasing; ensures unique paths
-        self._tmp_active  = []           # paths of tmp files mpv currently has loaded
+        self._tmp_active  = []           # base shader tmp files mpv currently has loaded
+        self._color_tmp   = None         # colour-pass tmp file (appended last), or None
+        self._color_sig   = None         # (hue, sat) last written — avoids rewrites
         self._label_cache    = {}  # {path: {p1:label, ...}} — avoid per-frame file reads
         self._fallback_label_path = None  # resolved fallback path when self.current is None
 
@@ -448,51 +440,86 @@ class ShaderEngine:
 
         self._finalize_shaders(new_active, is_generative)
 
-    def _make_trail_shader(self):
-        """Write a parametric GLSL trail shader to a unique tmp file. Returns path or None."""
-        mode_name = getattr(self.cfg, 'trail_mode', 'screen')
-        blend_int = TRAIL_BLEND_MAP.get(mode_name, 0)
-        decay     = getattr(self.cfg, 'trail_decay', 0.93)
-        src = (TRAIL_SHADER_SRC
-               .replace("__TRAIL_DECAY__", f"{decay:.4f}")
-               .replace("__TRAIL_BLEND__", str(blend_int)))
-        self._tmp_counter += 1
-        path = os.path.join(TMP_SHADER_DIR,
-                            f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
-        try:
-            with open(path, "w") as f:
-                f.write(src)
-            return path
-        except OSError as e:
-            log.warning("can't write trail shader: %s", e)
-            return None
+    def _finalize_shaders(self, new_active, is_generative=False):
+        """Set the base shader list, append the colour pass, push to mpv.
 
-    def _finalize_shaders(self, new_active, is_generative):
-        """Append trail GLSL if applicable, push shader list to mpv, clean up old temps."""
-        if is_generative and getattr(self.cfg, 'trail_on', False):
-            trail_tmp = self._make_trail_shader()
-            if trail_tmp:
-                new_active.append(trail_tmp)
-        self.sampler._cmd_async("set_property", "glsl-shaders", new_active)
-        for path in self._tmp_active:
+        Note: SHADER-mode trails are NOT possible here — they require cross-frame
+        GLSL feedback, which the Pi 5 V3D driver does not persist (verified). So
+        no trail shader is injected; the trail is a SAMPLER/LIVE feature only.
+        """
+        old = self._tmp_active
+        self._tmp_active = new_active
+        self._refresh_color()
+        self._push_shaders()
+        for path in old:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-        self._tmp_active = new_active
+
+    def _push_shaders(self):
+        """Push base shaders + the colour tail (if any) to mpv."""
+        final = list(self._tmp_active)
+        if self._color_tmp:
+            final.append(self._color_tmp)
+        self.sampler._cmd_async("set_property", "glsl-shaders", final)
+
+    def _refresh_color(self):
+        """Write the colour-pass tmp from cfg.color_hue/color_sat, or drop it
+        when colour is neutral (hue 0, sat 1). Leaves base shaders untouched."""
+        hue = getattr(self.cfg, 'color_hue', 0.0)
+        sat = getattr(self.cfg, 'color_sat', 1.0)
+        sig = (round(hue, 5), round(sat, 5))
+        if sig == self._color_sig:
+            return   # unchanged — keep the existing colour tmp (no recompile)
+        self._color_sig = sig
+        old = self._color_tmp
+        if abs(hue) < 1e-4 and abs(sat - 1.0) < 1e-4:
+            self._color_tmp = None
+        else:
+            src = (COLOR_SHADER_SRC
+                   .replace("__HUE__", f"{hue:.5f}")
+                   .replace("__SAT__", f"{sat:.5f}"))
+            self._tmp_counter += 1
+            path = os.path.join(TMP_SHADER_DIR,
+                                f"{TMP_SHADER_PREFIX}col{self._tmp_counter:06d}.glsl")
+            try:
+                with open(path, "w") as f:
+                    f.write(src)
+                self._color_tmp = path
+            except OSError as e:
+                log.warning("colour shader write failed: %s", e)
+                return
+        if old and old != self._color_tmp:
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+
+    def set_color(self, hue=None, sat=None):
+        """Update hue (turns 0..1) and/or saturation (0..2) and re-push so the
+        colour pass applies live in every mode."""
+        if hue is not None:
+            self.cfg.color_hue = hue
+        if sat is not None:
+            self.cfg.color_sat = sat
+        self._refresh_color()
+        self._push_shaders()
 
     def reapply(self):
         """Re-emit the current shader (e.g. after blend mode or source changed)."""
         self._apply_now()
 
     def _cmd_clear(self):
-        self.sampler._cmd_async("set_property", "glsl-shaders", [])
-        for path in self._tmp_active:
+        old = self._tmp_active
+        self._tmp_active = []
+        self._refresh_color()
+        self._push_shaders()
+        for path in old:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-        self._tmp_active = []
 
     # ------------------------------------------------------------- lifecycle
     def start(self, shader=None):

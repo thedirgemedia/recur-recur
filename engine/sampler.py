@@ -144,37 +144,49 @@ class SamplerEngine:
                 getattr(self.cfg, 'trail_delay_s', 2.0) * self.cfg.fps)))
             blend_type = getattr(self.cfg, 'trail_blend_type', 'mode')
             if blend_type == 'opacity':
-                # 4-echo step trail: evenly-spaced tpad delays blended via
-                # normal/opacity mode (no lagfun, no chroma risk).  Current
-                # frame is input1 for each blend; echoes are layered on top
-                # from most-recent (highest opacity) to oldest (lowest).
-                # step_opacities: [0.5s ago, 1.0s ago, 1.5s ago, 2.0s ago]
-                step_f = max(1, delay_f // 4)
-                opacs = getattr(self.cfg, 'trail_step_opacities',
-                                (0.75, 0.50, 0.25, 0.15))
+                # 5-echo onion-skin trail: a weighted average (mix) of the live
+                # frame plus five progressively-delayed PAST copies. tpad
+                # clone-pads the START of each copy, shifting it later in time,
+                # so every echo falls BEHIND the live motion (no pre-echo). The
+                # live frame carries the highest weight (sharpest); older echoes
+                # fade. mix normalises by the weight sum, so brightness is
+                # preserved and static areas stay clean — only motion ghosts.
+                # Echoes are spaced delay_f/3 apart → the tail spans ~1.7×
+                # trail_delay_s for a long, clearly-stepped trail.
+                w = getattr(self.cfg, 'trail_step_weights',
+                            (1.0, 0.9, 0.8, 0.7, 0.6, 0.5))
+                step_f = max(1, delay_f // 3)
+                taps = "".join(
+                    f"[_s{i}]tpad=start_mode=clone:start={step_f*i}[_d{i}];"
+                    for i in range(1, 6))
+                weights = " ".join(f"{x:.3f}" for x in w[:6])
                 g = (
-                    f"split=5[_cur][_s1][_s2][_s3][_s4];"
-                    f"[_s1]tpad=start_mode=clone:start={step_f}[_d1];"
-                    f"[_s2]tpad=start_mode=clone:start={step_f*2}[_d2];"
-                    f"[_s3]tpad=start_mode=clone:start={step_f*3}[_d3];"
-                    f"[_s4]tpad=start_mode=clone:start={step_f*4}[_d4];"
-                    f"[_cur][_d1]blend=all_mode=normal:all_opacity={opacs[0]:.3f}:shortest=1[_m0];"
-                    f"[_m0][_d2]blend=all_mode=normal:all_opacity={opacs[1]:.3f}:shortest=1[_m1];"
-                    f"[_m1][_d3]blend=all_mode=normal:all_opacity={opacs[2]:.3f}:shortest=1[_m2];"
-                    f"[_m2][_d4]blend=all_mode=normal:all_opacity={opacs[3]:.3f}:shortest=1"
+                    f"split=6[_cur][_s1][_s2][_s3][_s4][_s5];"
+                    f"{taps}"
+                    f"[_cur][_d1][_d2][_d3][_d4][_d5]"
+                    f"mix=inputs=6:weights={weights}"
                 )
                 parts.append(f"@trail:lavfi=[{g}]")
             else:
                 # Mode blend: tpad delay + lagfun fading repeats, blended on
                 # luma only (c0) — all_mode zeroes chroma on modes like
                 # difference (U=V=0 = green screen); c1/c2 normal keep chroma.
+                # 'difference' stays at full strength (clean). The brightening/
+                # darkening modes accumulate via lagfun and wash to white/black,
+                # so mix the blend back toward the original on luma (c0_opacity).
                 decay_t = getattr(self.cfg, 'trail_decay', 0.93)
+                tm = self.cfg.trail_mode
+                if tm == 'difference':
+                    c0 = "c0_mode=difference"
+                else:
+                    op = getattr(self.cfg, 'trail_mode_opacity', 0.5)
+                    c0 = f"c0_mode={tm}:c0_opacity={op:.3f}"
                 parts.append(
                     f"@trail:lavfi=["
                     f"split[a][b];"
                     f"[b]tpad=start_mode=clone:start={delay_f},"
                     f"lagfun=decay={decay_t:.3f}[t];"
-                    f"[a][t]blend=c0_mode={self.cfg.trail_mode}:"
+                    f"[a][t]blend={c0}:"
                     f"c1_mode=normal:c2_mode=normal:shortest=1"
                     f"]"
                 )

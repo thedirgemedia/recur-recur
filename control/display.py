@@ -279,10 +279,24 @@ class DisplayController:
                         getattr(cfg, "trail_on",      False),
                         getattr(_kb, "_param_idx",   0),
                         getattr(_kb, "_param_layer", 0),
+                        # redraw when the active shader / fx / colour changes
+                        getattr(cfg, "current_shader", None),
+                        getattr(cfg, "current_fx",     None),
+                        round(getattr(cfg, "color_hue", 0.0), 4),
+                        round(getattr(cfg, "color_sat", 1.0), 3),
                     )
                     img  = self._render(font_lg, font_md, font_sm)
                     data = _to_spi_bytes(img)
-                    snap = data[::_STEP]
+                    # The menu changes in small ways the 128-byte sample and the
+                    # fixed param_sig don't capture (page swap, selection move, a
+                    # single value flipping). While it's open, compare the FULL
+                    # frame so every visible change is redrawn; the status view
+                    # keeps the cheap sampled compare.
+                    _menu = getattr(inst, "menu", None)
+                    if _menu is not None and _menu.active:
+                        snap = data
+                    else:
+                        snap = data[::_STEP]
                     if snap != last_snapshot or param_sig != last_param_sig:
                         disp.write_frame(data)
                         last_snapshot  = snap
@@ -330,13 +344,16 @@ class DisplayController:
         else:
             d.text((139, 14), "TRAIL", font=font_sm, fill=C_HINT, anchor="mm")
 
-        # param-layer indicator (BKSP toggle): shader p1-p4 vs FX controls
+        # param-layer indicator (BKSP cycles): SHDR p1-p4 / FX / COLOR
         _hdr_layer = getattr(getattr(inst, "kb", None), "_param_layer", 0)
         if _hdr_layer == 1:
-            d.rectangle([168, 6, 214, 23], fill=C_SEL)
-            d.text((191, 14), "FX", font=font_sm, fill=(0, 0, 0), anchor="mm")
+            d.rectangle([168, 6, 232, 23], fill=C_SEL)
+            d.text((200, 14), "FX", font=font_sm, fill=(0, 0, 0), anchor="mm")
+        elif _hdr_layer == 2:
+            d.rectangle([168, 6, 232, 23], fill=C_SEL)
+            d.text((200, 14), "COLOR", font=font_sm, fill=(0, 0, 0), anchor="mm")
         else:
-            d.text((191, 14), "SHDR", font=font_sm, fill=C_LABEL, anchor="mm")
+            d.text((200, 14), "SHDR", font=font_sm, fill=C_LABEL, anchor="mm")
 
         clip_name = os.path.basename(cfg.current_clip) if cfg.current_clip else "—"
         d.text((FB_W - 8, 12), clip_name[:20], font=font_sm, fill=C_LABEL, anchor="rm")
@@ -396,6 +413,16 @@ class DisplayController:
                  f"{cfg.params.get(k, 0.5):.2f}",
                  True)
                 for k in ("p1", "p2", "p3", "p4")
+            ]
+        elif _param_layer == 2:
+            hue = getattr(cfg, 'color_hue', 0.0)
+            sat = getattr(cfg, 'color_sat', 1.0)
+            sat_max = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
+            bar_items = [
+                ("HUE", hue,           f"{hue*360:.0f}°", True),
+                ("SAT", sat / sat_max, f"{sat:.2f}",           True),
+                ("—",   0.0,           "—",                    False),
+                ("—",   0.0,           "—",                    False),
             ]
         else:
             blend_amt  = getattr(cfg, 'shader_blend_amount', 0.5)

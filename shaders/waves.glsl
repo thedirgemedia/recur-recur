@@ -5,12 +5,13 @@
 #define PARAM_1 0.5    /* frequency */
 #define PARAM_2 0.5    /* speed     */
 #define PARAM_3 0.5    /* count     */
-#define PARAM_4 0.5    /* hue       */
+#define PARAM_4 0.5    /* palette   */
 
-vec3 hsv(float h, float s, float v) {
-    vec3 k = vec3(5.0, 3.0, 1.0);
-    vec3 p = abs(fract(h + k/6.0) * 6.0 - 3.0);
-    return v * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), s);
+vec3 palette(float t, float sel) {
+    vec3 a = vec3(0.5), b = vec3(0.5);
+    vec3 c = vec3(1.0);
+    vec3 d = mix(vec3(0.0, 0.33, 0.67), vec3(0.3, 0.2, 0.2), sel);
+    return a + b * cos(6.28318 * (c * t + d));
 }
 
 vec4 hook() {
@@ -27,5 +28,5 @@ vec4 hook() {
     }
     sum /= float(n);
     sum = sum * 0.5 + 0.5;
-    return vec4(hsv(sum + PARAM_4, 0.8, 0.9), 1.0);
+    return vec4(palette(sum, PARAM_4), 1.0);
 }
