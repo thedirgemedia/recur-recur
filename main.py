@@ -18,6 +18,7 @@ import logging
 from engine.sampler import SamplerEngine
 from engine.shader  import ShaderEngine
 from engine.mixer   import MixerEngine
+from engine.usb     import UsbManager
 from control.keyboard import KeyboardController
 from control.midi     import MidiController
 from control.gpio     import GpioController
@@ -45,6 +46,9 @@ class RecurInstrument:
         self.mixer   = MixerEngine(cfg)
         self.osd     = OSD(cfg)
         self.osd.attach(self.sampler)
+
+        # on-demand USB import (mount removable drives → copy to internal)
+        self.usb     = UsbManager(cfg)
 
         # navigable on-screen menu (SPI display)
         self.menu    = Menu(self)
@@ -368,6 +372,10 @@ class RecurInstrument:
 
     def _teardown(self):
         log.info("shutting down…")
+        try:
+            self.usb.unmount_all()
+        except Exception as e:
+            log.debug("usb unmount error: %s", e)
         try:
             self.cfg.save_prefs(sampler_mode=self.sampler.mode)
         except Exception as e:

@@ -1,0 +1,52 @@
+#!/bin/sh
+# recur-usb — mount / unmount a removable USB partition read-only for recur.
+#
+# Invoked by the recur service through sudo (see tools/recur-usb.sudoers).
+# It is deliberately minimal and validating: it will ONLY touch a partition
+# that lives on a *removable* USB disk, and only ever mounts it READ-ONLY into
+# a controlled directory under /run/recur-usb. It can never write to the drive
+# or mount anything else, so granting it passwordless sudo is safe.
+#
+# Usage:
+#   recur-usb mount   /dev/sdX1   -> mounts read-only, prints the mountpoint
+#   recur-usb unmount /dev/sdX1   -> unmounts and removes the mountpoint
+set -eu
+
+action="${1:-}"
+dev="${2:-}"
+
+# 1. device must look like a partition node: /dev/sdXN
+case "$dev" in
+    /dev/sd[a-z][0-9]) ;;
+    /dev/sd[a-z][0-9][0-9]) ;;
+    *) echo "recur-usb: refusing invalid device '$dev'" >&2; exit 2 ;;
+esac
+[ -b "$dev" ] || { echo "recur-usb: not a block device: $dev" >&2; exit 2; }
+
+# 2. its parent disk must be removable (USB stick / card reader)
+base="$(lsblk -ndo PKNAME "$dev" 2>/dev/null || true)"
+[ -n "$base" ] || { echo "recur-usb: no parent disk for $dev" >&2; exit 2; }
+[ "$(cat "/sys/block/$base/removable" 2>/dev/null || echo 0)" = "1" ] \
+    || { echo "recur-usb: $base is not a removable disk" >&2; exit 2; }
+
+name="$(basename "$dev")"
+mp="/run/recur-usb/$name"
+
+case "$action" in
+    mount)
+        mkdir -p "$mp"
+        if mountpoint -q "$mp"; then echo "$mp"; exit 0; fi
+        # read-only and locked down; FAT/exFAT/NTFS expose world-readable files
+        # so the service user can read them without uid juggling.
+        mount -o ro,nosuid,nodev,noexec "$dev" "$mp"
+        echo "$mp"
+        ;;
+    unmount|umount)
+        umount "$mp" 2>/dev/null || true
+        rmdir "$mp" 2>/dev/null || true
+        ;;
+    *)
+        echo "usage: recur-usb mount|unmount /dev/sdXN" >&2
+        exit 2
+        ;;
+esac

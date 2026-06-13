@@ -44,11 +44,14 @@ TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 
-SupplementaryGroups=video render input audio
+SupplementaryGroups=video render input audio spi gpio
 
-# Allow lowering nice values (boost mpv/glslViewer priority)
-AmbientCapabilities=CAP_SYS_NICE
-CapabilityBoundingSet=CAP_SYS_NICE
+# CAP_SYS_NICE: scheduler priority for mpv.
+# CAP_SYS_ADMIN: needed by ffmpeg kmsgrab (recording) and by the USB-import
+#   mount helper — the bounding set is the ceiling for child processes, so
+#   without it even a sudo-escalated 'mount' fails with EPERM.
+AmbientCapabilities=CAP_SYS_NICE CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_SYS_NICE CAP_SYS_ADMIN
 
 Restart=on-failure
 RestartSec=3

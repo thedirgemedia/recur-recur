@@ -32,7 +32,7 @@ from control.midi import MIDI_TARGETS, MIDI_TARGET_LABELS, MIDI_DEFAULTS
 
 log = logging.getLogger("menu")
 
-PAGES = ("BROWSER", "SHADERS", "SETTINGS", "MIDI")
+PAGES = ("BROWSER", "SHADERS", "SETTINGS", "MIDI", "IMPORT")
 
 
 def _drive_label(path):
@@ -60,11 +60,18 @@ class Menu:
         self._midi_editing   = False   # True while numeric CC entry is active
         self._midi_input_buf = ""      # digits typed so far
         self._assigning      = False   # True while waiting for a slot key (BROWSER/SHADERS)
+        self._confirm_delete = False   # True after one BKSP in BROWSER (arm delete)
         self._settings_count = None   # cached row count for SETTINGS (static list)
         # Staged selections applied to the live output when the menu closes
         # (the menu never changes the HDMI output while it is open).
         self._pending_clip_idx = None
         self._pending_shader   = None
+        # IMPORT page (USB → internal) state.
+        self._usb_drives = []     # cached removable-drive list (drive-list view)
+        self._usb_dev    = None   # device currently mounted (None = drive list)
+        self._usb_mp     = None   # its mountpoint
+        self._usb_files  = []     # video files found on the mounted drive
+        self._usb_status = ""     # transient status line ("MOUNTING…", "COPIED", …)
 
     # ───────────────────────────────────────────────────────── lifecycle
     def toggle(self):
@@ -80,8 +87,10 @@ class Menu:
             threading.Thread(
                 target=self.inst.sampler.rescan_clips, daemon=True).start()
         else:
-            # Closing: load any clip/shader picked on the BROWSER/SHADERS pages
-            # (those picks are deferred so browsing never yanks the live output).
+            # Closing: release any mounted USB drive, then load any clip/shader
+            # picked on the BROWSER/SHADERS pages (deferred so browsing never
+            # yanks the live output).
+            self._usb_leave()
             self.inst.apply_menu_selection(clip_idx=self._pending_clip_idx,
                                            gen_shader=self._pending_shader)
         self._cancel_edits()
@@ -91,6 +100,10 @@ class Menu:
     def handle(self, name):
         """Route a logical key while the menu is active."""
         try:
+            # Any key other than BKSP cancels an armed BROWSER delete.
+            if name != "BKSP":
+                self._confirm_delete = False
+
             # Slot-assign: 4–9 assign the slot (7 and 9 are valid slots here),
             # any other key cancels.  Must be checked before page navigation so
             # pressing 7 or 9 during assignment does not skip pages.
@@ -104,13 +117,19 @@ class Menu:
                 return
 
             # Page navigation (only reached when no edit mode is active).
-            # 7 / 9 cycle through all four pages in each direction (wrapping).
+            # 7 / 9 cycle through all pages in each direction (wrapping).
             if name in ("7", "9"):
+                prev = PAGES[self.page]
                 self.page = (self.page + (-1 if name == "7" else +1)) % len(PAGES)
                 self.sel  = 0
-                if PAGES[self.page] == "BROWSER":
+                if prev == "IMPORT":
+                    self._usb_leave()          # release any mounted drive
+                new = PAGES[self.page]
+                if new == "BROWSER":
                     threading.Thread(
                         target=self.inst.sampler.rescan_clips, daemon=True).start()
+                elif new == "IMPORT":
+                    self._usb_enter()          # list removable drives
                 return
 
             if name in ("8", "2"):
@@ -123,6 +142,15 @@ class Menu:
                 self._action_enter()
             elif name == "BKSP" and PAGES[self.page] == "MIDI":
                 self._midi_clear()
+            elif name == "BKSP" and PAGES[self.page] == "IMPORT":
+                self._usb_eject()
+            elif name == "BKSP" and PAGES[self.page] == "BROWSER":
+                # first BKSP arms; second confirms the delete.
+                if self._confirm_delete:
+                    self._confirm_delete = False
+                    self._browser_delete()
+                else:
+                    self._confirm_delete = True
         except Exception as e:
             log.warning("menu handle %r: %s", name, e)
 
@@ -130,6 +158,7 @@ class Menu:
         self._assigning      = False
         self._midi_editing   = False
         self._midi_input_buf = ""
+        self._confirm_delete = False
 
     def _rows(self):
         """Number of selectable rows on the current page."""
@@ -140,6 +169,9 @@ class Menu:
             return max(1, len(self._shader_list()))
         if page == "MIDI":
             return len(MIDI_TARGETS)
+        if page == "IMPORT":
+            lst = self._usb_files if self._usb_dev else self._usb_drives
+            return max(1, len(lst))
         # SETTINGS: the list is static — cache the count so _move() never
         # rebuilds the full item list (which calls param_labels() etc.) just
         # to get a number that never changes.
@@ -177,12 +209,16 @@ class Menu:
                 items[self.sel].select()
         elif page == "MIDI":
             self._midi_begin_edit()
+        elif page == "IMPORT":
+            self._usb_action()
 
     def _action_enter(self):
         """ENTER: enter slot-assign mode in BROWSER/SHADERS; same as 5 elsewhere."""
         page = PAGES[self.page]
         if page in ("BROWSER", "SHADERS"):
             self._assigning = True
+        elif page == "IMPORT":
+            self._usb_eject()
         else:
             self._action_primary()
 
@@ -227,6 +263,39 @@ class Menu:
         log.info("staged clip %d → %s", self.sel,
                  os.path.basename(clips[self.sel]))
 
+    def _browser_delete(self):
+        """Delete the highlighted clip file from internal storage (BKSP×2).
+        Only internal clips/ files are deletable — removable drives are mounted
+        read-only and other paths are refused."""
+        clips = self.inst.sampler.clips
+        if not clips or self.sel >= len(clips):
+            return
+        path = clips[self.sel]
+        clips_dir = os.path.abspath(self.inst.cfg.clips_dir)
+        if os.path.abspath(path).startswith(clips_dir + os.sep):
+            name = os.path.basename(path)
+            try:
+                os.remove(path)
+                log.info("deleted clip %s", path)
+                # forget it everywhere it was referenced
+                for k, v in list(self.inst.cfg.clip_slots.items()):
+                    if v == path:
+                        self.inst.cfg.clip_slots[k] = None
+                if self.inst.cfg.current_clip == path:
+                    self.inst.cfg.current_clip = None
+                if self._pending_clip_idx == self.sel:
+                    self._pending_clip_idx = None
+                self.inst.sampler.rescan_clips()
+                self.sel = max(0, min(self.sel,
+                                      len(self.inst.sampler.clips) - 1))
+                self.inst.osd.show(f"DELETED {name[:18]}")
+            except OSError as e:
+                log.warning("delete %s failed: %s", path, e)
+                self.inst.osd.show("DELETE FAILED")
+        else:
+            log.info("refusing to delete non-internal clip %s", path)
+            self.inst.osd.show("CAN'T DELETE (not internal)")
+
     # ───────────────────────────────────────────────────────── SHADERS browser
     def _shader_list(self):
         """Return list of generative shader basenames."""
@@ -241,6 +310,94 @@ class Menu:
         self._pending_shader = name
         self.inst.cfg.current_shader = name   # so the ▶ marker tracks the pick
         log.info("staged shader → %s", name)
+
+    # ───────────────────────────────────────────────────────── IMPORT (USB → internal)
+    def _usb_enter(self):
+        """Entering the IMPORT page: show the removable-drive list."""
+        self._usb_dev = None
+        self._usb_mp  = None
+        self._usb_files = []
+        self._usb_status = ""
+        self.sel = 0
+        self._usb_refresh_drives()
+
+    def _usb_refresh_drives(self):
+        mgr = getattr(self.inst, "usb", None)
+        if not mgr or not mgr.available():
+            self._usb_drives = []
+            self._usb_status = "no mount permission (restart service)"
+            return
+        self._usb_drives = mgr.list_drives()
+        if not self._usb_drives:
+            self._usb_status = "no USB drives"
+
+    def _usb_leave(self):
+        """Leaving the IMPORT page (or closing the menu): release any drive."""
+        mgr = getattr(self.inst, "usb", None)
+        if mgr:
+            mgr.unmount_all()
+        self._usb_dev = None
+        self._usb_mp = None
+        self._usb_files = []
+        self._usb_status = ""
+
+    def _usb_action(self):
+        """5: in the drive list, mount the selected drive and list its videos;
+        in the file list, copy the selected video to internal storage."""
+        mgr = getattr(self.inst, "usb", None)
+        if not mgr or not mgr.available():
+            self._usb_status = "no mount permission (restart service)"
+            return
+        if self._usb_dev is None:
+            if not self._usb_drives or self.sel >= len(self._usb_drives):
+                return
+            drive = self._usb_drives[self.sel]
+            self._usb_status = "MOUNTING…"
+            threading.Thread(target=self._usb_do_mount, args=(drive,),
+                             daemon=True).start()
+        else:
+            if not self._usb_files or self.sel >= len(self._usb_files):
+                return
+            src = self._usb_files[self.sel]
+            self._usb_status = "COPYING…"
+            threading.Thread(target=self._usb_do_copy, args=(src,),
+                             daemon=True).start()
+
+    def _usb_do_mount(self, drive):
+        mgr = self.inst.usb
+        mp = mgr.mount(drive["dev"], drive.get("fstype"))
+        if mp:
+            self._usb_dev   = drive["dev"]
+            self._usb_mp    = mp
+            self._usb_files = mgr.scan_videos(mp)
+            self.sel = 0
+            self._usb_status = (f"{len(self._usb_files)} videos"
+                                if self._usb_files else "no videos on drive")
+        else:
+            self._usb_status = "MOUNT FAILED"
+
+    def _usb_do_copy(self, src):
+        mgr = self.inst.usb
+        _, status = mgr.copy_to_internal(src)
+        self._usb_status = {"copied": "COPIED  ✓",
+                            "exists": "already imported",
+                            "error":  "COPY FAILED"}.get(status, status)
+        if status == "copied":
+            # make the new clip immediately playable / assignable
+            threading.Thread(target=self.inst.sampler.rescan_clips,
+                             daemon=True).start()
+
+    def _usb_eject(self):
+        """ENTER / BKSP on the IMPORT page: unmount and go back to the drive list."""
+        mgr = getattr(self.inst, "usb", None)
+        if self._usb_dev and mgr:
+            mgr.unmount(self._usb_dev)
+        self._usb_dev = None
+        self._usb_mp = None
+        self._usb_files = []
+        self.sel = 0
+        self._usb_status = "ejected"
+        self._usb_refresh_drives()
 
     # ───────────────────────────────────────────────────────── MIDI
     def _midi_adjust(self, d):
@@ -465,11 +622,14 @@ class Menu:
                   font=font_sm, fill=(0, 0, 0), anchor="rm")
 
         if page == "BROWSER":
-            if self._assigning:
+            if self._confirm_delete:
+                draw.text((10, 44), "BKSP again = DELETE FILE   other = cancel",
+                          font=font_sm, fill=C_HL)
+            elif self._assigning:
                 draw.text((10, 44), "press 4–9 to assign slot   other = cancel",
                           font=font_sm, fill=C_HL)
             else:
-                draw.text((10, 44), "ENTER assign slot   5 pick   8/2 scroll",
+                draw.text((10, 44), "ENTER assign   5 pick   BKSP delete",
                           font=font_sm, fill=C_DIM)
             cfg            = self.inst.cfg
             clips_full     = self.inst.sampler.clips
@@ -559,6 +719,30 @@ class Menu:
                     draw.text((W - 12, mid), entry_str, font=font_sm, fill=C_HL, anchor="rm")
                 else:
                     draw.text((W - 12, mid), val_str[:12], font=font_sm, fill=vc, anchor="rm")
+
+        elif page == "IMPORT":
+            mgr = getattr(self.inst, "usb", None)
+            if self._usb_dev:
+                draw.text((10, 44), "5 copy to internal   ENTER eject   8/2 scroll",
+                          font=font_sm, fill=C_DIM)
+                rows = []
+                for f in self._usb_files:
+                    mark = "✓" if (mgr and mgr.is_internal(f)) else ""
+                    rows.append((os.path.basename(f)[:30], mark))
+                if not rows:
+                    rows = [("  (no videos on drive)", "")]
+            else:
+                draw.text((10, 44), "5 mount & browse   8/2 scroll",
+                          font=font_sm, fill=C_DIM)
+                rows = [(f"  {d['label']}", f"{d['fstype']} {d['size']}")
+                        for d in self._usb_drives]
+                if not rows:
+                    rows = [("  (no USB drives — plug one in)", "")]
+            # list stops short so the status has its own line at the bottom
+            self._render_kv(draw, font_sm, W, H - 24, palette, rows, y0=66)
+            if self._usb_status:
+                draw.text((W // 2, H - 32), self._usb_status[:36],
+                          font=font_sm, fill=C_HL, anchor="mm")
 
         else:  # SETTINGS
             items = self._settings()

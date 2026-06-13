@@ -62,6 +62,7 @@ class SamplerEngine:
         # Values: 'clip' | 'blank' | 'camera' | None
         self._active_source = None
         self.removable_paths: set = set()   # full paths of clips from /media or /mnt
+        self._vf_had_trail = False          # was a tpad trail in the last vf chain
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -119,6 +120,11 @@ class SamplerEngine:
         self._cmd_async("loadfile", self.cfg.current_clip, "replace")
         self._apply_loop_mode()
         self._active_source = 'clip'
+        # Clear any stray pause inherited from a previous source ending under
+        # --keep-open (e.g. leaving LIVE, or a clip that hit EOF): the pause
+        # flag is global and survives loadfile, so a fresh clip could load
+        # frozen. Always resume on a real (re)load.
+        self.resume()
     def _rebuild_vf(self):
         """Atomically replace the VF chain with the current overlay+trail state.
 
@@ -192,6 +198,18 @@ class SamplerEngine:
                 )
         self._cmd_async("vf", "set", ",".join(parts))
 
+        # The trail uses tpad, which extends the filter timeline; on a short
+        # looping clip the playhead drifts past the clip's real EOF. Removing
+        # the trail then strands playback past the end and it freezes (time-pos
+        # stops, though pause stays false). Re-sync the playhead whenever a
+        # trail is in the chain now or was in the one we just replaced — a
+        # zero-length relative seek clamps the position back into range and
+        # resumes looping. Clips only (seeking a live camera/FIFO is invalid).
+        has_trail = getattr(self.cfg, 'trail_on', False)
+        if self._active_source == 'clip' and (has_trail or self._vf_had_trail):
+            self._cmd_async("seek", 0, "relative")
+        self._vf_had_trail = has_trail
+
     def refresh_overlay(self):
         self._rebuild_vf()
 
@@ -217,6 +235,7 @@ class SamplerEngine:
         self._cmd_async("loadfile", url, "replace")
         self._cmd_async("set_property", "loop-file", "inf")
         self._active_source = 'blank'
+        self.resume()   # never inherit a stray pause from a prior source
         log.info("loaded blank source for shader")
 
     # Path of the named FIFO used for CSI camera streaming
@@ -272,6 +291,7 @@ class SamplerEngine:
         self._cmd_async("loadfile", url, "replace", 0,
                         "loop-file=no,cache=no,demuxer-readahead-secs=0")
         self._active_source = 'camera'
+        self.resume()   # never inherit a stray pause from a prior source
         log.info("loaded USB camera %s", chosen)
 
     def _has_csi_camera(self):
@@ -315,6 +335,7 @@ class SamplerEngine:
                         "video-latency-hacks=yes,"
                         f"container-fps-override={self.cfg.fps}")
         self._active_source = 'camera'
+        self.resume()   # never inherit a stray pause from a prior source
 
         # Small delay so mpv's loadfile reaches the kernel open() before
         # rpicam-vid opens the write end (avoids a brief ENXIO window).
@@ -545,6 +566,7 @@ class SamplerEngine:
         self._active_source = 'clip'
         self.refresh_trail()
         self.refresh_overlay()
+        self.resume()
         log.info("playlist → slot %d: %s", nxt, os.path.basename(path))
 
     # ------------------------------------------------------------- clip mgmt
@@ -609,6 +631,7 @@ class SamplerEngine:
         self._active_source = 'clip'
         self.refresh_trail()
         self.refresh_overlay()
+        self.resume()
         log.info("clip %d -> %s", self.idx, os.path.basename(clip))
 
     def next_clip(self):  self.load(self.idx + 1)
@@ -632,6 +655,7 @@ class SamplerEngine:
         self._active_source = 'clip'
         self.refresh_trail()
         self.refresh_overlay()
+        self.resume()
         log.info("slot %d → %s", n, os.path.basename(path))
         return True
 

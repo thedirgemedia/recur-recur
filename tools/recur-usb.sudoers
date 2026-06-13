@@ -1,0 +1,5 @@
+# Allow the recur service user to mount/unmount removable USB drives read-only
+# via the validating helper, without a password. Install to:
+#   /etc/sudoers.d/recur-usb   (chmod 0440, owned by root)
+# Replace "dirge" with the user the service runs as if different.
+dirge ALL=(root) NOPASSWD: /usr/local/sbin/recur-usb

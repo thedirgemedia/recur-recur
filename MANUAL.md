@@ -195,16 +195,19 @@ Press **Num** to open/close. Four pages, cycled with **7** (prev) and **9**
 | **Num** | exit menu |
 
 ### BROWSER page
-Lists all available clips: local files from `clips/` first, then any video
-files found on removable drives mounted under `/media/` or `/mnt/`. The drive
-is re-scanned automatically each time you open the BROWSER page (7/9 key while
-in the menu), so plugging in a USB drive and switching to BROWSER is enough to
-see its contents. `▶` marks the currently playing clip. The right column shows
-the assigned slot key (4–9) for clips that have one; for unassigned clips from a
-removable drive it shows a short drive label (e.g. `FLASH`).
+Lists clips from internal `clips/` (plus any video files on drives already
+mounted under `/media/` or `/mnt/`, re-scanned each time you open the page).
+To pull files off a USB stick, use the **IMPORT page** — drives are mounted on
+demand there and copied into internal storage. `▶` marks the currently playing
+clip. The right column shows the assigned slot key (4–9) for clips that have
+one; for clips from a mounted removable drive it shows a short drive label.
 - **5** — load + trigger the highlighted clip immediately.
 - **Enter, then a key 4–9** — assign the highlighted clip to that performance
   slot (any other key cancels). A clip can hold only one slot; assigning moves it.
+- **Bksp, then Bksp again** — delete the highlighted clip file. The first press
+  arms it (`BKSP again = DELETE FILE`); any other key cancels. Only internal
+  `clips/` files can be deleted (removable drives are read-only); the file is
+  removed from disk and cleared from any slot it held.
 
 ### SHADERS page
 Same as BROWSER but for generative shaders, feeding the SHADER-mode 4–9 keys.
@@ -233,6 +236,19 @@ shown as `CC 64` (highlighted).
 - **5** — numeric entry: type digits (3 digits auto-commit, clamped to 127),
   **Enter** confirms (empty Enter also resets to default), **Bksp** deletes
   a digit, any navigation key cancels.
+
+### IMPORT page (USB → internal)
+Copy video files off a USB drive into internal `clips/`. The Pi is headless, so
+drives are mounted **on demand, read-only** by a small root helper (install once
+with `sudo ./tools/install-usb-import.sh`, then restart). Without it the page
+shows `RUN install-usb-import.sh`.
+- Opening the page lists removable USB partitions (the SD/boot card is never
+  shown). **5** mounts the highlighted drive and lists its video files.
+- In the file list, **5** copies the highlighted file into `clips/` (a `✓`
+  marks files already imported; same-named files are skipped). Imported clips
+  are rescanned immediately, so they appear in BROWSER right away.
+- **Enter** (or **Bksp**) ejects the drive and returns to the drive list.
+- The drive is always unmounted when you leave the page or close the menu.
 
 ---
 
