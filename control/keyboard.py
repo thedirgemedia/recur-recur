@@ -90,7 +90,7 @@ NUMPAD_MAP = {
 
 # The 000 key is detected as three rapid KP0 presses within this window.
 TRIPLE_ZERO_WINDOW = 0.15   # seconds
-PARAM_STEP = 0.1
+PARAM_STEP = 0.05
 
 # Param layers (indices). BKSP cycles the ones available in the current mode:
 #   0 SHDR    generative shader params p1–p3              (SHADER mode only)
@@ -99,7 +99,7 @@ PARAM_STEP = 0.1
 #   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
 _PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
-_COLOUR_LABELS = {"p4": "PAL", "hue": "HUE", "sat": "SAT", "trl_decay": "TRL DEC"}
+_COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_decay": "TRL DEC"}
 
 
 class KeyboardController:
@@ -112,7 +112,6 @@ class KeyboardController:
         # Which parameter the 2/3 keys currently adjust. BKSP cycles the layer:
         # 0 = shader p1-p4, 1 = FX controls, 2 = COLOUR (hue/sat).
         self._param_layer = 0
-        self._param_keys  = ("p1", "p2", "p3")   # p4 lives in COLOUR layer
         self._param_idx   = 0
 
         # in/out point stage: 0=waiting for IN, 1=waiting for OUT, 2=waiting for clear
@@ -213,6 +212,12 @@ class KeyboardController:
                         self._dispatch("REC")
                         continue
 
+                    # Hold-0 + tap-4-9 → load preset slot.
+                    if name in ("4","5","6","7","8","9") and self._key0_held:
+                        self._kp0_history.clear()
+                        self._dispatch(f"PRESET_{name}")
+                        continue
+
                     self._dispatch(name)
 
             except OSError as e:
@@ -263,6 +268,19 @@ class KeyboardController:
         inst = self.inst
         s    = inst.sampler
         sh   = inst.shader
+
+        # ── hold-0 + 4-9: load preset slot (any mode) ─────────────────────
+        if name.startswith("PRESET_"):
+            slot  = int(name[-1])
+            pname = inst.cfg.preset_slots.get(slot)
+            if pname:
+                data = inst.cfg.load_preset(pname)
+                if data:
+                    inst.apply_preset(data)
+                    inst.osd.show(f"P{slot}: {pname.replace('.json','').upper()}")
+            else:
+                inst.osd.show(f"PRESET {slot}: EMPTY")
+            return
 
         # ── SHADER mode: 4-9 load assigned generative shader ──────────────
         if inst.mode == "SHADER" and name in ("4","5","6","7","8","9"):
@@ -321,23 +339,22 @@ class KeyboardController:
                 slots = self._blend_slots()
                 self._param_idx = (self._param_idx + 1) % len(slots)
                 inst.osd.show(f"BLEND: {_BLEND_LABELS[slots[self._param_idx]]}")
-            elif self._param_layer == 2:        # COLOUR: palette / hue / sat / trl dec
+            elif self._param_layer == 2:        # COLOUR: hue / sat / trl dec
                 slots = self._colour_slots()
                 self._param_idx = (self._param_idx + 1) % len(slots)
                 slot = slots[self._param_idx]
-                if slot == "p4":
-                    lbl = inst.shader.param_labels().get("p4", "PAL")
-                    inst.osd.show(f"COLOUR: {lbl.upper()}")
-                else:
-                    inst.osd.show(f"COLOUR: {_COLOUR_LABELS[slot]}")
+                inst.osd.show(f"COLOUR: {_COLOUR_LABELS[slot]}")
             elif self._param_layer == 1:        # FX: active FX's own params f1–f4
                 self._param_idx = (self._param_idx + 1) % 4
                 lbls = inst.shader.fx_param_labels()
                 key  = f"f{self._param_idx + 1}"
                 inst.osd.show(f"FX: {lbls.get(key, key.upper()).upper()}")
-            else:                               # SHDR: generative p1–p3
-                self._param_idx = (self._param_idx + 1) % len(self._param_keys)
-                inst.osd.show(f"PARAM: {self._param_keys[self._param_idx].upper()}")
+            else:                               # SHDR: generative params (dynamic)
+                keys = self._get_shdr_keys()
+                self._param_idx = (self._param_idx + 1) % max(1, len(keys))
+                key = keys[self._param_idx] if keys else "p1"
+                lbl = inst.shader.param_labels().get(key, key.upper())
+                inst.osd.show(f"PARAM: {lbl.upper()}")
         elif name == "2":
             self._step_param(-PARAM_STEP)
         elif name == "3":
@@ -373,10 +390,11 @@ class KeyboardController:
             return [0, 1, 2, 3]   # SHDR, FX, COLOUR, BLEND
         return [1, 2, 3]          # FX, COLOUR, BLEND
 
+    def _get_shdr_keys(self):
+        """Sorted param keys for the current generative shader (e.g. p1..p8)."""
+        return sorted(self.inst.shader.param_labels().keys())
+
     def _colour_slots(self):
-        """COLOUR-layer slots: palette (p4) only available in SHADER mode."""
-        if self.inst.mode == "SHADER":
-            return ("p4", "hue", "sat", "trl_decay")
         return ("hue", "sat", "trl_decay")
 
     def _blend_slots(self):
@@ -398,14 +416,24 @@ class KeyboardController:
         cfg  = self.inst.cfg
         inst = self.inst
         sign = 1.0 if delta > 0 else -1.0
-        if self._param_layer == 0:        # ── SHDR: generative p1–p3
-            key = self._param_keys[self._param_idx % len(self._param_keys)]
+        if self._param_layer == 0:        # ── SHDR: generative params (dynamic)
+            keys = self._get_shdr_keys()
+            if not keys:
+                return
+            key = keys[self._param_idx % len(keys)]
             cur = cfg.params.get(key, 0.5)
             new = max(0.0, min(1.0, cur + delta))
             if new == cur:
                 return
             inst.shader.set_param(key, new)
-            inst.osd.show(f"{key.upper()}: {new:.2f}")
+            lbl = inst.shader.param_labels().get(key, key.upper())
+            ul  = lbl.upper()
+            if ul.endswith(' X') or ul.endswith(' Y') or ul in ('X', 'Y'):
+                inst.osd.show(f"{ul}: {(new - 0.5) * 200:+.0f}")
+            elif ul.endswith('STARS') or ul == 'STARS':
+                inst.osd.show(f"{ul}: {max(1, round(new * 500))}")
+            else:
+                inst.osd.show(f"{ul}: {new:.2f}")
         elif self._param_layer == 1:      # ── FX: the active FX's own params
             key = f"f{(self._param_idx % 4) + 1}"
             cur = cfg.fx_params.get(key, 0.5)
@@ -415,18 +443,10 @@ class KeyboardController:
             inst.shader.set_fx_param(key, new)
             lbl = inst.shader.fx_param_labels().get(key, key.upper())
             inst.osd.show(f"{lbl.upper()}: {new:.2f}")
-        elif self._param_layer == 2:      # ── COLOUR: palette / hue / sat / trl dec
+        elif self._param_layer == 2:      # ── COLOUR: hue / sat / trl dec
             slots = self._colour_slots()
             slot  = slots[self._param_idx % len(slots)]
-            if slot == "p4":
-                cur = cfg.params.get("p4", 0.5)
-                new = max(0.0, min(1.0, round(cur + delta, 3)))
-                if new == cur:
-                    return
-                inst.shader.set_param("p4", new)
-                lbl = inst.shader.param_labels().get("p4", "PAL")
-                inst.osd.show(f"{lbl.upper()}: {new:.2f}")
-            elif slot == "hue":
+            if slot == "hue":
                 inst.color_adjust_hue(sign * 0.02)
             elif slot == "sat":
                 inst.color_adjust_sat(sign * 0.05)

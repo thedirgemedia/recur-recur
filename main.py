@@ -65,6 +65,18 @@ class RecurInstrument:
 
         cfg.load_prefs()
 
+        # Per-mode volatile state — saved before leaving a mode, restored on
+        # re-entry. Initialized from prefs so the first return to SHADER keeps
+        # whatever blend/fx-stack state was active at last shutdown.
+        self._mode_states = {
+            "SHADER": {
+                "shader_blend":    getattr(cfg, "shader_blend",    False),
+                "shader_fx_stack": getattr(cfg, "shader_fx_stack", False),
+                "current_shader":  getattr(cfg, "current_shader",  None),
+                "params":          dict(cfg.params),
+            }
+        }
+
         signal.signal(signal.SIGINT,  self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
 
@@ -73,15 +85,39 @@ class RecurInstrument:
     def mode(self):
         return self._mode
 
+    def _save_mode_state(self, mode):
+        """Snapshot volatile SHADER-mode fields before leaving that mode."""
+        if mode == "SHADER":
+            self._mode_states["SHADER"] = {
+                "shader_blend":    self.cfg.shader_blend,
+                "shader_fx_stack": self.cfg.shader_fx_stack,
+                "current_shader":  self.cfg.current_shader,
+                "params":          dict(self.cfg.params),
+            }
+
+    def _restore_mode_state(self, mode):
+        """Restore snapshotted fields when re-entering a mode."""
+        if mode == "SHADER":
+            state = self._mode_states.get("SHADER", {})
+            self.cfg.shader_blend    = state.get("shader_blend",    False)
+            self.cfg.shader_fx_stack = state.get("shader_fx_stack", False)
+            # Restore shader name so _apply_mode() picks it up.
+            # (shader.load(None) in SAMPLER entry clears cfg.current_shader.)
+            if state.get("current_shader"):
+                self.cfg.current_shader = state["current_shader"]
+
     def set_mode(self, name: str):
         name = name.upper()
         if name not in self.MODES:
             log.warning("unknown mode %s", name)
             return
         with self._lock:
+            self._save_mode_state(self._mode)   # snapshot before leaving
             log.info("mode → %s", name)
             self._mode = name
+            self.cfg.current_mode = name
             self.osd.show(f"MODE: {name}")
+            self._restore_mode_state(name)      # restore before applying
             self._apply_mode()
         kb = getattr(self, "kb", None)
         if kb is not None:
@@ -111,7 +147,6 @@ class RecurInstrument:
         to SAMPLER reveals it at the same timecode.
         """
         if self._mode == "SAMPLER":
-            self.cfg.shader_blend = False
             self.shader.load(None)
             self.sampler.start_playback()   # no-op if clip already active
             # SHADER mode forces loop-file=inf to keep frames flowing; restore
@@ -120,7 +155,7 @@ class RecurInstrument:
             self.sampler.refresh_overlay()
             self.sampler.refresh_trail()
         elif self._mode == "SHADER":
-            self.cfg.shader_fx_stack = False   # start clean; +/- re-enables
+            # shader_blend and shader_fx_stack were restored by _restore_mode_state()
             if self.cfg.shader_blend:
                 self._start_blend_source()
             else:
@@ -151,12 +186,20 @@ class RecurInstrument:
             if self.sampler._active_source != 'camera':
                 self.sampler._cmd_async("set_property", "loop-file", "inf")
             self.sampler.resume()
-            # Default to first generative shader if current one isn't in the set.
+            # Restore shader — current_shader was set by _restore_mode_state().
             cur  = self.cfg.current_shader
             gens = self.shader.list_shaders(kind="generative")
             if cur not in gens:
                 cur = gens[0] if gens else None
             self.shader.load(cur)
+            # shader.load() calls _read_defaults() which resets cfg.params to the
+            # file's authored values.  Re-apply the params the user had set before
+            # leaving SHADER mode, but only when returning to the same shader.
+            _ms = self._mode_states.get("SHADER", {})
+            if _ms.get("current_shader") == cur and _ms.get("params"):
+                self.cfg.params.update(_ms["params"])
+                if self.shader.current:
+                    self.shader.reapply()
         elif self._mode == "LIVE":
             self.shader.load(None)
             self.sampler.play_camera()
@@ -194,6 +237,65 @@ class RecurInstrument:
         if clip_idx is not None:
             self.sampler.load(clip_idx)
             self.sampler.trigger()
+
+    # ------------------------------------------------------------------ presets
+    def apply_preset(self, data: dict):
+        """Apply a loaded preset dict to the live instrument state.
+
+        Switches to the saved mode if it differs from the current one.
+        For SHADER mode: primes the mode-state cache with the preset's shader
+        and params so _apply_mode() picks them up cleanly via _restore_mode_state.
+        """
+        cfg         = self.cfg
+        target_mode = data.get("mode", "").upper() or None
+
+        if target_mode == "SHADER":
+            # Prime the cache so set_mode/restore_mode_state loads the right shader
+            # and re-applies the preset params after _read_defaults() resets them.
+            ms = self._mode_states.setdefault("SHADER", {})
+            if data.get("shader"):
+                ms["current_shader"] = data["shader"]
+                cfg.current_shader   = data["shader"]
+            if "params" in data:
+                ms["params"] = dict(data["params"])
+            if "shader_blend" in data:
+                ms["shader_blend"] = data["shader_blend"]
+
+        # Switch mode (calls _restore_mode_state → _apply_mode, loads shader).
+        if target_mode and target_mode != self.mode:
+            self.set_mode(target_mode)
+        elif target_mode == "SHADER" and self.mode == "SHADER":
+            # Already in SHADER — reload shader and re-apply params directly.
+            if data.get("shader"):
+                self.shader.load(data["shader"])
+            if "params" in data:
+                cfg.params.update(data["params"])
+                if self.shader.current:
+                    self.shader.reapply()
+        else:
+            # Non-SHADER preset or no mode field — update config for next entry.
+            if data.get("shader"):
+                cfg.current_shader = data["shader"]
+            if "params" in data:
+                cfg.params.update(data["params"])
+
+        # FX
+        if data.get("fx"):
+            cfg.current_fx = data["fx"]
+        if "fx_params" in data:
+            cfg.fx_params.update(data["fx_params"])
+        # Blend — update cfg and keep mode-state cache in sync.
+        if "shader_blend" in data:
+            cfg.shader_blend = data["shader_blend"]
+            self._mode_states.setdefault("SHADER", {})["shader_blend"] = data["shader_blend"]
+        for key in ("shader_blend_mode", "shader_blend_amount", "shader_blend_source"):
+            if key in data:
+                setattr(cfg, key, data[key])
+        # Colour — takes effect immediately in all modes.
+        self.shader.set_color(
+            hue=data.get("color_hue", cfg.color_hue),
+            sat=data.get("color_sat", cfg.color_sat))
+        log.info("preset applied: mode=%s shader=%s", target_mode, data.get("shader", "—"))
 
     # ------------------------------------------------------------------ shader blend (SHADER mode)
     def shader_blend_toggle(self):

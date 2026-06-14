@@ -33,8 +33,9 @@ DEBOUNCE_MS = 100
 # Temp shader files live here; counter suffix ensures unique paths per apply
 TMP_SHADER_DIR = "/tmp"
 TMP_SHADER_PREFIX = "recur_s"
-# Regex matching `#define PARAM_N <value>` lines we want to substitute
-PARAM_RE = re.compile(r'^(\s*#define\s+PARAM_([1-4])\s+)([^\s/]+)', re.M)
+# Regex matching `#define PARAM_N <value>` lines we want to substitute.
+# Supports up to PARAM_9 so shaders can expose as many controls as they need.
+PARAM_RE = re.compile(r'^(\s*#define\s+PARAM_([1-9][0-9]?)\s+)([^\s/]+)', re.M)
 
 
 def _subst(text, vals, prefix):
@@ -186,25 +187,42 @@ class ShaderEngine:
         self._color_sig   = None         # (hue, sat) last written — avoids rewrites
         self._label_cache    = {}  # {path: {p1:label, ...}} — avoid per-frame file reads
         self._fallback_label_path = None  # resolved fallback path when self.current is None
+        self._gen_cache      = {}  # {basename: bool} — cached DESC scan results
 
     # ------------------------------------------------------------- discovery
+
+    def _is_generative(self, basename):
+        """Return True if the shader's //!DESC line contains '(generative)'.
+        Results are cached so the files are only read once per session."""
+        if basename in self._gen_cache:
+            return self._gen_cache[basename]
+        path = os.path.join(self.cfg.shaders_dir, basename)
+        result = False
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("//!DESC"):
+                        result = "(generative)" in line
+                        break
+        except OSError:
+            pass
+        self._gen_cache[basename] = result
+        return result
+
     def list_shaders(self, kind=None):
-        """List .glsl files. kind='generative' returns plasma/waves/etc;
-        kind='fx' returns vhs/glitch/etc. None = all."""
+        """List .glsl files. kind='generative' returns shaders whose //!DESC
+        contains '(generative)'; kind='fx' returns the rest. None = all."""
         d = self.cfg.shaders_dir
         if not os.path.isdir(d):
             return []
         files = sorted(f for f in os.listdir(d) if f.endswith(".glsl"))
         if kind is None:
             return files
-        gen = set(getattr(self.cfg, "generative_shaders",
-                          {"plasma.glsl", "waves.glsl", "tunnel.glsl",
-                           "voronoi.glsl", "kaleidoscope.glsl"}))
         excl = set(getattr(self.cfg, "excluded_from_fx", set()))
         if kind == "generative":
-            return [f for f in files if f in gen]
+            return [f for f in files if self._is_generative(f)]
         else:  # fx
-            return [f for f in files if f not in gen and f not in excl]
+            return [f for f in files if not self._is_generative(f) and f not in excl]
 
     # ------------------------------------------------------------- loading
     def load(self, shader):
@@ -317,7 +335,7 @@ class ShaderEngine:
             self._debounce_thread.start()
 
     def _snapshot(self):
-        return (tuple(self.cfg.params.get(k, 0.5) for k in ("p1", "p2", "p3", "p4")),
+        return (tuple(self.cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
                 tuple(self.cfg.fx_params.get(k, 0.5) for k in ("f1", "f2", "f3", "f4")))
 
     def fx_param_labels(self):
@@ -347,8 +365,9 @@ class ShaderEngine:
 
     # ------------------------------------------------------------- emit
     def param_labels(self):
-        """Parse the /* label */ comment from each PARAM_N line and return a
-        dict like {"p1": "speed", "p2": "scale", ...}.
+        """Parse PARAM_N defines from the shader source and return a dict like
+        {"p1": "speed", "p2": "scale", ...} containing ONLY the params that
+        actually exist in the shader.  Supports PARAM_1 through PARAM_9.
 
         Uses the currently loaded shader (self.current) when available.
         Falls back to cfg.current_fx then cfg.current_shader so the menu
@@ -357,8 +376,6 @@ class ShaderEngine:
         The fallback path resolution (os.path.exists) is cached so the display
         render loop (20 FPS) doesn't repeatedly hit the filesystem.
         """
-        defaults = {f"p{n}": f"P{n}" for n in range(1, 5)}
-
         # Fast path: shader is loaded.
         path = self.current
         if path:
@@ -378,7 +395,7 @@ class ShaderEngine:
                 self._fallback_label_path = path   # cache (None = no file found)
 
         if not path:
-            return defaults
+            return {f"p{n}": f"P{n}" for n in range(1, 5)}  # minimal fallback
 
         if path in self._label_cache:
             return self._label_cache[path]
@@ -387,12 +404,22 @@ class ShaderEngine:
             with open(path) as f:
                 src = f.read()
         except OSError:
-            return defaults
-        pat = re.compile(r'#define\s+PARAM_([1-4])\s+\S+[^\n]*/\*\s*([^*]+?)\s*\*/')
-        for m in pat.finditer(src):
-            defaults[f"p{m.group(1)}"] = m.group(2).strip()
-        self._label_cache[path] = defaults
-        return defaults
+            return {f"p{n}": f"P{n}" for n in range(1, 5)}
+
+        labels = {}
+        # First pass: defines with a /* label */ comment
+        pat_lbl = re.compile(r'#define\s+PARAM_([1-9][0-9]?)\s+\S+[^\n]*/\*\s*([^*]+?)\s*\*/')
+        for m in pat_lbl.finditer(src):
+            labels[f"p{m.group(1)}"] = m.group(2).strip()
+        # Second pass: defines without a label — record them with a default "Pn" name
+        pat_def = re.compile(r'#define\s+PARAM_([1-9][0-9]?)\b')
+        for m in pat_def.finditer(src):
+            k = f"p{m.group(1)}"
+            if k not in labels:
+                labels[k] = f"P{m.group(1)}"
+
+        self._label_cache[path] = labels
+        return labels
 
     def _read_defaults(self):
         """Apply the loaded shader's PARAM_N defaults — into cfg.params for a
@@ -400,8 +427,7 @@ class ShaderEngine:
         at its designed settings; knob/menu movement overrides from there."""
         if not self.current:
             return
-        gen_set = getattr(self.cfg, "generative_shaders", set())
-        is_gen = os.path.basename(self.current) in gen_set
+        is_gen = self._is_generative(os.path.basename(self.current))
         target, prefix = ((self.cfg.params, "p") if is_gen
                           else (self.cfg.fx_params, "f"))
         self._read_param_defaults(self.current, target, prefix)
@@ -439,10 +465,7 @@ class ShaderEngine:
             log.warning("can't read shader %s: %s", self.current, e)
             return
 
-        gen_set = getattr(self.cfg, "generative_shaders",
-                          {"plasma.glsl", "waves.glsl", "tunnel.glsl",
-                           "voronoi.glsl", "kaleidoscope.glsl"})
-        is_generative = os.path.basename(self.current) in gen_set
+        is_generative = self._is_generative(os.path.basename(self.current))
 
         # self.current is the generative (SHADER mode) or the FX shader
         # (SAMPLER/LIVE) — substitute the matching param set.

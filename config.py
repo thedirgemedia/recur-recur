@@ -47,6 +47,12 @@ class Config:
         # Used by SHADER mode keys 4-9.
         self.shader_slots = {4: None, 5: None, 6: None, 7: None, 8: None, 9: None}
 
+        # Numpad key-to-preset slot assignments.  Maps key number (4–9) to the
+        # preset filename (.json), or None if empty.
+        # Assigned from the PRESETS menu page (ENTER, then a slot key 4–9).
+        # Loaded by hold-0 + key 4-9 in any mode.
+        self.preset_slots = {4: None, 5: None, 6: None, 7: None, 8: None, 9: None}
+
         # Camera capture resolution.  The IMX708 has one native low-res sensor
         # mode (1536×864); the ISP then scales down to whatever we request here.
         # Lower = less encode/decode work = less lag.  Default 640×360 keeps
@@ -55,20 +61,18 @@ class Config:
         self.camera_height = 360
         self.CAMERA_RESOLUTIONS = [(320, 180), (640, 360), (1280, 720)]
 
-        # Generative-shader params, live-tweakable (mirrors recur's 4-knob layout)
-        self.params = {"p1": 0.5, "p2": 0.5, "p3": 0.5, "p4": 0.5}
+        # Generative-shader params, live-tweakable.  Shaders declare as many
+        # PARAM_N defines as they need (up to 8); extra slots default to 0.5.
+        self.params = {f"p{n}": 0.5 for n in range(1, 11)}
         # FX-shader params, kept separate so the FX (which can run stacked on a
         # generative shader) is tunable independently of the generative's p1–p4.
         self.fx_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5}
 
-        # currently selected files
+        # currently selected files / mode
+        self.current_mode   = "SAMPLER"
         self.current_clip   = None
         self.current_shader = None
         self.current_fx     = "glitch.glsl"
-
-        # generative shaders (used by SHADER mode); the rest are FX
-        self.generative_shaders = {"plasma.glsl", "waves.glsl", "tunnel.glsl",
-                                   "voronoi.glsl", "kaleidoscope.glsl"}
 
         # passthrough produces no visible effect — exclude it from FX cycling
         # so every + / - press lands on something visually interesting
@@ -187,6 +191,8 @@ class Config:
             self.clip_slots = {int(k): v for k, v in data['clip_slots'].items()}
         if 'shader_slots' in data:
             self.shader_slots = {int(k): v for k, v in data['shader_slots'].items()}
+        if 'preset_slots' in data:
+            self.preset_slots = {int(k): v for k, v in data['preset_slots'].items()}
         if 'sampler_mode' in data:
             self._prefs_sampler_mode = data['sampler_mode']
         log.info("prefs loaded from %s", self.PREFS_PATH)
@@ -195,8 +201,9 @@ class Config:
         data = {key: getattr(self, key, None) for key in self._PREFS_ATTRS}
         data['params']       = dict(self.params)
         data['fx_params']    = dict(self.fx_params)
-        data['clip_slots']   = {str(k): v for k, v in self.clip_slots.items()}
-        data['shader_slots'] = {str(k): v for k, v in self.shader_slots.items()}
+        data['clip_slots']    = {str(k): v for k, v in self.clip_slots.items()}
+        data['shader_slots']  = {str(k): v for k, v in self.shader_slots.items()}
+        data['preset_slots']  = {str(k): v for k, v in self.preset_slots.items()}
         if sampler_mode is not None:
             data['sampler_mode'] = sampler_mode
         try:
@@ -213,26 +220,56 @@ class Config:
             os.makedirs(d, exist_ok=True)
 
     # -------------------------------------------------- presets (recur-style)
+    # Fields saved/restored by the preset system (in addition to shader/params/fx).
+    _PRESET_EXTRA = (
+        "fx_params",
+        "shader_blend", "shader_blend_mode", "shader_blend_amount", "shader_blend_source",
+        "color_hue", "color_sat",
+    )
+
     def load_preset(self, name: str) -> dict:
         path = os.path.join(self.presets_dir, name)
         if not os.path.exists(path):
             log.warning("preset not found: %s", path)
             return {}
-        with open(path) as f:
-            data = json.load(f)
-        self.current_shader = data.get("shader", self.current_shader)
-        self.current_fx     = data.get("fx", self.current_fx)
-        self.params.update(data.get("params", {}))
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception as e:
+            log.warning("preset load error %s: %s", name, e)
+            return {}
+        if "shader" in data:
+            self.current_shader = data["shader"]
+        if "fx" in data:
+            self.current_fx = data["fx"]
+        if "params" in data:
+            self.params.update(data["params"])
+        if "fx_params" in data:
+            self.fx_params.update(data["fx_params"])
+        for key in self._PRESET_EXTRA:
+            if key in data and key not in ("fx_params",):
+                setattr(self, key, data[key])
         log.info("loaded preset %s", name)
         return data
 
     def save_preset(self, name: str):
         path = os.path.join(self.presets_dir, name)
         data = {
-            "shader": self.current_shader,
-            "fx":     self.current_fx,
-            "params": self.params,
+            "version": 2,
+            "mode":      self.current_mode,
+            "shader":    self.current_shader,
+            "fx":        self.current_fx,
+            "params":    dict(self.params),
+            "fx_params": dict(self.fx_params),
         }
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-        log.info("saved preset %s", name)
+        for key in self._PRESET_EXTRA:
+            if key not in ("fx_params",):
+                data[key] = getattr(self, key, None)
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+            log.info("saved preset %s", name)
+            return True
+        except Exception as e:
+            log.warning("preset save error %s: %s", name, e)
+            return False

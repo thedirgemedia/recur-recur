@@ -89,10 +89,11 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **Num** | Toggle the menu (while the menu is open, no key reaches the video) |
 | **Enter** | Cycle instrument mode (SAMPLER → SHADER → LIVE → …; LIVE skipped if disabled in SETTINGS) |
 | **000** or **.** | Toggle the temporal trail (echo time delay) |
-| **Bksp** | Cycle param layer for this mode: SHADER mode = SHDR → FX → GLOBAL; SAMPLER/LIVE = FX → GLOBAL. Top-bar chip shows `SHDR` / `FX` / `GLOBAL` |
+| **Bksp** | Cycle param layer for this mode: SHADER mode = SHDR → FX → COLOUR → BLEND; SAMPLER/LIVE = FX → COLOUR → BLEND. Top-bar chip shows `SHDR` / `FX` / `COLOUR` / `BLEND` |
 | **1** | Cycle the selected parameter (see *Parameter editing*) |
 | **2** / **3** | Selected parameter − / + |
 | **0** | In/out points: 1st press = IN, 2nd = OUT, 3rd = clear |
+| **Hold 0, tap .** | Record live camera to clip file (LIVE mode only; hold numpad 0 while tapping `.`; press again to stop and save) |
 
 ### SAMPLER and LIVE modes
 
@@ -120,18 +121,20 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 ## Parameter editing
 
 **Bksp** cycles the parameter layers available in the current mode. The active
-layer shows in the SPI top bar (`SHDR` / `FX` / `BLEND` / `GLOBAL` chip) and as
+layer shows in the SPI top bar (`SHDR` / `FX` / `COLOUR` / `BLEND` chip) and as
 the bars below the header. Key **1** cycles the selection within a layer;
 **2/3** step (or cycle, for the BLEND mode/source slots); knobs and MIDI feed
 the same params.
 
-- **SHADER mode:** SHDR → FX → BLEND → GLOBAL
-- **SAMPLER / LIVE mode:** FX → BLEND → GLOBAL  (no generative shader → SHDR skipped)
+- **SHADER mode:** SHDR → FX → COLOUR → BLEND
+- **SAMPLER / LIVE mode:** FX → COLOUR → BLEND  (no generative shader → SHDR skipped)
 
 ### Layer SHDR — generative shader params *(SHADER mode only)*
 
-p1–p4 = the generative shader's parameters (labels from its source). Loading a
-generative resets them to its authored defaults.
+p1–p3 = the generative shader's primary parameters (labels from its source).
+Loading a generative resets them to its authored defaults. p4 (palette) lives
+in the COLOUR layer (see below) so it is always accessible without cycling away
+from the generative.
 
 ### Layer FX — the active FX shader's own params
 
@@ -141,6 +144,23 @@ glitch, grain, vhs …), with labels read from the shader source — e.g. glitch
 from the generative's p1–p4, so the FX is tunable even when stacked on a
 generative in SHADER mode. Cycling the FX (`+`/`-`) reloads its defaults.
 Persists in `prefs.json` (`fx_params`).
+
+### Layer COLOUR — palette and colour adjustments (all modes)
+
+All colour controls in one place. Key **1** cycles slots; **2/3** step:
+
+| Param | Range | Meaning | Visible |
+|---|---|---|---|
+| `PAL` | 0–1 | IQ cosine palette selector for the generative | SHADER mode only |
+| `HUE` | 0–360° | global hue rotation (0 = no shift); wraps. GLSL colour pass | always |
+| `SAT` | 0–2 | global saturation (0 = greyscale, 1 = normal, 2 = vivid) | always |
+| `TRL DEC` | 0.80–0.99 | trail persistence (0.80 short ghost → 0.99 long tail) | always |
+
+`PAL` is the generative shader's p4 parameter — it selects the IQ cosine
+palette used by plasma, waves, starfield, voronoi and similar shaders. It only
+appears in SHADER mode. HUE/SAT apply to the final picture in every mode via a
+GLSL pass (no cost at neutral hue 0°, sat 1.0). All four values persist in
+`prefs.json`.
 
 ### Layer BLEND — compositing controls
 
@@ -152,18 +172,10 @@ cycles the mode or steps the amount:
 | **SHADER** | `MODE` (shader↔video blend, 14 modes incl. displace), `BLD AMT`, `SRC` (clip/live) |
 | **SAMPLER / LIVE** | `OVL MODE` (5 self-blend modes), `OVL OPC` |
 
-### Layer GLOBAL — master adjustments (all modes)
-
-Key **1** cycles `HUE` → `SAT` → `TRL DEC`; **2/3** step:
-
-| Param | Range | Meaning |
-|---|---|---|
-| `HUE` | 0–360° | global hue rotation (0 = no shift); wraps. GLSL colour pass |
-| `SAT` | 0–2 | global saturation (0 = greyscale, 1 = normal, 2 = vivid) |
-| `TRL DEC` | 0.80–0.99 | trail persistence (0.80 short ghost → 0.99 long tail) |
-
-HUE/SAT apply to the final picture in every mode via a GLSL pass appended last
-(no cost at neutral hue 0°, sat 1.0). Persist in `prefs.json`.
+In SHADER mode the `SRC` slot selects what the generative is composited
+against: `clip` (the looping sampler clip) or `live` (the camera input).
+Blend defaults to `clip`; enabling blend while the camera is not already
+running will not auto-switch to live.
 
 ---
 
@@ -171,7 +183,8 @@ HUE/SAT apply to the final picture in every mode via a GLSL pass appended last
 
 **Top bar (status view):**
 - Row 1: mode name (colour-coded), `TRAIL` chip (green when on),
-  param-layer chip (`SHDR` / `FX` / `GLOBAL`), current clip name.
+  `REC` chip (red while recording, amber while saving), param-layer chip
+  (`SHDR` / `FX` / `COLOUR` / `BLEND`), current clip name.
 - Row 2, four columns: generative shader | FX shader | active blend mode | sampler play mode.
 - Below: the four parameter bars of the active layer (selected bar is orange);
   the SHDR layer adds a `BLD AMT` bar when shader-blending.
@@ -280,13 +293,23 @@ shows `RUN install-usb-import.sh`.
 
 ### Generative + FX stack
 1. Enter SHADER mode (**Enter**). Load a generative shader (4–9 or SHADERS menu).
-2. **+ / −** stacks an FX shader on top; p1–p4 keep tuning the *generative* layer.
+2. **+ / −** stacks an FX shader on top; p1–p3 keep tuning the *generative* layer.
 3. Re-entering SHADER mode clears the stack (generative alone).
 
 ### Blend a generative shader with video
 1. In SHADER mode press **/** — blend on. The shader composites with the clip
-   (or camera: SETTINGS → BLEND SRC → `live`).
-2. **\*** cycles the blend formula; `BLD AMT` (FX layer, or p5) sets the mix.
+   (default) or the live camera (BLEND layer → `SRC` → `live`).
+2. **\*** cycles the blend formula; `BLD AMT` (BLEND layer) sets the mix.
+3. FX shaders can be stacked on top of a blend with **+ / −** — the pipeline
+   is generative → blend → FX, all three live simultaneously.
+
+### Record live camera to a clip
+1. Enter LIVE mode (camera must be running).
+2. **Hold numpad 0, tap `.`** — `REC` appears in the display top bar (red chip).
+3. **Hold numpad 0, tap `.` again** — recording stops. The display shows `SAV`
+   (amber) while ffmpeg remuxes in the background; chip clears when done.
+4. The saved file appears in `clips/` as `rec_YYYYMMDD_HHMMSS.mp4` and is
+   immediately available in the BROWSER for use in SAMPLER mode.
 
 ### Echo trail
 1. Press **.** (or **000**) in any mode to toggle the trail on/off.
@@ -400,17 +423,28 @@ changed pixels reset. Best on slow footage.
 
 ### Generative shaders (SHADER mode)
 
+P4 (palette) for all shaders is edited in the **COLOUR layer** (`PAL` slot),
+not on the SHDR layer, so it is always reachable without disrupting P1–P3.
+
 | Shader | P1 | P2 | P3 | P4 |
 |---|---|---|---|---|
 | **plasma** | speed | scale | warp | palette |
-| **waves** | frequency | speed | count | hue |
-| **tunnel** | speed | segments | twist | hue |
+| **waves** | frequency | speed | count | palette |
+| **tunnel** | speed | segments | twist | palette |
 | **voronoi** | cell density | speed | edge sharpness | palette |
 | **kaleidoscope** | sides | spin | zoom | colour shift |
+| **starfield** | speed | density | trail | palette |
 
-New `.glsl` files in `shaders/` are picked up at startup; add generative ones
-to `generative_shaders` in `config.py`. Param labels come from the
-`/* comment */` after each `#define PARAM_N`.
+**starfield** — three independent warp-speed star layers (background/mid/
+foreground) radiating from centre. P2 sets the number of angular lanes (star
+count). P3 adds radial streak trails behind each star. All three layers share
+the IQ cosine palette set by P4/PAL, with each layer offset by 120° for
+distinct hues.
+
+**Adding your own shaders:** drop a `.glsl` file into `shaders/` and restart.
+The app classifies it automatically by reading its `//!DESC` line — include
+`(generative)` in the description for SHADER-mode shaders, omit it for FX.
+Param labels come from the `/* comment */` after each `#define PARAM_N`.
 
 ---
 

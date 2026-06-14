@@ -269,8 +269,7 @@ class DisplayController:
                     _kb  = getattr(inst, "kb", None)
                     _rec = getattr(inst, "recorder", None)
                     param_sig = (
-                        cfg.params.get("p1", 0.5), cfg.params.get("p2", 0.5),
-                        cfg.params.get("p3", 0.5), cfg.params.get("p4", 0.5),
+                        tuple(cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
                         cfg.fx_params.get("f1", 0.5), cfg.fx_params.get("f2", 0.5),
                         cfg.fx_params.get("f3", 0.5), cfg.fx_params.get("f4", 0.5),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
@@ -419,15 +418,22 @@ class DisplayController:
         _param_layer = getattr(_kb, "_param_layer", 0)
         _sel_idx     = getattr(_kb, "_param_idx",   0)
 
-        if _param_layer == 0:          # SHDR — generative shader params p1–p3
+        if _param_layer == 0:          # SHDR — generative shader params (all at once)
             _plabels = inst.shader.param_labels()
-            bar_items = [
-                (_plabels.get(k, k.upper()).upper()[:7],
-                 cfg.params.get(k, 0.5),
-                 f"{cfg.params.get(k, 0.5):.2f}",
-                 True)
-                for k in ("p1", "p2", "p3")
-            ] + [("—", 0.0, "—", False)]
+            all_keys = sorted(_plabels.keys())
+            bar_items = []
+            for k in all_keys:
+                raw_lbl = _plabels.get(k, k.upper())
+                lbl     = raw_lbl.upper()[:7]
+                v       = cfg.params.get(k, 0.5)
+                ul      = raw_lbl.upper()
+                if ul.endswith(' X') or ul.endswith(' Y') or ul in ('X', 'Y'):
+                    disp_v = f"{(v - 0.5) * 200:+.0f}"
+                elif ul.endswith('STARS') or ul == 'STARS':
+                    disp_v = str(max(1, round(v * 500)))
+                else:
+                    disp_v = f"{v:.2f}"
+                bar_items.append((lbl, v, disp_v, True))
         elif _param_layer == 1:        # FX — the active FX shader's own params
             _flabels = inst.shader.fx_param_labels()
             has_fx   = bool(getattr(cfg, 'current_fx', None))
@@ -438,28 +444,17 @@ class DisplayController:
                  has_fx)
                 for n in range(1, 5)
             ]
-        elif _param_layer == 2:        # COLOUR — palette / hue / sat / trl dec
-            _plabels = inst.shader.param_labels()
-            p4_lbl   = _plabels.get("p4", "PAL").upper()[:7]
-            p4_val   = cfg.params.get("p4", 0.5)
-            hue      = getattr(cfg, 'color_hue', 0.0)
-            sat      = getattr(cfg, 'color_sat', 1.0)
-            sat_max  = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
-            trl      = getattr(cfg, 'trail_decay', 0.93)
-            if mode == "SHADER":
-                bar_items = [
-                    (p4_lbl,    p4_val,          f"{p4_val:.2f}",       True),
-                    ("HUE",     hue,             f"{hue*360:.0f}°",     True),
-                    ("SAT",     sat / sat_max,   f"{sat:.2f}",          True),
-                    ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",         True),
-                ]
-            else:
-                bar_items = [
-                    ("HUE",     hue,             f"{hue*360:.0f}°",     True),
-                    ("SAT",     sat / sat_max,   f"{sat:.2f}",          True),
-                    ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",         True),
-                    ("—",       0.0,             "—",                   False),
-                ]
+        elif _param_layer == 2:        # COLOUR — hue / sat / trl dec
+            hue     = getattr(cfg, 'color_hue', 0.0)
+            sat     = getattr(cfg, 'color_sat', 1.0)
+            sat_max = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
+            trl     = getattr(cfg, 'trail_decay', 0.93)
+            bar_items = [
+                ("HUE",     hue,             f"{hue*360:.0f}°",    True),
+                ("SAT",     sat / sat_max,   f"{sat:.2f}",         True),
+                ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",        True),
+                ("—",       0.0,             "—",                  False),
+            ]
         else:                          # BLEND — compositing (shader blend / overlay)
             def _idx_frac(seq, val):
                 seq = list(seq)
@@ -488,8 +483,11 @@ class DisplayController:
                     ("—", 0.0, "—", False),
                 ]
 
+        # Tighten row spacing when more than 4 bars so they all fit on screen.
+        bar_gap = 16 if len(bar_items) > 4 else BAR_GAP
+
         for i, (ltext, fill_val, disp_val, active) in enumerate(bar_items):
-            by       = 64 + i * BAR_GAP
+            by       = 64 + i * bar_gap
             selected = active and (i == _sel_idx)
             lcolour  = C_VALUE if selected else (C_LABEL if active else C_DIVIDER)
             bcolour  = C_SEL   if selected else (C_BAR_FILL if active else C_DIVIDER)
