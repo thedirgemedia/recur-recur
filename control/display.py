@@ -267,9 +267,10 @@ class DisplayController:
                     inst = self.inst
                     cfg  = inst.cfg
                     _kb  = getattr(inst, "kb", None)
+                    _rec = getattr(inst, "recorder", None)
                     param_sig = (
                         cfg.params.get("p1", 0.5), cfg.params.get("p2", 0.5),
-                        cfg.params.get("p3", 0.5), cfg.params.get("p4", 0.5),  # p4 = palette in COLOUR layer
+                        cfg.params.get("p3", 0.5), cfg.params.get("p4", 0.5),
                         cfg.fx_params.get("f1", 0.5), cfg.fx_params.get("f2", 0.5),
                         cfg.fx_params.get("f3", 0.5), cfg.fx_params.get("f4", 0.5),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
@@ -288,6 +289,7 @@ class DisplayController:
                         getattr(cfg, "current_fx",     None),
                         round(getattr(cfg, "color_hue", 0.0), 4),
                         round(getattr(cfg, "color_sat", 1.0), 3),
+                        getattr(_rec, "status", ""),
                     )
                     img  = self._render(font_lg, font_md, font_sm)
                     data = _to_spi_bytes(img)
@@ -348,14 +350,24 @@ class DisplayController:
         else:
             d.text((139, 14), "TRAIL", font=font_sm, fill=C_HINT, anchor="mm")
 
+        # REC / SAV indicator
+        _rec_status = getattr(getattr(inst, "recorder", None), "status", "")
+        if _rec_status == "REC":
+            d.rectangle([168, 6, 202, 23], fill=(0xcc, 0x00, 0x00))
+            d.text((185, 14), "REC", font=font_sm, fill=(0xff, 0xff, 0xff), anchor="mm")
+        elif _rec_status == "SAV":
+            d.rectangle([168, 6, 202, 23], fill=(0xaa, 0x55, 0x00))
+            d.text((185, 14), "SAV", font=font_sm, fill=(0xff, 0xff, 0xff), anchor="mm")
+
         # param-layer indicator (BKSP cycles): SHDR / FX / COLOUR / BLEND
         _hdr_layer = getattr(getattr(inst, "kb", None), "_param_layer", 0)
         _hdr_lbl   = {1: "FX", 2: "COLOUR", 3: "BLEND"}.get(_hdr_layer)
+        _lx = 208   # shift right when REC/SAV chip is visible
         if _hdr_lbl:
-            d.rectangle([168, 6, 244, 23], fill=C_SEL)
-            d.text((206, 14), _hdr_lbl, font=font_sm, fill=(0, 0, 0), anchor="mm")
+            d.rectangle([_lx, 6, _lx + 76, 23], fill=C_SEL)
+            d.text((_lx + 38, 14), _hdr_lbl, font=font_sm, fill=(0, 0, 0), anchor="mm")
         else:
-            d.text((200, 14), "SHDR", font=font_sm, fill=C_LABEL, anchor="mm")
+            d.text((_lx + 32, 14), "SHDR", font=font_sm, fill=C_LABEL, anchor="mm")
 
         clip_name = os.path.basename(cfg.current_clip) if cfg.current_clip else "—"
         d.text((FB_W - 8, 12), clip_name[:20], font=font_sm, fill=C_LABEL, anchor="rm")

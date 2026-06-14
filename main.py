@@ -15,10 +15,11 @@ import threading
 import argparse
 import logging
 
-from engine.sampler import SamplerEngine
-from engine.shader  import ShaderEngine
-from engine.mixer   import MixerEngine
-from engine.usb     import UsbManager
+from engine.sampler   import SamplerEngine
+from engine.shader    import ShaderEngine
+from engine.mixer     import MixerEngine
+from engine.usb       import UsbManager
+from engine.recorder  import Recorder
 from control.keyboard import KeyboardController
 from control.midi     import MidiController
 from control.gpio     import GpioController
@@ -48,7 +49,10 @@ class RecurInstrument:
         self.osd.attach(self.sampler)
 
         # on-demand USB import (mount removable drives → copy to internal)
-        self.usb     = UsbManager(cfg)
+        self.usb      = UsbManager(cfg)
+
+        # live camera recording
+        self.recorder = Recorder(cfg)
 
         # navigable on-screen menu (SPI display)
         self.menu    = Menu(self)
@@ -311,6 +315,20 @@ class RecurInstrument:
         self.osd.show(f"TRAIL {'ON' if state else 'OFF'} ({self.cfg.trail_mode})")
         self.sampler.refresh_trail()
 
+    def record_toggle(self):
+        """Start or stop recording the live camera to a clip file.
+        Uses mpv stream-record (no device conflict). On stop, ffmpeg remuxes
+        to MP4 in the background; the clip appears in BROWSER when done."""
+        if self.sampler._active_source != 'camera':
+            self.osd.show("RECORD: no camera active")
+            return
+        if self.recorder.is_recording:
+            self.recorder.stop(self.sampler)
+            self.osd.show("REC STOP — saving…")
+        else:
+            self.recorder.start(self.sampler)
+            self.osd.show("REC")
+
     def trail_cycle_mode(self, direction=1):
         """Cycle trail blend mode."""
         modes = self.cfg.TRAIL_MODES
@@ -387,6 +405,10 @@ class RecurInstrument:
 
     def _teardown(self):
         log.info("shutting down…")
+        try:
+            self.recorder.teardown(self.sampler)
+        except Exception as e:
+            log.debug("recorder teardown error: %s", e)
         try:
             self.usb.unmount_all()
         except Exception as e:

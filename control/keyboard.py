@@ -120,6 +120,7 @@ class KeyboardController:
 
         # 000 detection: track recent KP0 timestamps.
         self._kp0_history = []
+        self._key0_held   = False   # True while KP0 is physically depressed
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -174,15 +175,24 @@ class KeyboardController:
                     if event.type != ecodes.EV_KEY:
                         continue
                     key = categorize(event)
-                    if key.keystate != key.key_down:
-                        continue
                     code = key.keycode if isinstance(key.keycode, str) \
                                        else key.keycode[0]
                     name = NUMPAD_MAP.get(code)
                     if name is None:
                         continue
 
+                    # Track KP0 hold state using key-up events so the
+                    # hold-0 + tap-dot combo can be detected below.
+                    if name == "0" and key.keystate == key.key_up:
+                        self._key0_held = False
+                        continue
+
+                    # All other processing is key-down only.
+                    if key.keystate != key.key_down:
+                        continue
+
                     if name == "0":
+                        self._key0_held = True
                         now = time.monotonic()
                         self._kp0_history = [t for t in self._kp0_history
                                              if now - t < TRIPLE_ZERO_WINDOW]
@@ -194,6 +204,13 @@ class KeyboardController:
                         threading.Timer(TRIPLE_ZERO_WINDOW + 0.01,
                                         self._maybe_emit_single_zero,
                                         args=(now,)).start()
+                        continue
+
+                    # Hold-0 + tap-dot → record toggle.
+                    # Clear kp0_history so the pending 0 timer becomes a no-op.
+                    if name == "." and self._key0_held:
+                        self._kp0_history.clear()
+                        self._dispatch("REC")
                         continue
 
                     self._dispatch(name)
@@ -346,6 +363,8 @@ class KeyboardController:
             inst.trail_toggle()
         elif name == ".":
             inst.trail_toggle()
+        elif name == "REC":
+            inst.record_toggle()
 
     def _avail_layers(self):
         """Param layers BKSP can reach in the current mode. SHDR (generative)
