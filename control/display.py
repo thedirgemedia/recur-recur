@@ -269,13 +269,17 @@ class DisplayController:
                     _kb  = getattr(inst, "kb", None)
                     param_sig = (
                         cfg.params.get("p1", 0.5), cfg.params.get("p2", 0.5),
-                        cfg.params.get("p3", 0.5), cfg.params.get("p4", 0.5),
+                        cfg.params.get("p3", 0.5), cfg.params.get("p4", 0.5),  # p4 = palette in COLOUR layer
+                        cfg.fx_params.get("f1", 0.5), cfg.fx_params.get("f2", 0.5),
+                        cfg.fx_params.get("f3", 0.5), cfg.fx_params.get("f4", 0.5),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
-                        getattr(cfg, "overlay_offset_frames", 8),
                         round(getattr(cfg, "overlay_blend_amount",  1.0) or 1.0, 2),
                         round(getattr(cfg, "trail_decay",           0.93), 3),
                         getattr(cfg, "overlay_on",    False),
+                        getattr(cfg, "overlay_mode",  ""),
                         getattr(cfg, "shader_blend",  False),
+                        getattr(cfg, "shader_blend_mode",   ""),
+                        getattr(cfg, "shader_blend_source", ""),
                         getattr(cfg, "trail_on",      False),
                         getattr(_kb, "_param_idx",   0),
                         getattr(_kb, "_param_layer", 0),
@@ -344,14 +348,12 @@ class DisplayController:
         else:
             d.text((139, 14), "TRAIL", font=font_sm, fill=C_HINT, anchor="mm")
 
-        # param-layer indicator (BKSP cycles): SHDR p1-p4 / FX / COLOR
+        # param-layer indicator (BKSP cycles): SHDR / FX / COLOUR / BLEND
         _hdr_layer = getattr(getattr(inst, "kb", None), "_param_layer", 0)
-        if _hdr_layer == 1:
-            d.rectangle([168, 6, 232, 23], fill=C_SEL)
-            d.text((200, 14), "FX", font=font_sm, fill=(0, 0, 0), anchor="mm")
-        elif _hdr_layer == 2:
-            d.rectangle([168, 6, 232, 23], fill=C_SEL)
-            d.text((200, 14), "COLOR", font=font_sm, fill=(0, 0, 0), anchor="mm")
+        _hdr_lbl   = {1: "FX", 2: "COLOUR", 3: "BLEND"}.get(_hdr_layer)
+        if _hdr_lbl:
+            d.rectangle([168, 6, 244, 23], fill=C_SEL)
+            d.text((206, 14), _hdr_lbl, font=font_sm, fill=(0, 0, 0), anchor="mm")
         else:
             d.text((200, 14), "SHDR", font=font_sm, fill=C_LABEL, anchor="mm")
 
@@ -405,37 +407,74 @@ class DisplayController:
         _param_layer = getattr(_kb, "_param_layer", 0)
         _sel_idx     = getattr(_kb, "_param_idx",   0)
 
-        if _param_layer == 0:
+        if _param_layer == 0:          # SHDR — generative shader params p1–p3
             _plabels = inst.shader.param_labels()
             bar_items = [
                 (_plabels.get(k, k.upper()).upper()[:7],
                  cfg.params.get(k, 0.5),
                  f"{cfg.params.get(k, 0.5):.2f}",
                  True)
-                for k in ("p1", "p2", "p3", "p4")
-            ]
-        elif _param_layer == 2:
-            hue = getattr(cfg, 'color_hue', 0.0)
-            sat = getattr(cfg, 'color_sat', 1.0)
-            sat_max = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
+                for k in ("p1", "p2", "p3")
+            ] + [("—", 0.0, "—", False)]
+        elif _param_layer == 1:        # FX — the active FX shader's own params
+            _flabels = inst.shader.fx_param_labels()
+            has_fx   = bool(getattr(cfg, 'current_fx', None))
             bar_items = [
-                ("HUE", hue,           f"{hue*360:.0f}°", True),
-                ("SAT", sat / sat_max, f"{sat:.2f}",           True),
-                ("—",   0.0,           "—",                    False),
-                ("—",   0.0,           "—",                    False),
+                (_flabels.get(f"f{n}", f"F{n}").upper()[:7],
+                 cfg.fx_params.get(f"f{n}", 0.5),
+                 f"{cfg.fx_params.get(f'f{n}', 0.5):.2f}" if has_fx else "—",
+                 has_fx)
+                for n in range(1, 5)
             ]
-        else:
-            blend_amt  = getattr(cfg, 'shader_blend_amount', 0.5)
-            ovl_raw    = getattr(cfg, 'overlay_offset_frames', 8)
-            ovl_norm   = (ovl_raw - 1) / 31.0
-            trl_decay  = getattr(cfg, 'trail_decay', 0.93)
-            trl_norm   = (trl_decay - 0.80) / 0.19   # map 0.80–0.99 → 0–1
-            bar_items = [
-                ("BLD AMT", blend_amt, f"{blend_amt:.2f}", True),
-                ("OVL FRM", ovl_norm,  str(ovl_raw),       True),
-                ("TRL DEC", trl_norm,  f"{trl_decay:.2f}", True),
-                ("—",       0.0,       "—",                False),
-            ]
+        elif _param_layer == 2:        # COLOUR — palette / hue / sat / trl dec
+            _plabels = inst.shader.param_labels()
+            p4_lbl   = _plabels.get("p4", "PAL").upper()[:7]
+            p4_val   = cfg.params.get("p4", 0.5)
+            hue      = getattr(cfg, 'color_hue', 0.0)
+            sat      = getattr(cfg, 'color_sat', 1.0)
+            sat_max  = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
+            trl      = getattr(cfg, 'trail_decay', 0.93)
+            if mode == "SHADER":
+                bar_items = [
+                    (p4_lbl,    p4_val,          f"{p4_val:.2f}",       True),
+                    ("HUE",     hue,             f"{hue*360:.0f}°",     True),
+                    ("SAT",     sat / sat_max,   f"{sat:.2f}",          True),
+                    ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",         True),
+                ]
+            else:
+                bar_items = [
+                    ("HUE",     hue,             f"{hue*360:.0f}°",     True),
+                    ("SAT",     sat / sat_max,   f"{sat:.2f}",          True),
+                    ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",         True),
+                    ("—",       0.0,             "—",                   False),
+                ]
+        else:                          # BLEND — compositing (shader blend / overlay)
+            def _idx_frac(seq, val):
+                seq = list(seq)
+                i = seq.index(val) if val in seq else 0
+                return i / max(1, len(seq) - 1)
+            if mode == "SHADER":
+                modes = getattr(cfg, 'SHADER_BLEND_MODES', ())
+                amt   = getattr(cfg, 'shader_blend_amount', 0.5)
+                srcs  = getattr(cfg, 'SHADER_BLEND_SOURCES', ())
+                bar_items = [
+                    ("MODE",    _idx_frac(modes, cfg.shader_blend_mode),
+                     cfg.shader_blend_mode.upper()[:9], True),
+                    ("BLD AMT", amt, f"{amt*100:.0f}%", True),
+                    ("SRC",     _idx_frac(srcs, cfg.shader_blend_source),
+                     cfg.shader_blend_source.upper(), True),
+                    ("—",       0.0, "—", False),
+                ]
+            else:
+                modes = getattr(cfg, 'OVERLAY_MODES', ())
+                opc   = getattr(cfg, 'overlay_blend_amount', 1.0)
+                bar_items = [
+                    ("OVL MODE", _idx_frac(modes, cfg.overlay_mode),
+                     cfg.overlay_mode.upper()[:9], True),
+                    ("OVL OPC",  opc, f"{opc:.2f}", True),
+                    ("—", 0.0, "—", False),
+                    ("—", 0.0, "—", False),
+                ]
 
         for i, (ltext, fill_val, disp_val, active) in enumerate(bar_items):
             by       = 64 + i * BAR_GAP
@@ -450,47 +489,6 @@ class DisplayController:
                 d.rectangle([BAR_X, by + 2, BAR_X + filled, by + BAR_H + 2],
                             fill=bcolour)
             d.text((BAR_X + BAR_W + 8, by), disp_val, font=font_sm, fill=lcolour)
-
-        # ── p5: blend amount bar (shown only when blend/overlay is active) ───
-        _overlay_on    = getattr(cfg, 'overlay_on',    False)
-        _shader_blend  = getattr(cfg, 'shader_blend',  False)
-        if _shader_blend or _overlay_on:
-            by5     = 64 + 4 * BAR_GAP   # position after p4
-            p5_sel  = (_param_layer == 0 and _sel_idx == 4)
-            if _shader_blend:
-                p5_val  = getattr(cfg, 'shader_blend_amount', 0.5)
-                p5_disp = f"{p5_val * 100:.0f}%"
-                p5_lbl  = "BLD AMT"
-            else:
-                ovl_raw = getattr(cfg, 'overlay_offset_frames', 8)
-                p5_val  = (ovl_raw - 1) / 31.0
-                p5_disp = f"{ovl_raw}fr"
-                p5_lbl  = "OVL DLY"
-            p5_lc   = C_VALUE if p5_sel else C_ON
-            p5_bc   = C_SEL   if p5_sel else C_ON
-            d.text((10, by5), p5_lbl, font=font_sm, fill=p5_lc)
-            d.rectangle([BAR_X, by5 + 2, BAR_X + BAR_W, by5 + BAR_H + 2],
-                        fill=C_BAR_TRACK)
-            filled5 = max(1, int(BAR_W * p5_val))
-            d.rectangle([BAR_X, by5 + 2, BAR_X + filled5, by5 + BAR_H + 2],
-                        fill=p5_bc)
-            d.text((BAR_X + BAR_W + 8, by5), p5_disp, font=font_sm, fill=p5_lc)
-
-        # ── p6: overlay opacity (shown only when overlay is active) ──────────
-        if _overlay_on:
-            by6     = 64 + 5 * BAR_GAP   # position after p5
-            p6_sel  = (_param_layer == 0 and _sel_idx == 5)
-            p6_val  = getattr(cfg, 'overlay_blend_amount', 1.0)
-            p6_disp = f"{p6_val:.2f}"
-            p6_lc   = C_VALUE if p6_sel else C_ON
-            p6_bc   = C_SEL   if p6_sel else C_ON
-            d.text((10, by6), "OVL OPC", font=font_sm, fill=p6_lc)
-            d.rectangle([BAR_X, by6 + 2, BAR_X + BAR_W, by6 + BAR_H + 2],
-                        fill=C_BAR_TRACK)
-            filled6 = max(1, int(BAR_W * p6_val))
-            d.rectangle([BAR_X, by6 + 2, BAR_X + filled6, by6 + BAR_H + 2],
-                        fill=p6_bc)
-            d.text((BAR_X + BAR_W + 8, by6), p6_disp, font=font_sm, fill=p6_lc)
 
         # ── SAMPLER: in/out playhead timeline (pinned to bottom) ─────────────
         if mode == "SAMPLER":

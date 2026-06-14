@@ -88,7 +88,7 @@ CC_ACTIONS: dict[int, str] = {
 # "Toggle" targets fire on val > 63; "cycle" targets fire on any value.
 MIDI_TARGETS: list[str] = [
     "p1", "p2", "p3", "p4",
-    "blend_amt", "ovl_frames", "trl_decay",
+    "blend_amt", "ovl_opacity", "trl_decay",
     "overlay_toggle", "overlay_cycle",
     "shader_blend_toggle", "shader_blend_cycle",
     "shader_next", "shader_prev",
@@ -103,7 +103,7 @@ MIDI_TARGET_LABELS: dict[str, str] = {
     "p3":                  "P3",
     "p4":                  "P4",
     "blend_amt":           "BLD AMT",
-    "ovl_frames":          "OVL FRM",
+    "ovl_opacity":         "OVL OPC",
     "trl_decay":           "TRL DEC",
     "overlay_toggle":      "OVL TOG",
     "overlay_cycle":       "OVL CYC",
@@ -126,7 +126,7 @@ MIDI_DEFAULTS: dict[str, int | None] = {
     "p3":                  3,
     "p4":                  4,
     "blend_amt":           None,
-    "ovl_frames":          None,
+    "ovl_opacity":         None,
     "trl_decay":           None,
     "overlay_toggle":      64,
     "overlay_cycle":       65,
@@ -291,7 +291,7 @@ class MidiController:
     def _dispatch_target(self, target: str, val: int):
         """Execute a named target with a raw CC value (0–127).
 
-        Continuous targets (p1-p4, blend_amt, ovl_frames, trl_decay) map
+        Continuous targets (p1-p4, blend_amt, ovl_opacity, trl_decay) map
         0–127 linearly to their natural range.  Toggle targets fire on
         val > 63; cycle targets fire on any value.
         """
@@ -307,8 +307,8 @@ class MidiController:
             if cfg.shader_blend:
                 inst.shader.reapply()
 
-        elif target == "ovl_frames":
-            cfg.overlay_offset_frames = max(1, min(32, round(val / 127.0 * 31) + 1))
+        elif target == "ovl_opacity":
+            cfg.overlay_blend_amount = round(val / 127.0, 3)
             if getattr(cfg, 'overlay_on', False):
                 inst.sampler.refresh_overlay()
 

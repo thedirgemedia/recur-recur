@@ -55,8 +55,11 @@ class Config:
         self.camera_height = 360
         self.CAMERA_RESOLUTIONS = [(320, 180), (640, 360), (1280, 720)]
 
-        # shader params, live-tweakable (mirrors recur's 4-knob layout)
+        # Generative-shader params, live-tweakable (mirrors recur's 4-knob layout)
         self.params = {"p1": 0.5, "p2": 0.5, "p3": 0.5, "p4": 0.5}
+        # FX-shader params, kept separate so the FX (which can run stacked on a
+        # generative shader) is tunable independently of the generative's p1–p4.
+        self.fx_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5}
 
         # currently selected files
         self.current_clip   = None
@@ -73,7 +76,7 @@ class Config:
 
         # User-defined MIDI CC assignments — map target name → CC number (0–127).
         # None means "use the built-in default from midi.py".
-        # Targets: p1 p2 p3 p4  blend_amt ovl_frames trl_decay
+        # Targets: p1 p2 p3 p4  blend_amt ovl_opacity trl_decay
         #          overlay_toggle overlay_cycle
         #          shader_blend_toggle shader_blend_cycle
         #          shader_next shader_prev trail_toggle
@@ -89,17 +92,20 @@ class Config:
         self.shader_blend        = False
         self.shader_blend_mode   = "difference"
         self.shader_blend_amount = 0.5          # 0 = all video, 1 = full blend effect
-        self.SHADER_BLEND_MODES  = ("difference", "addition", "multiply",
-                                    "screen", "mix")
+        self.SHADER_BLEND_MODES  = ("mix", "screen", "addition", "multiply",
+                                    "overlay", "hardlight", "softlight",
+                                    "dodge", "burn", "lighten", "darken",
+                                    "difference", "exclusion", "displace")
         # Source for shader blend: "clip" uses the current sampler clip,
         # "live" uses the CSI/USB camera feed
         self.shader_blend_source  = "clip"
         self.SHADER_BLEND_SOURCES = ("clip", "live")
 
-        # V-overlay state (self-blend with time-shifted version of clip)
+        # V-overlay state: self-blend of the current frame using overlay_mode,
+        # mixed at overlay_blend_amount (OVL OPC). No time delay — echoes are
+        # the trail's job now.
         self.overlay_on   = False
         self.overlay_mode = "difference"   # difference | addition | multiply | screen | negate
-        self.overlay_offset_frames = 8     # how many frames back to mix with
         self.overlay_blend_amount  = 1.0   # blend opacity 0–1 (OVL OPC)
         self.OVERLAY_MODES = ("difference", "addition", "multiply",
                               "screen", "negate")
@@ -150,7 +156,7 @@ class Config:
 
     # Scalar cfg attributes that are directly round-tripped to prefs.json.
     _PREFS_ATTRS = [
-        'overlay_on', 'overlay_mode', 'overlay_offset_frames', 'overlay_blend_amount',
+        'overlay_on', 'overlay_mode', 'overlay_blend_amount',
         'trail_on', 'trail_mode', 'trail_decay', 'trail_delay_s',
         'trail_blend_type', 'trail_step_weights', 'trail_mode_opacity',
         'color_hue', 'color_sat',
@@ -175,6 +181,8 @@ class Config:
                 setattr(self, key, data[key])
         if 'params' in data:
             self.params.update(data['params'])
+        if 'fx_params' in data:
+            self.fx_params.update(data['fx_params'])
         if 'clip_slots' in data:
             self.clip_slots = {int(k): v for k, v in data['clip_slots'].items()}
         if 'shader_slots' in data:
@@ -186,6 +194,7 @@ class Config:
     def save_prefs(self, sampler_mode=None):
         data = {key: getattr(self, key, None) for key in self._PREFS_ATTRS}
         data['params']       = dict(self.params)
+        data['fx_params']    = dict(self.fx_params)
         data['clip_slots']   = {str(k): v for k, v in self.clip_slots.items()}
         data['shader_slots'] = {str(k): v for k, v in self.shader_slots.items()}
         if sampler_mode is not None:

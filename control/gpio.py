@@ -88,8 +88,7 @@ class GpioController:
         period = 1.0 / POLL_HZ
         last   = self._last
         knobs  = self.knobs
-        set_p  = self.inst.shader.set_param
-        keys   = PARAM_KEYS
+        sh     = self.inst.shader
         while not self._stop.is_set():
             t0 = time.monotonic()
             for i in range(len(knobs)):
@@ -99,7 +98,11 @@ class GpioController:
                     continue
                 if abs(v - last[i]) > DEADBAND:
                     last[i] = v
-                    set_p(keys[i], v)
+                    # generative params in SHADER mode, else the active FX's
+                    if self.inst.mode == "SHADER":
+                        sh.set_param(PARAM_KEYS[i], v)
+                    else:
+                        sh.set_fx_param(f"f{i + 1}", v)
             # sleep the remainder of the period (drift-correcting)
             dt = time.monotonic() - t0
             if dt < period:

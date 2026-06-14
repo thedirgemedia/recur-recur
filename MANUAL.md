@@ -89,7 +89,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **Num** | Toggle the menu (while the menu is open, no key reaches the video) |
 | **Enter** | Cycle instrument mode (SAMPLER → SHADER → LIVE → …; LIVE skipped if disabled in SETTINGS) |
 | **000** or **.** | Toggle the temporal trail (echo time delay) |
-| **Bksp** | Cycle param layer: SHADER params → FX controls → COLOUR (hue/sat). The top-bar chip shows `SHDR` / `FX` / `COLOR` |
+| **Bksp** | Cycle param layer for this mode: SHADER mode = SHDR → FX → GLOBAL; SAMPLER/LIVE = FX → GLOBAL. Top-bar chip shows `SHDR` / `FX` / `GLOBAL` |
 | **1** | Cycle the selected parameter (see *Parameter editing*) |
 | **2** / **3** | Selected parameter − / + |
 | **0** | In/out points: 1st press = IN, 2nd = OUT, 3rd = clear |
@@ -110,7 +110,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **4–9** | Load the generative shader assigned to that slot (assign in SHADERS menu) |
 | **+** / **−** | Cycle FX shader *stacked on top of* the generative (generative stays loaded) |
 | **/** | Toggle shader blend (composite generative with clip or camera) |
-| **\*** | Cycle shader blend mode (difference → addition → multiply → screen → mix) |
+| **\*** | Cycle shader blend mode (mix, screen, add, multiply, overlay, hardlight, softlight, dodge, burn, lighten, darken, difference, exclusion, **displace**) |
 
 > Note the pattern: **/** always *toggles* an effect, **\*** always *cycles its
 > mode* — in both mode families.
@@ -119,50 +119,51 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 
 ## Parameter editing
 
-**Bksp** cycles between three parameter layers. The active layer is shown in
-the SPI display top bar (`SHDR` grey = shader layer, `FX` orange chip = FX
-layer, `COLOR` orange chip = colour layer) and as the horizontal bars below
-the header.
+**Bksp** cycles the parameter layers available in the current mode. The active
+layer shows in the SPI top bar (`SHDR` / `FX` / `BLEND` / `GLOBAL` chip) and as
+the bars below the header. Key **1** cycles the selection within a layer;
+**2/3** step (or cycle, for the BLEND mode/source slots); knobs and MIDI feed
+the same params.
 
-### Layer SHDR — shader parameters
+- **SHADER mode:** SHDR → FX → BLEND → GLOBAL
+- **SAMPLER / LIVE mode:** FX → BLEND → GLOBAL  (no generative shader → SHDR skipped)
 
-Key **1** cycles the selection; **2/3** step ±0.1. The selectable list grows
-with active effects:
+### Layer SHDR — generative shader params *(SHADER mode only)*
 
-| Slot | Shown when | Controls |
-|---|---|---|
-| p1–p4 | always | active shader's parameters (labels from the shader source) |
-| p5 = `BLD AMT` | shader blend on | blend mix, 0 = all video … 1 = full effect |
-| p5 = `OVL DLY` | overlay on (no blend) | overlay echo depth, 1–32 frames (±1 per press) |
-| p6 = `OVL OPC` | overlay on | overlay opacity 0–1 |
+p1–p4 = the generative shader's parameters (labels from its source). Loading a
+generative resets them to its authored defaults.
 
-Loading a shader resets p1–p4 to that shader's authored defaults; knob/MIDI
-movement then overrides them.
+### Layer FX — the active FX shader's own params
 
-### Layer FX — effect controls
+Shows the four parameters of the **currently selected FX** (feedback, bitcrush,
+glitch, grain, vhs …), with labels read from the shader source — e.g. glitch =
+`SLICE INTENSITY / UPDATE RATE / CHANNEL CORRUPT / BLOCK DENSITY`. Kept separate
+from the generative's p1–p4, so the FX is tunable even when stacked on a
+generative in SHADER mode. Cycling the FX (`+`/`-`) reloads its defaults.
+Persists in `prefs.json` (`fx_params`).
 
-Key **1** cycles `BLD AMT` → `OVL FRM` → `TRL DEC`; **2/3** step:
+### Layer BLEND — compositing controls
+
+The full editing surface for the active blend (what `*` quick-cycles). **2/3**
+cycles the mode or steps the amount:
+
+| Mode | Slots |
+|---|---|
+| **SHADER** | `MODE` (shader↔video blend, 14 modes incl. displace), `BLD AMT`, `SRC` (clip/live) |
+| **SAMPLER / LIVE** | `OVL MODE` (5 self-blend modes), `OVL OPC` |
+
+### Layer GLOBAL — master adjustments (all modes)
+
+Key **1** cycles `HUE` → `SAT` → `TRL DEC`; **2/3** step:
 
 | Param | Range | Meaning |
 |---|---|---|
-| `BLD AMT` | 0–1 | shader blend mix strength |
-| `OVL FRM` | 1–32 | overlay echo depth in frames |
+| `HUE` | 0–360° | global hue rotation (0 = no shift); wraps. GLSL colour pass |
+| `SAT` | 0–2 | global saturation (0 = greyscale, 1 = normal, 2 = vivid) |
 | `TRL DEC` | 0.80–0.99 | trail persistence (0.80 short ghost → 0.99 long tail) |
 
-### Layer COLOR — global colour
-
-Applies to the **final picture in every mode** (video, generative shader, or
-camera) via a GLSL pass appended last. Reach it with **Bksp** (SHADER → FX →
-COLOR); key **1** cycles `HUE` → `SAT`; **2/3** step. This is the only place
-colour is tuned — it is not duplicated on the SETTINGS menu.
-
-| Param | Range | Meaning |
-|---|---|---|
-| `HUE` | 0–360° | hue rotation (0 = no shift); wraps around |
-| `SAT` | 0–2 | saturation (0 = greyscale, 1 = normal, 2 = vivid) |
-
-At neutral (hue 0°, sat 1.0) no colour pass is added, so there is no cost when
-unused. Values persist in `prefs.json` (`color_hue`, `color_sat`).
+HUE/SAT apply to the final picture in every mode via a GLSL pass appended last
+(no cost at neutral hue 0°, sat 1.0). Persist in `prefs.json`.
 
 ---
 
@@ -170,10 +171,10 @@ unused. Values persist in `prefs.json` (`color_hue`, `color_sat`).
 
 **Top bar (status view):**
 - Row 1: mode name (colour-coded), `TRAIL` chip (green when on),
-  param-layer chip (`SHDR` grey / `FX` orange), current clip name.
+  param-layer chip (`SHDR` / `FX` / `GLOBAL`), current clip name.
 - Row 2, four columns: generative shader | FX shader | active blend mode | sampler play mode.
-- Below: the four parameter bars of the active layer (selected bar is orange),
-  plus conditional `BLD AMT` / `OVL DLY` / `OVL OPC` bars.
+- Below: the four parameter bars of the active layer (selected bar is orange);
+  the SHDR layer adds a `BLD AMT` bar when shader-blending.
 - SAMPLER mode only: clip timeline at the bottom — white tick = playhead,
   green tick = IN point, amber tick = OUT point, tinted region = active loop.
 
@@ -347,17 +348,23 @@ textures between frames (verified with controlled render tests), so it cannot
 be done on this hardware. Toggling the trail in SHADER mode shows
 `TRAIL N/A IN SHADER` and does nothing. The trail is a SAMPLER / LIVE feature.
 
-### V-overlay — self-blend smear (`/` in SAMPLER/LIVE)
-`split → lagfun(decay = 1 − 1/frames) → blend` on the luma plane (chroma
-passes through clean, like the trail). A per-frame feedback smear:
-`OVL FRM` (1–32) sets the effective memory, `OVL OPC` the blend opacity.
-Modes: difference, addition, multiply, screen, negate. Blocked in SHADER mode
+### V-overlay — self-blend (`/` in SAMPLER/LIVE)
+`split → blend` of the current frame with itself on the luma plane (chroma
+passes through clean). A stylising blend — e.g. `screen` brightens, `multiply`
+darkens — with **no time delay** (temporal echoes are the trail's job now).
+`OVL OPC` (0–1) is the blend opacity. Modes: difference, addition, multiply,
+screen, negate (`difference` self-blends to black). Blocked in SHADER mode
 (the shader pipeline owns the picture).
 
 ### Shader blend (`/` in SHADER)
 Two-pass GLSL composite: the generative output is saved (`//!SAVE gen_out`)
-and a second hook mixes it with the video by formula + `BLD AMT`.
-Modes: difference, addition, multiply, screen, mix.
+and a second hook composites it with the video, scaled by `BLD AMT`.
+The full W3C/Photoshop separable set: `mix` (normal), `screen`, `addition`,
+`multiply`, `overlay`, `hardlight`, `softlight`, `dodge`, `burn`, `lighten`,
+`darken`, `difference`, `exclusion`. Plus **`displace`** — a Resolume-style
+refraction where the shader's R/G channels warp the video like textured glass
+(`BLD AMT` scales the warp, ±~95 px). The punchy ones (hardlight, overlay,
+vivid dodge/burn, displace) read far stronger than the gentle screen/multiply.
 
 ---
 
@@ -447,7 +454,7 @@ work unconfigured:
 | 80 / 82 / 83 | mode SAMPLER / SHADER / LIVE |
 | 81 | toggle trail |
 
-All targets, plus `BLD AMT` / `OVL FRM` / `TRL DEC` (no default CC), can be
+All targets, plus `BLD AMT` / `OVL OPC` / `TRL DEC` (no default CC), can be
 rebound from the MIDI menu page.
 
 **Notes:** 120/122/123 set mode SAMPLER/SHADER/LIVE; any other note triggers

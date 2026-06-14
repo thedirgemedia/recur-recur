@@ -569,14 +569,19 @@ class Menu:
         # (Colour hue/saturation live on their own Bksp param layer — COLOR —
         #  not here, so the perform colour page is the single place to tune it.)
 
-        # params — labels come from the loaded shader's /* comment */ annotations
-        # so they always reflect the active shader (e.g. "speed", "scale", etc.)
-        param_names = inst.shader.param_labels()
-        for key in ("p1", "p2", "p3", "p4"):
-            label = param_names.get(key, key.upper()).upper()
+        # params — generative p1–p4 in SHADER mode, otherwise the active FX's
+        # f1–f4. Labels come from that shader's /* comment */ annotations.
+        if inst.mode == "SHADER":
+            pkeys, pvals = ("p1", "p2", "p3", "p4"), cfg.params
+            plabels = inst.shader.param_labels()
+        else:
+            pkeys, pvals = ("f1", "f2", "f3", "f4"), cfg.fx_params
+            plabels = inst.shader.fx_param_labels()
+        for key in pkeys:
+            label = plabels.get(key, key.upper()).upper()
             items.append(_Item(
                 label,
-                (lambda k: (lambda: f"{cfg.params.get(k, 0.5):.2f}"))(key),
+                (lambda k, v: (lambda: f"{v.get(k, 0.5):.2f}"))(key, pvals),
                 adjust=(lambda k: (lambda d: self._step_param(k, d * PARAM_STEP)))(key),
                 select=(lambda k: (lambda: None))(key)))
 
@@ -604,10 +609,15 @@ class Menu:
 
     def _step_param(self, key, delta):
         cfg = self.inst.cfg
-        cur = cfg.params.get(key, 0.5)
+        is_fx = key.startswith("f")
+        vals  = cfg.fx_params if is_fx else cfg.params
+        cur = vals.get(key, 0.5)
         new = max(0.0, min(1.0, round(cur + delta, 3)))
         if new != cur:
-            self.inst.shader.set_param(key, new)
+            if is_fx:
+                self.inst.shader.set_fx_param(key, new)
+            else:
+                self.inst.shader.set_param(key, new)
 
     # ───────────────────────────────────────────────────────── rendering
     def render(self, img, draw, font_lg, font_md, font_sm, W, H, palette):

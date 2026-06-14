@@ -92,16 +92,14 @@ NUMPAD_MAP = {
 TRIPLE_ZERO_WINDOW = 0.15   # seconds
 PARAM_STEP = 0.1
 
-# FX-layer slots exposed when BKSP cycles to the FX param view
-_FX_PARAMS = ("blend_amt", "ovl_frames", "trl_decay", None)
-_FX_LABELS = {"blend_amt": "BLD AMT", "ovl_frames": "OVL FRM", "trl_decay": "TRL DEC"}
-
-# COLOUR-layer slots (global hue / saturation), the third BKSP param view
-_COLOR_PARAMS = ("hue", "sat")
-_COLOR_LABELS = {"hue": "HUE", "sat": "SAT"}
-
-# BKSP cycles through these param views (2/3 keys adjust the selected slot)
-_PARAM_LAYERS = ("SHDR", "FX", "COLOR")
+# Param layers (indices). BKSP cycles the ones available in the current mode:
+#   0 SHDR    generative shader params p1–p3              (SHADER mode only)
+#   1 FX      the active FX shader's own params f1–f4
+#   2 COLOUR  palette (p4, SHADER only) + hue / sat / trail decay
+#   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
+_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND")
+_BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
+_COLOUR_LABELS = {"p4": "PAL", "hue": "HUE", "sat": "SAT", "trl_decay": "TRL DEC"}
 
 
 class KeyboardController:
@@ -114,7 +112,7 @@ class KeyboardController:
         # Which parameter the 2/3 keys currently adjust. BKSP cycles the layer:
         # 0 = shader p1-p4, 1 = FX controls, 2 = COLOUR (hue/sat).
         self._param_layer = 0
-        self._param_keys  = ("p1", "p2", "p3", "p4")
+        self._param_keys  = ("p1", "p2", "p3")   # p4 lives in COLOUR layer
         self._param_idx   = 0
 
         # in/out point stage: 0=waiting for IN, 1=waiting for OUT, 2=waiting for clear
@@ -296,38 +294,33 @@ class KeyboardController:
             else:
                 inst.overlay_cycle_mode(+1)
         elif name == "BKSP":
-            self._param_layer = (self._param_layer + 1) % len(_PARAM_LAYERS)
+            layers = self._avail_layers()
+            cur = self._param_layer if self._param_layer in layers else layers[0]
+            self._param_layer = layers[(layers.index(cur) + 1) % len(layers)]
             self._param_idx = 0
             inst.osd.show(f"PARAMS: {_PARAM_LAYERS[self._param_layer]}")
         elif name == "1":
-            if self._param_layer == 2:
-                self._param_idx = (self._param_idx + 1) % len(_COLOR_PARAMS)
-                inst.osd.show(f"COLOR: {_COLOR_LABELS[_COLOR_PARAMS[self._param_idx]]}")
-            elif self._param_layer == 0:
-                cfg         = inst.cfg
-                _overlay_on   = getattr(cfg, 'overlay_on',   False)
-                _blend_active = _overlay_on or getattr(cfg, 'shader_blend', False)
-                if _overlay_on:
-                    max_idx = 6
-                elif _blend_active:
-                    max_idx = 5
+            if self._param_layer == 3:          # BLEND: compositing controls
+                slots = self._blend_slots()
+                self._param_idx = (self._param_idx + 1) % len(slots)
+                inst.osd.show(f"BLEND: {_BLEND_LABELS[slots[self._param_idx]]}")
+            elif self._param_layer == 2:        # COLOUR: palette / hue / sat / trl dec
+                slots = self._colour_slots()
+                self._param_idx = (self._param_idx + 1) % len(slots)
+                slot = slots[self._param_idx]
+                if slot == "p4":
+                    lbl = inst.shader.param_labels().get("p4", "PAL")
+                    inst.osd.show(f"COLOUR: {lbl.upper()}")
                 else:
-                    max_idx = 4
-                self._param_idx = (self._param_idx + 1) % max_idx
-                if self._param_idx < 4:
-                    inst.osd.show(f"PARAM: {self._param_keys[self._param_idx].upper()}")
-                    log.info("selected param -> %s", self._param_keys[self._param_idx])
-                elif self._param_idx == 4:
-                    lbl = "BLD AMT" if getattr(cfg, 'shader_blend', False) else "OVL DLY"
-                    inst.osd.show(f"PARAM: {lbl}")
-                    log.info("selected param -> blend/ovl")
-                else:
-                    inst.osd.show("PARAM: OVL OPC")
-                    log.info("selected param -> ovl opacity")
-            else:
-                n = sum(1 for k in _FX_PARAMS if k is not None)
-                self._param_idx = (self._param_idx + 1) % n
-                inst.osd.show(f"FX: {_FX_LABELS.get(_FX_PARAMS[self._param_idx], '?')}")
+                    inst.osd.show(f"COLOUR: {_COLOUR_LABELS[slot]}")
+            elif self._param_layer == 1:        # FX: active FX's own params f1–f4
+                self._param_idx = (self._param_idx + 1) % 4
+                lbls = inst.shader.fx_param_labels()
+                key  = f"f{self._param_idx + 1}"
+                inst.osd.show(f"FX: {lbls.get(key, key.upper()).upper()}")
+            else:                               # SHDR: generative p1–p3
+                self._param_idx = (self._param_idx + 1) % len(self._param_keys)
+                inst.osd.show(f"PARAM: {self._param_keys[self._param_idx].upper()}")
         elif name == "2":
             self._step_param(-PARAM_STEP)
         elif name == "3":
@@ -354,91 +347,120 @@ class KeyboardController:
         elif name == ".":
             inst.trail_toggle()
 
+    def _avail_layers(self):
+        """Param layers BKSP can reach in the current mode. SHDR (generative)
+        is only meaningful in SHADER mode."""
+        if self.inst.mode == "SHADER":
+            return [0, 1, 2, 3]   # SHDR, FX, COLOUR, BLEND
+        return [1, 2, 3]          # FX, COLOUR, BLEND
+
+    def _colour_slots(self):
+        """COLOUR-layer slots: palette (p4) only available in SHADER mode."""
+        if self.inst.mode == "SHADER":
+            return ("p4", "hue", "sat", "trl_decay")
+        return ("hue", "sat", "trl_decay")
+
+    def _blend_slots(self):
+        """BLEND-layer slots for the current mode: shader↔video blend in SHADER,
+        overlay self-blend in SAMPLER/LIVE."""
+        if self.inst.mode == "SHADER":
+            return ("mode", "amt", "src")
+        return ("mode", "opc")
+
+    def sync_param_layer(self):
+        """Keep the selected layer valid for the current mode (called on mode
+        change) — SHDR collapses to FX when leaving SHADER mode."""
+        layers = self._avail_layers()
+        if self._param_layer not in layers:
+            self._param_layer = layers[0]
+            self._param_idx = 0
+
     def _step_param(self, delta):
-        if self._param_layer == 0:
-            cfg           = self.inst.cfg
-            _overlay_on   = getattr(cfg, 'overlay_on',   False)
-            _blend_active = _overlay_on or getattr(cfg, 'shader_blend', False)
-            # clamp idx when active params shrink (e.g. overlay turned off)
-            if self._param_idx >= 6:
-                self._param_idx = 0
-            elif self._param_idx == 5 and not _overlay_on:
-                self._param_idx = 0
-            elif self._param_idx >= 4 and not _blend_active:
-                self._param_idx = 0
-            if self._param_idx < 4:
-                key = self._param_keys[self._param_idx]
-                cur = cfg.params.get(key, 0.5)
-                new = max(0.0, min(1.0, cur + delta))
-                if new == cur:
-                    return
-                self.inst.shader.set_param(key, new)
-                self.inst.osd.show(f"{key.upper()}: {new:.2f}")
-            elif self._param_idx == 4:
-                # p5: blend amount or overlay decay
-                if getattr(cfg, 'shader_blend', False):
-                    cur = getattr(cfg, 'shader_blend_amount', 0.5)
-                    new = max(0.0, min(1.0, round(cur + delta, 2)))
-                    if new == cur:
-                        return
-                    cfg.shader_blend_amount = new
-                    self.inst.osd.show(f"BLD AMT: {new:.2f}")
-                    self.inst.shader.reapply()
-                else:
-                    cur = getattr(cfg, 'overlay_offset_frames', 8)
-                    new = max(1, min(32, cur + (1 if delta > 0 else -1)))
-                    if new == cur:
-                        return
-                    cfg.overlay_offset_frames = new
-                    self.inst.osd.show(f"OVL DLY: {new}fr")
-                    self.inst.sampler.refresh_overlay()
-            else:
-                # p6: overlay opacity
-                cur = getattr(cfg, 'overlay_blend_amount', 1.0)
-                new = max(0.0, min(1.0, round(cur + delta, 2)))
-                if new == cur:
-                    return
-                cfg.overlay_blend_amount = new
-                self.inst.osd.show(f"OVL OPC: {new:.2f}")
-                self.inst.sampler.refresh_overlay()
-        elif self._param_layer == 2:
-            key  = _COLOR_PARAMS[self._param_idx % len(_COLOR_PARAMS)]
-            sign = 1.0 if delta > 0 else -1.0
-            if key == "hue":
-                # finer than PARAM_STEP: ~7° per press (≈50 steps round the
-                # circle) so the bar moves smoothly instead of leaping.
-                self.inst.color_adjust_hue(sign * 0.02)
-            else:
-                self.inst.color_adjust_sat(sign * 0.05)
-        else:
-            key = _FX_PARAMS[self._param_idx]
-            if key is None:
+        cfg  = self.inst.cfg
+        inst = self.inst
+        sign = 1.0 if delta > 0 else -1.0
+        if self._param_layer == 0:        # ── SHDR: generative p1–p3
+            key = self._param_keys[self._param_idx % len(self._param_keys)]
+            cur = cfg.params.get(key, 0.5)
+            new = max(0.0, min(1.0, cur + delta))
+            if new == cur:
                 return
-            cfg = self.inst.cfg
-            if key == "blend_amt":
-                cur = getattr(cfg, 'shader_blend_amount', 0.5)
-                new = max(0.0, min(1.0, cur + delta))
+            inst.shader.set_param(key, new)
+            inst.osd.show(f"{key.upper()}: {new:.2f}")
+        elif self._param_layer == 1:      # ── FX: the active FX's own params
+            key = f"f{(self._param_idx % 4) + 1}"
+            cur = cfg.fx_params.get(key, 0.5)
+            new = max(0.0, min(1.0, cur + delta))
+            if new == cur:
+                return
+            inst.shader.set_fx_param(key, new)
+            lbl = inst.shader.fx_param_labels().get(key, key.upper())
+            inst.osd.show(f"{lbl.upper()}: {new:.2f}")
+        elif self._param_layer == 2:      # ── COLOUR: palette / hue / sat / trl dec
+            slots = self._colour_slots()
+            slot  = slots[self._param_idx % len(slots)]
+            if slot == "p4":
+                cur = cfg.params.get("p4", 0.5)
+                new = max(0.0, min(1.0, round(cur + delta, 3)))
                 if new == cur:
                     return
-                cfg.shader_blend_amount = new
-                self.inst.osd.show(f"BLD AMT: {new:.2f}")
-                if getattr(cfg, 'shader_blend', False):
-                    self.inst.shader.reapply()
-            elif key == "ovl_frames":
-                cur = getattr(cfg, 'overlay_offset_frames', 8)
-                new = max(1, min(32, cur + (1 if delta > 0 else -1)))
-                if new == cur:
-                    return
-                cfg.overlay_offset_frames = new
-                self.inst.osd.show(f"OVL FRM: {new}")
-                if getattr(cfg, 'overlay_on', False):
-                    self.inst.sampler.refresh_overlay()
-            elif key == "trl_decay":
+                inst.shader.set_param("p4", new)
+                lbl = inst.shader.param_labels().get("p4", "PAL")
+                inst.osd.show(f"{lbl.upper()}: {new:.2f}")
+            elif slot == "hue":
+                inst.color_adjust_hue(sign * 0.02)
+            elif slot == "sat":
+                inst.color_adjust_sat(sign * 0.05)
+            elif slot == "trl_decay":
                 cur = getattr(cfg, 'trail_decay', 0.93)
                 new = round(max(0.80, min(0.99, cur + delta)), 3)
                 if new == cur:
                     return
                 cfg.trail_decay = new
-                self.inst.osd.show(f"TRL DEC: {new:.2f}")
+                inst.osd.show(f"TRL DEC: {new:.2f}")
                 if getattr(cfg, 'trail_on', False):
-                    self.inst.sampler.refresh_trail()
+                    inst.sampler.refresh_trail()
+        else:                             # ── BLEND: compositing controls
+            slots = self._blend_slots()
+            slot  = slots[self._param_idx % len(slots)]
+            d     = 1 if delta > 0 else -1
+            if slot == "mode":
+                if inst.mode == "SHADER":
+                    m = list(cfg.SHADER_BLEND_MODES)
+                    i = m.index(cfg.shader_blend_mode) if cfg.shader_blend_mode in m else 0
+                    cfg.shader_blend_mode = m[(i + d) % len(m)]
+                    inst.osd.show(f"BLEND: {cfg.shader_blend_mode}")
+                    if cfg.shader_blend:
+                        inst.shader.reapply()
+                else:
+                    m = list(cfg.OVERLAY_MODES)
+                    i = m.index(cfg.overlay_mode) if cfg.overlay_mode in m else 0
+                    cfg.overlay_mode = m[(i + d) % len(m)]
+                    inst.osd.show(f"OVL: {cfg.overlay_mode}")
+                    if cfg.overlay_on:
+                        inst.sampler.refresh_overlay()
+            elif slot == "amt":
+                cur = getattr(cfg, 'shader_blend_amount', 0.5)
+                new = max(0.0, min(1.0, round(cur + delta, 2)))
+                if new == cur:
+                    return
+                cfg.shader_blend_amount = new
+                inst.osd.show(f"BLD AMT: {new:.2f}")
+                if cfg.shader_blend:
+                    inst.shader.reapply()
+            elif slot == "opc":
+                cur = getattr(cfg, 'overlay_blend_amount', 1.0)
+                new = max(0.0, min(1.0, round(cur + delta, 2)))
+                if new == cur:
+                    return
+                cfg.overlay_blend_amount = new
+                inst.osd.show(f"OVL OPC: {new:.2f}")
+                if cfg.overlay_on:
+                    inst.sampler.refresh_overlay()
+            elif slot == "src":
+                srcs = list(cfg.SHADER_BLEND_SOURCES)
+                i = srcs.index(cfg.shader_blend_source) if cfg.shader_blend_source in srcs else 0
+                cfg.shader_blend_source = srcs[(i + d) % len(srcs)]
+                inst.osd.show(f"BLEND SRC: {cfg.shader_blend_source}")
+                if cfg.shader_blend and inst.mode == "SHADER":
+                    inst._start_blend_source()

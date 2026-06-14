@@ -36,18 +36,38 @@ TMP_SHADER_PREFIX = "recur_s"
 # Regex matching `#define PARAM_N <value>` lines we want to substitute
 PARAM_RE = re.compile(r'^(\s*#define\s+PARAM_([1-4])\s+)([^\s/]+)', re.M)
 
-# Blend modes for shader+clip compositing (SHADER mode, * key)
+
+def _subst(text, vals, prefix):
+    """Substitute live values into a shader's #define PARAM_N lines. `prefix`
+    is 'p' for generative params (vals=cfg.params) or 'f' for FX params."""
+    def repl(m):
+        return f"{m.group(1)}{vals.get(prefix + m.group(2), 0.5):.4f}"
+    return PARAM_RE.sub(repl, text)
+
+# Blend modes for shader+clip compositing (SHADER mode). Integers are
+# substituted into the blend shader; the names match cfg.SHADER_BLEND_MODES.
 BLEND_MODE_MAP = {
     "difference": 1,
     "addition":   2,
     "multiply":   3,
     "screen":     4,
     "mix":        5,
+    "overlay":    6,
+    "hardlight":  7,
+    "softlight":  8,
+    "dodge":      9,
+    "burn":      10,
+    "lighten":   11,
+    "darken":    12,
+    "exclusion": 13,
+    "displace":  14,   # special: warps the video by the shader (not a blend)
 }
 
 # Second-pass hook: reads the generative output (gen_out, saved by the first
-# shader) and the original clip (HOOKED/MAIN) and composites them.
-# __BLEND_MODE__ is substituted at write time with the integer mode.
+# shader) and the original clip (HOOKED/MAIN) and composites them. The full
+# W3C/Photoshop separable blend-mode set, plus a Resolume-style "displace" that
+# refracts the video by the shader's colour. __BLEND_MODE__ / __BLEND_AMT__ are
+# substituted at write time.
 BLEND_SHADER_SRC = """\
 //!DESC blend — composite generative shader with clip
 //!HOOK MAIN
@@ -57,23 +77,55 @@ BLEND_SHADER_SRC = """\
 #define BLEND_MODE __BLEND_MODE__
 #define BLEND_AMT  __BLEND_AMT__
 
+// per-channel blend: b = base (video), s = blend layer (shader)
+float bmode(float b, float s) {
+#if   BLEND_MODE == 1
+    return abs(b - s);                                            // difference
+#elif BLEND_MODE == 2
+    return min(b + s, 1.0);                                       // addition
+#elif BLEND_MODE == 3
+    return b * s;                                                 // multiply
+#elif BLEND_MODE == 4
+    return 1.0 - (1.0 - b) * (1.0 - s);                           // screen
+#elif BLEND_MODE == 6
+    return b < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);         // overlay
+#elif BLEND_MODE == 7
+    return s < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);         // hard light
+#elif BLEND_MODE == 8
+    return (s <= 0.5)
+        ? b - (1.0 - 2.0*s) * b * (1.0 - b)                       // soft light
+        : b + (2.0*s - 1.0) *
+          ((b <= 0.25 ? ((16.0*b - 12.0)*b + 4.0)*b : sqrt(b)) - b);
+#elif BLEND_MODE == 9
+    return s >= 1.0 ? 1.0 : min(1.0, b / (1.0 - s));              // colour dodge
+#elif BLEND_MODE == 10
+    return s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0 - b) / s);        // colour burn
+#elif BLEND_MODE == 11
+    return max(b, s);                                             // lighten
+#elif BLEND_MODE == 12
+    return min(b, s);                                             // darken
+#elif BLEND_MODE == 13
+    return b + s - 2.0*b*s;                                       // exclusion
+#else
+    return mix(b, s, 0.5);                                        // mix (normal)
+#endif
+}
+
 vec4 hook() {
     vec4 gen = gen_out_texOff(vec2(0.0));
-    vec4 vid = HOOKED_texOff(vec2(0.0));
-    vec3 bl;
-#if BLEND_MODE == 1
-    bl = abs(gen.rgb - vid.rgb);
-#elif BLEND_MODE == 2
-    bl = clamp(gen.rgb + vid.rgb, 0.0, 1.0);
-#elif BLEND_MODE == 3
-    bl = gen.rgb * vid.rgb;
-#elif BLEND_MODE == 4
-    bl = 1.0 - (1.0 - gen.rgb) * (1.0 - vid.rgb);
+#if BLEND_MODE == 14
+    // Displace: offset the video by the shader's R/G channels — the shader
+    // refracts the footage like textured glass. BLEND_AMT scales the warp.
+    vec2 disp = (gen.rg - 0.5) * 2.0 * BLEND_AMT * 48.0;
+    return vec4(HOOKED_texOff(disp).rgb, 1.0);
 #else
-    bl = mix(vid.rgb, gen.rgb, 0.5);
+    vec3 vid = HOOKED_texOff(vec2(0.0)).rgb;
+    vec3 bl  = vec3(bmode(vid.r, gen.r),
+                    bmode(vid.g, gen.g),
+                    bmode(vid.b, gen.b));
+    // BLEND_AMT: 0 = pure video, 1 = full blend result
+    return vec4(mix(vid, bl, BLEND_AMT), 1.0);
 #endif
-    // BLEND_AMT: 0 = pure video, 1 = full blend formula result
-    return vec4(mix(vid.rgb, bl, BLEND_AMT), 1.0);
 }
 """
 
@@ -212,6 +264,7 @@ class ShaderEngine:
             i = 0
         self.cfg.current_fx    = lst[i]
         self.cfg.shader_fx_stack = True
+        self._read_fx_defaults(lst[i])   # seed f1–f4 from the new FX's defaults
         self._apply_now()
         log.info("fx overlay -> %s (on %s)", lst[i],
                  os.path.basename(self.current) if self.current else "—")
@@ -248,9 +301,49 @@ class ShaderEngine:
             self._pending.clear()
             self._apply_now()
 
+    def set_fx_param(self, key, value):
+        """Adjust an FX param (f1–f4). Schedules a debounced recompile if an FX
+        is active in the chain."""
+        value = max(0.0, min(1.0, value))
+        if self.cfg.fx_params.get(key) == value:
+            return
+        self.cfg.fx_params[key] = value
+        if not self.cfg.current_fx:
+            return
+        self._pending.set()
+        if self._debounce_thread is None or not self._debounce_thread.is_alive():
+            self._debounce_thread = threading.Thread(
+                target=self._debounce_loop, daemon=True, name="shader-debounce")
+            self._debounce_thread.start()
+
     def _snapshot(self):
-        return tuple(self.cfg.params.get(k, 0.5)
-                     for k in ("p1", "p2", "p3", "p4"))
+        return (tuple(self.cfg.params.get(k, 0.5) for k in ("p1", "p2", "p3", "p4")),
+                tuple(self.cfg.fx_params.get(k, 0.5) for k in ("f1", "f2", "f3", "f4")))
+
+    def fx_param_labels(self):
+        """Param labels for the current FX shader, keyed f1–f4."""
+        return self._labels_for(self.cfg.current_fx, "f")
+
+    def _labels_for(self, shader, prefix):
+        """{prefix1: label, …} parsed from a shader's /* comment */ annotations."""
+        defaults = {f"{prefix}{n}": f"{prefix.upper()}{n}" for n in range(1, 5)}
+        if not shader:
+            return defaults
+        path = shader if os.path.isabs(shader) \
+                       else os.path.join(self.cfg.shaders_dir, shader)
+        ckey = (path, prefix)
+        if ckey in self._label_cache:
+            return self._label_cache[ckey]
+        try:
+            with open(path) as f:
+                src = f.read()
+        except OSError:
+            return defaults
+        pat = re.compile(r'#define\s+PARAM_([1-4])\s+\S+[^\n]*/\*\s*([^*]+?)\s*\*/')
+        for m in pat.finditer(src):
+            defaults[f"{prefix}{m.group(1)}"] = m.group(2).strip()
+        self._label_cache[ckey] = defaults
+        return defaults
 
     # ------------------------------------------------------------- emit
     def param_labels(self):
@@ -302,22 +395,36 @@ class ShaderEngine:
         return defaults
 
     def _read_defaults(self):
-        """Apply PARAM_N defaults from the shader source to cfg.params.
-        Each shader starts at its designed settings; knob movements override
-        from there (the ADC poll fires within ~50ms and writes physical position)."""
+        """Apply the loaded shader's PARAM_N defaults — into cfg.params for a
+        generative shader, or cfg.fx_params for an FX shader. Each shader starts
+        at its designed settings; knob/menu movement overrides from there."""
         if not self.current:
             return
+        gen_set = getattr(self.cfg, "generative_shaders", set())
+        is_gen = os.path.basename(self.current) in gen_set
+        target, prefix = ((self.cfg.params, "p") if is_gen
+                          else (self.cfg.fx_params, "f"))
+        self._read_param_defaults(self.current, target, prefix)
+
+    def _read_param_defaults(self, path, target, prefix):
         try:
-            with open(self.current) as f:
+            with open(path) as f:
                 src = f.read()
         except OSError:
             return
         for m in PARAM_RE.finditer(src):
-            key = f"p{m.group(2)}"
             try:
-                self.cfg.params[key] = float(m.group(3))
+                target[prefix + m.group(2)] = float(m.group(3))
             except (ValueError, TypeError):
                 pass
+
+    def _read_fx_defaults(self, fx):
+        """Seed cfg.fx_params from an FX shader's authored defaults (used when
+        the FX changes without going through load(), e.g. stacked in SHADER)."""
+        if not fx:
+            return
+        path = fx if os.path.isabs(fx) else os.path.join(self.cfg.shaders_dir, fx)
+        self._read_param_defaults(path, self.cfg.fx_params, "f")
 
     def _apply_now(self):
         """Substitute PARAM_N values, write to a new unique tmp path, and
@@ -332,30 +439,26 @@ class ShaderEngine:
             log.warning("can't read shader %s: %s", self.current, e)
             return
 
-        vals = self.cfg.params
-        def sub(m):
-            n = m.group(2)
-            key = f"p{n}"
-            v = vals.get(key, 0.5)
-            return f"{m.group(1)}{v:.4f}"
-        out = PARAM_RE.sub(sub, src)
+        gen_set = getattr(self.cfg, "generative_shaders",
+                          {"plasma.glsl", "waves.glsl", "tunnel.glsl",
+                           "voronoi.glsl", "kaleidoscope.glsl"})
+        is_generative = os.path.basename(self.current) in gen_set
+
+        # self.current is the generative (SHADER mode) or the FX shader
+        # (SAMPLER/LIVE) — substitute the matching param set.
+        out = _subst(src, self.cfg.params if is_generative else self.cfg.fx_params,
+                     "p" if is_generative else "f")
 
         self._tmp_counter += 1
         gen_tmp = os.path.join(TMP_SHADER_DIR,
                                f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
         new_active = []
 
-        gen_set = getattr(self.cfg, "generative_shaders",
-                          {"plasma.glsl", "waves.glsl", "tunnel.glsl",
-                           "voronoi.glsl", "kaleidoscope.glsl"})
-        is_generative = os.path.basename(self.current) in gen_set
-
         if getattr(self.cfg, "shader_blend", False) and is_generative:
-            # ── generative + blend (composite with clip/camera) ───────────
-            # Inject //!SAVE gen_out so the blend shader can read both layers.
-            # Use the LAST //!BIND HOOKED so that multi-pass shaders (e.g.
-            # hue_cycle, which has a state-only first pass) get the annotation
-            # on the pass that actually outputs video, not the bookkeeping pass.
+            # ── generative + blend [+ optional FX] ────────────────────────
+            # Pass 1: generative shader saves its output as gen_out.
+            # Pass 2: blend shader reads gen_out + MAIN (video) and composites.
+            # Pass 3 (optional): FX shader runs on top of the blended result.
             marker = "//!BIND HOOKED\n"
             pos = out.rfind(marker)
             if pos != -1:
@@ -387,7 +490,32 @@ class ShaderEngine:
                 return
             new_active.append(blend_tmp)
 
-            log.debug("shaders -> %s + blend(%s)", os.path.basename(gen_tmp), mode_name)
+            # FX stacked on top of the blend composite (pass 3)
+            if getattr(self.cfg, "shader_fx_stack", False) and self.cfg.current_fx:
+                fx_name = self.cfg.current_fx
+                fx_path = fx_name if os.path.isabs(fx_name) \
+                                   else os.path.join(self.cfg.shaders_dir, fx_name)
+                try:
+                    with open(fx_path) as f:
+                        fx_src = _subst(f.read(), self.cfg.fx_params, "f")
+                except OSError as e:
+                    log.warning("can't read FX shader %s: %s", fx_path, e)
+                else:
+                    self._tmp_counter += 1
+                    fx_tmp = os.path.join(TMP_SHADER_DIR,
+                                          f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
+                    try:
+                        with open(fx_tmp, "w") as f:
+                            f.write(fx_src)
+                        new_active.append(fx_tmp)
+                        log.debug("shaders -> %s + blend(%s) + fx(%s)",
+                                  os.path.basename(gen_tmp), mode_name,
+                                  os.path.basename(fx_path))
+                    except OSError as e:
+                        log.warning("can't write FX tmp shader: %s", e)
+            else:
+                log.debug("shaders -> %s + blend(%s)",
+                          os.path.basename(gen_tmp), mode_name)
 
         elif is_generative and getattr(self.cfg, "shader_fx_stack", False) \
                 and self.cfg.current_fx:
@@ -401,14 +529,14 @@ class ShaderEngine:
                 return
             new_active.append(gen_tmp)
 
-            # Read FX shader source at its file defaults (params control the
-            # generative layer; the FX runs at its authored defaults).
+            # Stack the FX with its own live params (cfg.fx_params), so the
+            # generative (cfg.params) and the FX are tuned independently.
             fx_name = self.cfg.current_fx
             fx_path = fx_name if os.path.isabs(fx_name) \
                                else os.path.join(self.cfg.shaders_dir, fx_name)
             try:
                 with open(fx_path) as f:
-                    fx_src = f.read()
+                    fx_src = _subst(f.read(), self.cfg.fx_params, "f")
             except OSError as e:
                 log.warning("can't read FX shader %s: %s", fx_path, e)
                 self._finalize_shaders(new_active, is_generative)

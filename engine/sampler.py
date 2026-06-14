@@ -134,13 +134,14 @@ class SamplerEngine:
         """
         parts = []
         if getattr(self.cfg, 'overlay_on', False):
-            decay   = max(0.0, min(0.99, 1.0 - 1.0 / max(1, self.cfg.overlay_offset_frames)))
+            # Self-blend of the current frame using overlay_mode, mixed at
+            # overlay_blend_amount (OVL OPC). The old time-delay/lagfun echo was
+            # removed — temporal echoes are the trail's job now.
             opacity = max(0.0, min(1.0, getattr(self.cfg, 'overlay_blend_amount', 1.0)))
             parts.append(
                 f"@overlay:lavfi=["
                 f"split[a][b];"
-                f"[b]lagfun=decay={decay:.3f}[t];"
-                f"[a][t]blend=c0_mode={self.cfg.overlay_mode}:"
+                f"[a][b]blend=c0_mode={self.cfg.overlay_mode}:"
                 f"c1_mode=normal:c2_mode=normal:"
                 f"all_opacity={opacity:.3f}:shortest=1"
                 f"]"
@@ -174,12 +175,14 @@ class SamplerEngine:
                 )
                 parts.append(f"@trail:lavfi=[{g}]")
             else:
-                # Mode blend: tpad delay + lagfun fading repeats, blended on
-                # luma only (c0) — all_mode zeroes chroma on modes like
-                # difference (U=V=0 = green screen); c1/c2 normal keep chroma.
-                # 'difference' stays at full strength (clean). The brightening/
-                # darkening modes accumulate via lagfun and wash to white/black,
-                # so mix the blend back toward the original on luma (c0_opacity).
+                # Mode blend: an IMMEDIATE decaying smear. lagfun is a recursive
+                # decaying peak-hold fed by the *clean* current frame (split [b])
+                # — it never reads the trailed output, so there is no trail-on-
+                # trail feedback. (No tpad pre-delay: that delayed the whole
+                # smear by trail_delay_s and made it lag behind the motion.)
+                # Blended on luma only (c0); difference stays full strength,
+                # brightening/darkening modes are tamed with c0_opacity so they
+                # don't wash out.
                 decay_t = getattr(self.cfg, 'trail_decay', 0.93)
                 tm = self.cfg.trail_mode
                 if tm == 'difference':
@@ -190,8 +193,7 @@ class SamplerEngine:
                 parts.append(
                     f"@trail:lavfi=["
                     f"split[a][b];"
-                    f"[b]tpad=start_mode=clone:start={delay_f},"
-                    f"lagfun=decay={decay_t:.3f}[t];"
+                    f"[b]lagfun=decay={decay_t:.3f}[t];"
                     f"[a][t]blend={c0}:"
                     f"c1_mode=normal:c2_mode=normal:shortest=1"
                     f"]"

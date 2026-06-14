@@ -79,6 +79,9 @@ class RecurInstrument:
             self._mode = name
             self.osd.show(f"MODE: {name}")
             self._apply_mode()
+        kb = getattr(self, "kb", None)
+        if kb is not None:
+            kb.sync_param_layer()   # SHDR layer only valid in SHADER mode
 
     def cycle_mode(self, direction=1):
         modes = [m for m in self.MODES
@@ -157,11 +160,16 @@ class RecurInstrument:
             self.sampler.refresh_trail()
 
     def _start_blend_source(self):
-        """Start whichever video source is selected for shader blending."""
+        """Start the blend video source. 'clip' uses the loaded sampler clip;
+        'live' starts the camera. If 'live' is configured but the camera isn't
+        already running, fall back to 'clip' rather than launching it silently."""
         if self.cfg.shader_blend_source == "live":
             self.sampler.play_camera()
         else:
-            self.sampler.start_playback()
+            if self.cfg.current_clip:
+                self.sampler.start_playback()
+            else:
+                self.sampler.play_blank()
 
     # ------------------------------------------------------------------ menu deferred load
     def apply_menu_selection(self, clip_idx=None, gen_shader=None):
@@ -185,16 +193,23 @@ class RecurInstrument:
 
     # ------------------------------------------------------------------ shader blend (SHADER mode)
     def shader_blend_toggle(self):
-        """Toggle video+shader blend. * key in SHADER mode."""
+        """Toggle video+shader blend. / key in SHADER mode."""
         self.cfg.shader_blend = not self.cfg.shader_blend
         state = self.cfg.shader_blend
-        src   = self.cfg.shader_blend_source
-        log.info("shader blend -> %s (%s, source=%s)",
-                 "ON" if state else "OFF", self.cfg.shader_blend_mode, src)
         if state:
+            # If source is set to "live" but the camera isn't already running,
+            # fall back to "clip" so enabling blend doesn't unexpectedly launch
+            # the camera. Switch to "live" explicitly via BLEND layer → SRC.
+            if (self.cfg.shader_blend_source == "live"
+                    and self.sampler._active_source != "camera"):
+                self.cfg.shader_blend_source = "clip"
+            src = self.cfg.shader_blend_source
+            log.info("shader blend -> ON (%s, source=%s)",
+                     self.cfg.shader_blend_mode, src)
             self._start_blend_source()
             self.osd.show(f"BLEND ON: {self.cfg.shader_blend_mode} [{src}]")
         else:
+            log.info("shader blend -> OFF")
             self.sampler.play_blank()
             self.osd.show("BLEND OFF")
         self.shader.reapply()
