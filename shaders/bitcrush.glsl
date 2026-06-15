@@ -12,8 +12,8 @@ vec4 hook() {
     vec2 uv   = HOOKED_pos;
     vec2 size = HOOKED_size;
 
-    // Block edge length in pixels: 2..64
-    float blockPx = max(2.0, PARAM_1 * 62.0 + 2.0);
+    // Block edge length in pixels: 1..256 (square-law — fine steps at low end)
+    float blockPx = max(1.0, PARAM_1 * PARAM_1 * 255.0 + 1.0);
 
     // Optional grid gap — thin black lines drawn at block boundaries.
     // PARAM_3 controls gap thickness as a fraction of the block size.
