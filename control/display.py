@@ -270,7 +270,7 @@ class DisplayController:
                     _rec = getattr(inst, "recorder", None)
                     param_sig = (
                         tuple(cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
-                        tuple(cfg.fx_params.get(k, 0.5) for k in sorted(cfg.fx_params)),
+                        tuple(cfg.fx_params.get(k, 0.5) for k in sorted(cfg.fx_params, key=lambda k: int(k[1:]))),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
                         round(getattr(cfg, "overlay_blend_amount",  1.0) or 1.0, 2),
                         round(getattr(cfg, "trail_decay",           0.93), 3),
@@ -419,7 +419,7 @@ class DisplayController:
 
         if _param_layer == 0:          # SHDR — generative shader params (all at once)
             _plabels = inst.shader.param_labels()
-            all_keys = sorted(_plabels.keys())
+            all_keys = sorted(_plabels.keys(), key=lambda k: int(k[1:]))
             bar_items = []
             for k in all_keys:
                 raw_lbl = _plabels.get(k, k.upper())
@@ -441,7 +441,7 @@ class DisplayController:
                  cfg.fx_params.get(k, 0.5),
                  f"{cfg.fx_params.get(k, 0.5):.2f}" if has_fx else "—",
                  has_fx)
-                for k in sorted(_flabels.keys())
+                for k in sorted(_flabels.keys(), key=lambda k: int(k[1:]))
             ]
         elif _param_layer == 2:        # COLOUR — hue / sat / trl dec
             hue     = getattr(cfg, 'color_hue', 0.0)

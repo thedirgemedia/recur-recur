@@ -336,7 +336,7 @@ class ShaderEngine:
 
     def _snapshot(self):
         return (tuple(self.cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
-                tuple(self.cfg.fx_params.get(k, 0.5) for k in sorted(self.cfg.fx_params)))
+                tuple(self.cfg.fx_params.get(k, 0.5) for k in sorted(self.cfg.fx_params, key=lambda k: int(k[1:]))))
 
     def fx_param_labels(self):
         """Param labels for the current FX shader, keyed f1–f4."""

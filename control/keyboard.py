@@ -346,7 +346,7 @@ class KeyboardController:
                 inst.osd.show(f"COLOUR: {_COLOUR_LABELS[slot]}")
             elif self._param_layer == 1:        # FX: active FX's own params (dynamic)
                 lbls    = inst.shader.fx_param_labels()
-                fx_keys = sorted(lbls.keys())
+                fx_keys = sorted(lbls.keys(), key=lambda k: int(k[1:]))
                 self._param_idx = (self._param_idx + 1) % max(1, len(fx_keys))
                 key = fx_keys[self._param_idx] if fx_keys else "f1"
                 inst.osd.show(f"FX: {lbls.get(key, key.upper()).upper()}")
@@ -393,7 +393,7 @@ class KeyboardController:
 
     def _get_shdr_keys(self):
         """Sorted param keys for the current generative shader (e.g. p1..p8)."""
-        return sorted(self.inst.shader.param_labels().keys())
+        return sorted(self.inst.shader.param_labels().keys(), key=lambda k: int(k[1:]))
 
     def _colour_slots(self):
         return ("hue", "sat", "trl_decay")
@@ -436,7 +436,7 @@ class KeyboardController:
             else:
                 inst.osd.show(f"{ul}: {new:.2f}")
         elif self._param_layer == 1:      # ── FX: the active FX's own params
-            fx_keys = sorted(inst.shader.fx_param_labels().keys())
+            fx_keys = sorted(inst.shader.fx_param_labels().keys(), key=lambda k: int(k[1:]))
             key = fx_keys[self._param_idx % max(1, len(fx_keys))] if fx_keys else "f1"
             cur = cfg.fx_params.get(key, 0.5)
             new = max(0.0, min(1.0, cur + delta))

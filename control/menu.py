@@ -642,11 +642,11 @@ class Menu:
         # Params — all shader params in SHADER mode (dynamic count), FX f1–f4 otherwise.
         if inst.mode == "SHADER":
             plabels = inst.shader.param_labels()
-            pkeys   = sorted(plabels.keys())   # p1, p2 … p10 (only those defined)
+            pkeys   = sorted(plabels.keys(), key=lambda k: int(k[1:]))
             pvals   = cfg.params
         else:
             plabels = inst.shader.fx_param_labels()
-            pkeys   = sorted(plabels.keys())
+            pkeys   = sorted(plabels.keys(), key=lambda k: int(k[1:]))
             pvals   = cfg.fx_params
         for key in pkeys:
             lbl = plabels.get(key, key.upper()).upper()
