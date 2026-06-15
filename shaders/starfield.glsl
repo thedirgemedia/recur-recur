@@ -12,13 +12,13 @@
 #define PARAM_1  0.65   /* em1 speed  */
 #define PARAM_2  0.5    /* em1 X      */
 #define PARAM_3  0.5    /* em1 Y      */
-#define PARAM_4  0.35   /* em2 speed  */
+#define PARAM_4  0.65   /* em2 speed  */
 #define PARAM_5  0.5    /* em2 X      */
 #define PARAM_6  0.5    /* em2 Y      */
 #define PARAM_7  0.5    /* trail      */
 #define PARAM_8  0.5    /* palette    */
-#define PARAM_9  0.05   /* em1 stars  */
-#define PARAM_10 0.05   /* em2 stars  */
+#define PARAM_9  0.6    /* em1 stars  */
+#define PARAM_10 0.6    /* em2 stars  */
 
 vec3 palette(float t, float sel) {
     vec3 a = vec3(0.5), b = vec3(0.5);
