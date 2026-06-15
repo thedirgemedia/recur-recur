@@ -1,14 +1,14 @@
-//!DESC hue_cycle — select pixels by hue and shift their colour
+//!DESC hue_cycle — posterise hue into bands, cycle the palette over time
 //!HOOK MAIN
 //!BIND HOOKED
 
-// PARAM_1  target hue   0=red  0.17=yellow  0.33=green  0.5=cyan  0.67=blue  0.83=magenta
-// PARAM_2  tolerance    0=razor-thin selection   1=entire colour wheel selected
-// PARAM_3  hue shift    0=no shift   0.5=opposite colour   1=full rotation (no change)
-// PARAM_4  intensity    0=passthrough   1=full shift applied to selected pixels
-#define PARAM_1 0.0    /* target hue */
-#define PARAM_2 0.15   /* tolerance  */
-#define PARAM_3 0.5    /* hue shift  */
+// PARAM_1  bands      0 = 2 bands (bold)   1 = 16 bands (fine)
+// PARAM_2  speed      0 = frozen poster     1 = fast rotating palette (~2 s/rev)
+// PARAM_3  saturation 0 = preserve          1 = push bands toward vivid
+// PARAM_4  intensity  0 = original image    1 = full posterised/cycled output
+#define PARAM_1 0.25   /* bands      */
+#define PARAM_2 0.2    /* speed      */
+#define PARAM_3 0.5    /* saturation */
 #define PARAM_4 1.0    /* intensity  */
 
 vec3 rgb2hsv(vec3 c) {
@@ -27,24 +27,26 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 vec4 hook() {
+    float time = float(frame) / 60.0;
+
     vec4 curr = HOOKED_texOff(vec2(0.0));
     vec3 hsv  = rgb2hsv(curr.rgb);
 
-    // Circular hue distance — wraps correctly at 0/1 boundary
-    float diff     = abs(hsv.x - PARAM_1);
-    float hue_dist = min(diff, 1.0 - diff);
+    // Posterise: snap hue to N evenly-spaced bands.
+    // PARAM_1 → 2–16 integer bands.
+    float n     = 2.0 + floor(PARAM_1 * 14.0);
+    float band  = floor(hsv.x * n);          // which band (0..n-1)
+    float bh    = band / n;                  // band's base hue (0..1)
 
-    // Selection mask: full weight inside inner radius, fades to zero at outer.
-    // Saturation gate prevents near-grey/white/black pixels being selected
-    // (they have no meaningful hue).
-    float tol    = max(0.01, PARAM_2 * 0.5);
-    float select = 1.0 - smoothstep(tol * 0.5, tol, hue_dist);
-    select      *= smoothstep(0.05, 0.25, hsv.y);
+    // Cycle: rotate each band's hue over time.  All bands spin together so
+    // the N-band structure and inter-band spacing are preserved, but the
+    // entire palette rotates through the hue wheel.
+    float speed  = PARAM_2 * 0.5;            // 0..0.5 revolutions/second
+    float new_hue = fract(bh + time * speed);
 
-    // Shift the hue of selected pixels, leave everything else unchanged
-    vec3 shifted     = hsv;
-    shifted.x        = fract(hsv.x + PARAM_3);
-    vec3 shifted_rgb = hsv2rgb(shifted);
+    // Optional saturation push — makes each band read as a clean vivid colour.
+    float new_sat = clamp(hsv.y + PARAM_3 * (1.0 - hsv.y), 0.0, 1.0);
 
-    return vec4(mix(curr.rgb, shifted_rgb, select * PARAM_4), curr.a);
+    vec3 cycled = hsv2rgb(vec3(new_hue, new_sat, hsv.z));
+    return vec4(mix(curr.rgb, cycled, PARAM_4), curr.a);
 }
