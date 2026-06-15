@@ -18,7 +18,7 @@ vec4 hook() {
     float jitter = (rand(vec2(time * 2.0, row)) - 0.5) * (PARAM_4 * 0.04);
     uv.x += jitter;
 
-    float ch = PARAM_1 * 0.015;
+    float ch = PARAM_1 * 0.06;
     float r = textureLod(HOOKED_raw, uv + vec2(ch, 0.0), 0.0).r;
     float g = textureLod(HOOKED_raw, uv, 0.0).g;
     float b = textureLod(HOOKED_raw, uv - vec2(ch, 0.0), 0.0).b;
