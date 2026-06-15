@@ -16,9 +16,10 @@
 #define PARAM_5  0.5    /* em2 X      */
 #define PARAM_6  0.5    /* em2 Y      */
 #define PARAM_7  0.5    /* trail      */
-#define PARAM_8  0.5    /* palette    */
+#define PARAM_8  0.5    /* em1 palette*/
 #define PARAM_9  0.6    /* em1 stars  */
 #define PARAM_10 0.6    /* em2 stars  */
+#define PARAM_11 0.5    /* em2 palette*/
 
 vec3 palette(float t, float sel) {
     vec3 a = vec3(0.5), b = vec3(0.5);
@@ -36,7 +37,7 @@ float hash(float n) { return fract(sin(n) * 43758.5453); }
 // hue_off:   palette phase offset so emitters have distinct hues.
 // trail_len: trail as fraction of the star's radial distance (0 = no trail).
 vec3 emitter(vec2 uv, vec2 origin, float speed, int n,
-             float seed_off, float hue_off, float trail_len) {
+             float seed_off, float hue_off, float trail_len, float pal_sel) {
     const float TWO_PI = 6.28318530;
     float fN    = float(n);
     bool  inward = speed < 0.0;
@@ -95,7 +96,7 @@ vec3 emitter(vec2 uv, vec2 origin, float speed, int n,
             b = (1.0 - smoothstep(0.0, star_sz, dist)) * fade_in;
         }
         if (b > 0.001)
-            col += palette(d * 0.4 + hue_off, PARAM_8) * b;
+            col += palette(d * 0.4 + hue_off, pal_sel) * b;
     }
 
     return col;
@@ -123,8 +124,8 @@ vec4 hook() {
     int n2 = max(1, int(PARAM_10 * 500.0 + 0.5));
 
     // Each emitter gets a distinct palette phase so they sit in different hues.
-    vec3 col = emitter(uv, o1, s1, n1, 0.0,  0.0,  trail)
-             + emitter(uv, o2, s2, n2, 7.3,  0.45, trail);
+    vec3 col = emitter(uv, o1, s1, n1, 0.0,  0.0,  trail, PARAM_8)
+             + emitter(uv, o2, s2, n2, 7.3,  0.45, trail, PARAM_11);
 
     return vec4(clamp(col, 0.0, 1.0), 1.0);
 }
