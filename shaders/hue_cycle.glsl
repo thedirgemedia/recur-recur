@@ -1,14 +1,14 @@
-//!DESC hue_cycle — animated per-pixel hue rotation
+//!DESC hue_cycle — select pixels by hue and shift their colour
 //!HOOK MAIN
 //!BIND HOOKED
 
-// PARAM_1  speed      0 = very slow (~1 rev / 3 min)   1 = fast (~1 rev / 1.5 s)
-// PARAM_2  spatial    0 = uniform shift   1 = radial rainbow spread from centre
-// PARAM_3  saturation 0 = preserve original   1 = push toward fully vivid
-// PARAM_4  intensity  0 = pass-through   1 = full hue-shifted output
-#define PARAM_1 0.25   /* speed      */
-#define PARAM_2 0.0    /* spatial    */
-#define PARAM_3 0.5    /* saturation */
+// PARAM_1  target hue   0=red  0.17=yellow  0.33=green  0.5=cyan  0.67=blue  0.83=magenta
+// PARAM_2  tolerance    0=razor-thin selection   1=entire colour wheel selected
+// PARAM_3  hue shift    0=no shift   0.5=opposite colour   1=full rotation (no change)
+// PARAM_4  intensity    0=passthrough   1=full shift applied to selected pixels
+#define PARAM_1 0.0    /* target hue */
+#define PARAM_2 0.15   /* tolerance  */
+#define PARAM_3 0.5    /* hue shift  */
 #define PARAM_4 1.0    /* intensity  */
 
 vec3 rgb2hsv(vec3 c) {
@@ -27,24 +27,24 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 vec4 hook() {
-    vec2  uv   = HOOKED_pos;
-    float time = float(frame) / 60.0;
-
-    // Square-law speed: fine control at slow end, fast at high end.
-    // Range: ~0.006 rev/s (3 min/rev) → ~0.67 rev/s (1.5 s/rev)
-    float speed = PARAM_1 * PARAM_1 * 0.67;
-
-    // Global time phase + optional radial spatial offset so different
-    // positions sit at different points in the hue wheel simultaneously.
-    float spatial = length(uv - 0.5) * PARAM_2 * 2.0;
-    float phase   = fract(time * speed + spatial);
-
     vec4 curr = HOOKED_texOff(vec2(0.0));
     vec3 hsv  = rgb2hsv(curr.rgb);
 
-    hsv.x = fract(hsv.x + phase);
-    hsv.y = clamp(hsv.y + PARAM_3 * (1.0 - hsv.y), 0.0, 1.0);
+    // Circular hue distance — wraps correctly at 0/1 boundary
+    float diff     = abs(hsv.x - PARAM_1);
+    float hue_dist = min(diff, 1.0 - diff);
 
-    vec3 shifted = hsv2rgb(hsv);
-    return vec4(mix(curr.rgb, shifted, PARAM_4), curr.a);
+    // Selection mask: full weight inside inner radius, fades to zero at outer.
+    // Saturation gate prevents near-grey/white/black pixels being selected
+    // (they have no meaningful hue).
+    float tol    = max(0.01, PARAM_2 * 0.5);
+    float select = 1.0 - smoothstep(tol * 0.5, tol, hue_dist);
+    select      *= smoothstep(0.05, 0.25, hsv.y);
+
+    // Shift the hue of selected pixels, leave everything else unchanged
+    vec3 shifted     = hsv;
+    shifted.x        = fract(hsv.x + PARAM_3);
+    vec3 shifted_rgb = hsv2rgb(shifted);
+
+    return vec4(mix(curr.rgb, shifted_rgb, select * PARAM_4), curr.a);
 }
