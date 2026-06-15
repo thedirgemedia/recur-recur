@@ -437,11 +437,11 @@ class DisplayController:
             _flabels = inst.shader.fx_param_labels()
             has_fx   = bool(getattr(cfg, 'current_fx', None))
             bar_items = [
-                (_flabels.get(f"f{n}", f"F{n}").upper()[:7],
-                 cfg.fx_params.get(f"f{n}", 0.5),
-                 f"{cfg.fx_params.get(f'f{n}', 0.5):.2f}" if has_fx else "—",
+                (_flabels.get(k, k.upper()).upper()[:7],
+                 cfg.fx_params.get(k, 0.5),
+                 f"{cfg.fx_params.get(k, 0.5):.2f}" if has_fx else "—",
                  has_fx)
-                for n in range(1, 5)
+                for k in sorted(_flabels.keys())
             ]
         elif _param_layer == 2:        # COLOUR — hue / sat / trl dec
             hue     = getattr(cfg, 'color_hue', 0.0)
