@@ -269,7 +269,7 @@ class DisplayController:
                     _kb  = getattr(inst, "kb", None)
                     _rec = getattr(inst, "recorder", None)
                     param_sig = (
-                        tuple(cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
+                        tuple(cfg.params.get(k, 0.5) for k in sorted(cfg.params, key=lambda k: int(k[1:]))),
                         tuple(cfg.fx_params.get(k, 0.5) for k in sorted(cfg.fx_params, key=lambda k: int(k[1:]))),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
                         round(getattr(cfg, "overlay_blend_amount",  1.0) or 1.0, 2),
