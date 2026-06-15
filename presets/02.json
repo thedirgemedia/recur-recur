@@ -1,6 +1,0 @@
-{
-  "name": "infinite_mirror",
-  "shader": "feedback.frag",
-  "fx": "feedback.frag",
-  "params": { "p1": 0.85, "p2": 0.55, "p3": 0.52, "p4": 0.3 }
-}

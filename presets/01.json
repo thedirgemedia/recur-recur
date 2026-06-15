@@ -1,6 +1,0 @@
-{
-  "name": "datamosh",
-  "shader": "glitch.frag",
-  "fx": "glitch.frag",
-  "params": { "p1": 0.7, "p2": 0.6, "p3": 0.5, "p4": 0.4 }
-}
