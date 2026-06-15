@@ -646,7 +646,7 @@ class Menu:
             pvals   = cfg.params
         else:
             plabels = inst.shader.fx_param_labels()
-            pkeys   = ("f1", "f2", "f3", "f4")
+            pkeys   = sorted(plabels.keys())
             pvals   = cfg.fx_params
         for key in pkeys:
             lbl = plabels.get(key, key.upper()).upper()

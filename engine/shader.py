@@ -336,17 +336,17 @@ class ShaderEngine:
 
     def _snapshot(self):
         return (tuple(self.cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
-                tuple(self.cfg.fx_params.get(k, 0.5) for k in ("f1", "f2", "f3", "f4")))
+                tuple(self.cfg.fx_params.get(k, 0.5) for k in sorted(self.cfg.fx_params)))
 
     def fx_param_labels(self):
         """Param labels for the current FX shader, keyed f1–f4."""
         return self._labels_for(self.cfg.current_fx, "f")
 
     def _labels_for(self, shader, prefix):
-        """{prefix1: label, …} parsed from a shader's /* comment */ annotations."""
-        defaults = {f"{prefix}{n}": f"{prefix.upper()}{n}" for n in range(1, 5)}
+        """{prefix1: label, …} parsed dynamically from the shader's PARAM_N defines."""
+        fallback = {f"{prefix}{n}": f"{prefix.upper()}{n}" for n in range(1, 5)}
         if not shader:
-            return defaults
+            return fallback
         path = shader if os.path.isabs(shader) \
                        else os.path.join(self.cfg.shaders_dir, shader)
         ckey = (path, prefix)
@@ -356,12 +356,20 @@ class ShaderEngine:
             with open(path) as f:
                 src = f.read()
         except OSError:
-            return defaults
-        pat = re.compile(r'#define\s+PARAM_([1-4])\s+\S+[^\n]*/\*\s*([^*]+?)\s*\*/')
-        for m in pat.finditer(src):
-            defaults[f"{prefix}{m.group(1)}"] = m.group(2).strip()
-        self._label_cache[ckey] = defaults
-        return defaults
+            return fallback
+        labels = {}
+        pat_lbl = re.compile(r'#define\s+PARAM_([1-9][0-9]?)\s+\S+[^\n]*/\*\s*([^*]+?)\s*\*/')
+        for m in pat_lbl.finditer(src):
+            labels[f"{prefix}{m.group(1)}"] = m.group(2).strip()
+        pat_def = re.compile(r'#define\s+PARAM_([1-9][0-9]?)\b')
+        for m in pat_def.finditer(src):
+            k = f"{prefix}{m.group(1)}"
+            if k not in labels:
+                labels[k] = f"{prefix.upper()}{m.group(1)}"
+        if not labels:
+            labels = fallback
+        self._label_cache[ckey] = labels
+        return labels
 
     # ------------------------------------------------------------- emit
     def param_labels(self):

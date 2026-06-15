@@ -66,7 +66,7 @@ class Config:
         self.params = {f"p{n}": 0.5 for n in range(1, 11)}
         # FX-shader params, kept separate so the FX (which can run stacked on a
         # generative shader) is tunable independently of the generative's p1–p4.
-        self.fx_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5}
+        self.fx_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
 
         # currently selected files / mode
         self.current_mode   = "SAMPLER"
