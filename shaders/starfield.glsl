@@ -69,26 +69,31 @@ vec3 emitter(vec2 uv, vec2 origin, float speed, int n,
         float fade_in = inward ? smoothstep(1.0, 0.88, d)
                                : smoothstep(0.0, 0.12, d);
 
-        float dist = length(uv - spos);
-        float core = smoothstep(star_sz, 0.0, dist) * fade_in;
+        vec2  to_uv  = uv - spos;
+        float dist   = length(to_uv);
 
-        // Trail extends opposite to direction of travel.
-        float trail_b = 0.0;
-        if (trail_len > 0.001 && star_r > 0.001) {
-            vec2  tdir   = inward ? ldir : -ldir;
-            vec2  to_uv  = uv - spos;
-            float along  = dot(to_uv, tdir);
-            float perp   = abs(dot(to_uv, vec2(-tdir.y, tdir.x)));
-            float twidth = star_sz * 0.55;
-            float tend   = star_r * trail_len;
-            if (along > 0.0 && along < tend && perp < twidth) {
-                trail_b = (1.0 - along / tend)
-                        * smoothstep(twidth, 0.0, perp)
-                        * fade_in * 0.7;
-            }
+        // Trail direction: opposite to the direction of travel (the wake).
+        vec2  tdir  = inward ? ldir : -ldir;
+        float along = dot(to_uv, tdir);   // +ve = behind the star (in the trail)
+        float perp  = abs(dot(to_uv, vec2(-tdir.y, tdir.x)));
+
+        // Max trail = full origin-to-star distance at PARAM_7=1.
+        float tend = star_r * trail_len;
+
+        // Trail region (behind star): tapered cone whose base width equals star_sz,
+        // which matches the sphere edge exactly — no brightness jump at the join.
+        // At along=0 both branches give the same value, so the transition is seamless.
+        // Front of star or trail disabled: standard solid disc.
+        float b;
+        if (trail_len > 0.001 && star_r > 0.001
+                && along >= 0.0 && along < tend && perp < star_sz) {
+            float frac = along / tend;
+            float hw   = max(0.001, star_sz * (1.0 - frac));   // tapers to point
+            float w    = 1.0 - smoothstep(0.0, hw, perp);
+            b = (1.0 - frac) * w * fade_in;
+        } else {
+            b = (1.0 - smoothstep(0.0, star_sz, dist)) * fade_in;
         }
-
-        float b = max(core, trail_b);
         if (b > 0.001)
             col += palette(d * 0.4 + hue_off, PARAM_8) * b;
     }
@@ -111,7 +116,7 @@ vec4 hook() {
     vec2 o1 = vec2((PARAM_2 - 0.5) * ps, (PARAM_3 - 0.5) * ps);
     vec2 o2 = vec2((PARAM_5 - 0.5) * ps, (PARAM_6 - 0.5) * ps);
 
-    float trail = mix(0.0, 0.65, PARAM_7);
+    float trail = mix(0.0, 1.0, PARAM_7);
 
     // Per-emitter star counts: PARAM 0–1 → 1–500 radial lanes.
     int n1 = max(1, int(PARAM_9  * 500.0 + 0.5));
