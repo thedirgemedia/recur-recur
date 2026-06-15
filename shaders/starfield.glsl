@@ -7,19 +7,22 @@
 // Speed: 0.5 = frozen  |  > 0.5 = outward  |  < 0.5 = inward
 // X:     0.5 = centre  |  0.0 = left edge  |  1.0 = right edge
 // Y:     0.5 = centre  |  0.0 = top edge   |  1.0 = bottom edge
-// Stars: 0.0 = 1 star  |  1.0 = 500 stars  (steps of 0.05 = 25 stars)
+// Stars: 0.0 = 1 star  |  1.0 = 500 stars
 //
 #define PARAM_1  0.65   /* em1 speed  */
 #define PARAM_2  0.5    /* em1 X      */
 #define PARAM_3  0.5    /* em1 Y      */
-#define PARAM_4  0.65   /* em2 speed  */
-#define PARAM_5  0.5    /* em2 X      */
-#define PARAM_6  0.5    /* em2 Y      */
-#define PARAM_7  0.5    /* trail      */
-#define PARAM_8  0.5    /* em1 palette*/
-#define PARAM_9  0.6    /* em1 stars  */
-#define PARAM_10 0.6    /* em2 stars  */
-#define PARAM_11 0.5    /* em2 palette*/
+#define PARAM_4  0.6    /* em1 stars  */
+#define PARAM_5  0.5    /* em1 trail  */
+#define PARAM_6  0.5    /* em1 palette*/
+#define PARAM_7  1.0    /* em1 opacity*/
+#define PARAM_8  0.65   /* em2 speed  */
+#define PARAM_9  0.5    /* em2 X      */
+#define PARAM_10 0.5    /* em2 Y      */
+#define PARAM_11 0.6    /* em2 stars  */
+#define PARAM_12 0.5    /* em2 trail  */
+#define PARAM_13 0.5    /* em2 palette*/
+#define PARAM_14 1.0    /* em2 opacity*/
 
 vec3 palette(float t, float sel) {
     vec3 a = vec3(0.5), b = vec3(0.5);
@@ -36,6 +39,7 @@ float hash(float n) { return fract(sin(n) * 43758.5453); }
 // seed_off:  per-emitter seed offset so emitters have different star positions.
 // hue_off:   palette phase offset so emitters have distinct hues.
 // trail_len: trail as fraction of the star's radial distance (0 = no trail).
+// pal_sel:   palette selector (0–1 morphs between palette families).
 vec3 emitter(vec2 uv, vec2 origin, float speed, int n,
              float seed_off, float hue_off, float trail_len, float pal_sel) {
     const float TWO_PI = 6.28318530;
@@ -78,7 +82,7 @@ vec3 emitter(vec2 uv, vec2 origin, float speed, int n,
         float along = dot(to_uv, tdir);   // +ve = behind the star (in the trail)
         float perp  = abs(dot(to_uv, vec2(-tdir.y, tdir.x)));
 
-        // Max trail = full origin-to-star distance at PARAM_7=1.
+        // Max trail = full origin-to-star distance at trail_len=1.
         float tend = star_r * trail_len;
 
         // Trail region (behind star): tapered cone whose base width equals star_sz,
@@ -108,24 +112,21 @@ vec4 hook() {
 
     // Map 0–1 speed params: centre (0.5) = frozen, extremes = ±0.8/s
     float s1 = (PARAM_1 - 0.5) * 1.6;
-    float s2 = (PARAM_4 - 0.5) * 1.6;
+    float s2 = (PARAM_8 - 0.5) * 1.6;
 
     // Map 0–1 position params to ±100 screen pixels from centre.
-    // In aspect-corrected UV, 1 unit = HOOKED_size.y/2 pixels,
-    // so 100px = 200/HOOKED_size.y UV units.
     float ps = 200.0 / HOOKED_size.y;
     vec2 o1 = vec2((PARAM_2 - 0.5) * ps, (PARAM_3 - 0.5) * ps);
-    vec2 o2 = vec2((PARAM_5 - 0.5) * ps, (PARAM_6 - 0.5) * ps);
+    vec2 o2 = vec2((PARAM_9 - 0.5) * ps, (PARAM_10 - 0.5) * ps);
 
-    float trail = mix(0.0, 1.0, PARAM_7);
+    float trail1 = mix(0.0, 1.0, PARAM_5);
+    float trail2 = mix(0.0, 1.0, PARAM_12);
 
-    // Per-emitter star counts: PARAM 0–1 → 1–500 radial lanes.
-    int n1 = max(1, int(PARAM_9  * 500.0 + 0.5));
-    int n2 = max(1, int(PARAM_10 * 500.0 + 0.5));
+    int n1 = max(1, int(PARAM_4  * 500.0 + 0.5));
+    int n2 = max(1, int(PARAM_11 * 500.0 + 0.5));
 
-    // Each emitter gets a distinct palette phase so they sit in different hues.
-    vec3 col = emitter(uv, o1, s1, n1, 0.0,  0.0,  trail, PARAM_8)
-             + emitter(uv, o2, s2, n2, 7.3,  0.45, trail, PARAM_11);
+    vec3 col = emitter(uv, o1, s1, n1, 0.0, 0.0,  trail1, PARAM_6) * PARAM_7
+             + emitter(uv, o2, s2, n2, 7.3, 0.45, trail2, PARAM_13) * PARAM_14;
 
     return vec4(clamp(col, 0.0, 1.0), 1.0);
 }
