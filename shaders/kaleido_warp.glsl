@@ -3,11 +3,23 @@
 //!BIND HOOKED
 
 // Ported from the original recur (cyberboy666/r_e_c_u_r) kaleidoscope.frag.
+//
+// SQUARE_SRC / SQ_SCALE_X / SQ_SCALE_Y: when this FX is stacked on a
+// generative shader, the engine renders the generative pass into a
+// square buffer sized to the frame's diagonal (so the warp has margin
+// to sample from in every direction instead of going out of bounds
+// into black at any rotation angle) and substitutes SQUARE_SRC=1 plus
+// the real SQ_SCALE_X/SQ_SCALE_Y here so the final sample lands in the
+// right spot in that square buffer.
 
 #define PARAM_1 0.3    /* sectors  */
 #define PARAM_2 0.5    /* spin     */
 #define PARAM_3 0.5    /* centre X */
 #define PARAM_4 0.5    /* centre Y */
+
+#define SQUARE_SRC 0
+#define SQ_SCALE_X 1.0
+#define SQ_SCALE_Y 1.0
 
 vec4 hook() {
     vec2 uv     = HOOKED_pos;
@@ -23,7 +35,14 @@ vec4 hook() {
     a += float(frame) / 60.0 * (PARAM_2 - 0.5) * 2.0;
 
     vec2 pos = centre + vec2(cos(a), sin(a)) * r;
-    if (pos.x < 0.0 || pos.x > 1.0 || pos.y < 0.0 || pos.y > 1.0)
+
+#if SQUARE_SRC
+    vec2 spos = vec2((pos.x - 0.5) * SQ_SCALE_X + 0.5,
+                      (pos.y - 0.5) * SQ_SCALE_Y + 0.5);
+#else
+    vec2 spos = pos;
+#endif
+    if (spos.x < 0.0 || spos.x > 1.0 || spos.y < 0.0 || spos.y > 1.0)
         return vec4(0.0, 0.0, 0.0, 1.0);
-    return textureLod(HOOKED_raw, pos, 0.0);
+    return textureLod(HOOKED_raw, spos, 0.0);
 }

@@ -28,6 +28,12 @@ FB_W  = 480
 FB_H  = 320
 FPS   = 20
 
+# Fixed key order for the param-signature change detector below — avoids a
+# sorted() + lambda call on cfg.params/fx_params every render tick when the
+# key set (p1..p10, f1..f5) never actually changes.
+_P_SIG_KEYS = tuple(f"p{n}" for n in range(1, 11))
+_F_SIG_KEYS = tuple(f"f{n}" for n in range(1, 6))
+
 SPI_BUS   = 0
 SPI_DEV   = 0
 SPI_SPEED = 8_000_000
@@ -269,8 +275,8 @@ class DisplayController:
                     _kb  = getattr(inst, "kb", None)
                     _rec = getattr(inst, "recorder", None)
                     param_sig = (
-                        tuple(cfg.params.get(k, 0.5) for k in sorted(cfg.params, key=lambda k: int(k[1:]))),
-                        tuple(cfg.fx_params.get(k, 0.5) for k in sorted(cfg.fx_params, key=lambda k: int(k[1:]))),
+                        tuple(cfg.params.get(k, 0.5) for k in _P_SIG_KEYS),
+                        tuple(cfg.fx_params.get(k, 0.5) for k in _F_SIG_KEYS),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
                         round(getattr(cfg, "overlay_blend_amount",  1.0) or 1.0, 2),
                         round(getattr(cfg, "trail_decay",           0.93), 3),

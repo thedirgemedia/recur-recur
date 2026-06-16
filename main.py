@@ -239,6 +239,19 @@ class RecurInstrument:
             self.sampler.trigger()
 
     # ------------------------------------------------------------------ presets
+    def load_preset_slot(self, slot: int):
+        """Load the preset assigned to numpad/note key `slot` (PRESETS menu).
+        Shared by keyboard.py (hold-0+4-9 any mode, plain 4-9 in LIVE) and
+        midi.py (notes, in LIVE mode)."""
+        pname = self.cfg.preset_slots.get(slot)
+        if pname:
+            data = self.cfg.load_preset(pname)
+            if data:
+                self.apply_preset(data)
+                self.osd.show(f"P{slot}: {pname.replace('.json', '').upper()}")
+        else:
+            self.osd.show(f"PRESET {slot}: EMPTY")
+
     def apply_preset(self, data: dict):
         """Apply a loaded preset dict to the live instrument state.
 
@@ -339,12 +352,13 @@ class RecurInstrument:
         if self.cfg.shader_blend:
             self.shader.reapply()
 
-    def shader_blend_cycle(self):
-        """Cycle shader blend mode. / key in SHADER mode."""
+    def shader_blend_cycle(self, direction=1):
+        """Cycle shader blend mode. / key in SHADER mode; also the BLEND
+        param-layer's mode slot (keyboard 2/3, MIDI shader_blend_cycle)."""
         modes = self.cfg.SHADER_BLEND_MODES
         i = modes.index(self.cfg.shader_blend_mode) \
             if self.cfg.shader_blend_mode in modes else 0
-        self.cfg.shader_blend_mode = modes[(i + 1) % len(modes)]
+        self.cfg.shader_blend_mode = modes[(i + direction) % len(modes)]
         log.info("shader blend mode -> %s", self.cfg.shader_blend_mode)
         self.osd.show(f"BLEND: {self.cfg.shader_blend_mode}")
         if self.cfg.shader_blend:

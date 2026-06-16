@@ -174,6 +174,7 @@ class MidiController:
         self._stop    = threading.Event()
         self._lock    = threading.Lock()
         self._port_name: str | None = None
+        self._cc_reverse: dict[int, str] | None = None  # cc -> target, lazy
 
     # ── lifecycle ──────────────────────────────────────────────────────────────
 
@@ -268,15 +269,26 @@ class MidiController:
         elif status == 0xC0:        # program change
             self.inst.cfg.load_preset(f"{d1:02d}.json")
 
+    def invalidate_cc_map(self):
+        """Call after midi_target_cc is edited (MIDI settings menu) so the
+        next CC message rebuilds the reverse lookup instead of using stale
+        assignments."""
+        self._cc_reverse = None
+
     def _handle_cc(self, cc: int, val: int):
         # User-defined assignments take full priority over built-in defaults.
         # A user CC fires its target and returns; built-ins are only reached
-        # when no user assignment matches the incoming CC number.
-        user_map: dict = getattr(self.inst.cfg, 'midi_target_cc', {})
-        for target, user_cc in user_map.items():
-            if user_cc is not None and user_cc == cc:
-                self._dispatch_target(target, val)
-                return
+        # when no user assignment matches the incoming CC number. Reverse
+        # lookup is cached (rebuilt lazily via invalidate_cc_map) so this is
+        # O(1) instead of scanning the whole map on every CC message.
+        if self._cc_reverse is None:
+            user_map: dict = getattr(self.inst.cfg, 'midi_target_cc', {})
+            self._cc_reverse = {cc_: target for target, cc_ in user_map.items()
+                                 if cc_ is not None}
+        target = self._cc_reverse.get(cc)
+        if target is not None:
+            self._dispatch_target(target, val)
+            return
 
         # Built-in param knobs — scale 0–127 → 0.0–1.0
         if cc in CC_PARAMS:
@@ -346,12 +358,14 @@ class MidiController:
         elif target == "shader_next" and val > 63:
             if inst.mode == "SHADER":
                 inst.shader.apply_fx_overlay(+1)
+                inst.osd.show(f"FX: {cfg.current_fx.replace('.glsl', '').upper()}")
             else:
                 inst.shader.cycle(+1, kind="fx")
 
         elif target == "shader_prev" and val > 63:
             if inst.mode == "SHADER":
                 inst.shader.apply_fx_overlay(-1)
+                inst.osd.show(f"FX: {cfg.current_fx.replace('.glsl', '').upper()}")
             else:
                 inst.shader.cycle(-1, kind="fx")
 
@@ -364,8 +378,12 @@ class MidiController:
             return
 
         # All other notes trigger clip slots (note % 10; only 4-9 exist).
-        # slot() returns False for empty/unknown slots — don't retrigger
-        # the current clip in that case.
+        # In LIVE mode there's no clip to trigger — the camera is the
+        # source — so notes recall presets instead, same as keyboard.py's
+        # plain-4-9-in-LIVE behaviour (avoids killing the camera feed).
+        if inst.mode == "LIVE":
+            inst.load_preset_slot(note % 10)
+            return
         s = inst.sampler
         if s.slot(note % 10):
             s.trigger()

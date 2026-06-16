@@ -15,7 +15,7 @@ Layout (17-cell, 19-key with double-tall Enter):
    │  0   │ 000  │  .   │      │
    └──────┴──────┴──────┴──────┘
 
-PERFORM mode (SAMPLER / LIVE):
+PERFORM mode (SAMPLER):
   Num     switch to MENU mode
   4-9     trigger the clip assigned to that slot (assigned in BROWSER menu)
   /       toggle V overlay
@@ -23,13 +23,20 @@ PERFORM mode (SAMPLER / LIVE):
   -       previous FX shader
   +       next FX shader
   Enter   cycle instrument mode (SAMPLER -> SHADER -> LIVE)
-  1       cycle selected param (p1 -> p2 -> p3 -> p4 -> p1)
-  2       selected param -= 0.1
-  3       selected param += 0.1
+  Bksp    cycle param layer: FX -> COLOUR -> BLEND -> FX (see below)
+  1       cycle the selected slot within the current param layer
+  2       selected slot -= step
+  3       selected slot += step
   0       set IN point (1st press) / OUT point (2nd press) / clear (3rd press)
   000     toggle temporal trail  (dedicated key — may be dead on some units)
   .       toggle temporal trail  (use this if 000 key is unresponsive)
-  Bksp    toggle param view: shader p1-p4 ↔ FX controls (blend amt, ovl frames)
+  hold 0 + .     record toggle
+  hold 0 + 4-9   load the preset assigned to that slot (PRESETS menu)
+
+PERFORM mode (LIVE):
+  Same as SAMPLER except 4-9 — there's no clip to trigger while the camera
+  is the source, so plain 4-9 loads the preset assigned to that slot
+  (PRESETS menu), same as hold-0+4-9 does in the other modes.
 
 PERFORM mode (SHADER):
   4-9     load the generative shader assigned to that slot (SHADERS menu)
@@ -37,9 +44,21 @@ PERFORM mode (SHADER):
   +       next FX shader (stacked on top of generative)
   /       toggle shader blend (generative ↔ generative+clip)
   *       cycle shader blend mode
-  1       cycle selected param (p1 -> p2 -> p3 -> p4)
-  2       selected param -= 0.1
-  3       selected param += 0.1
+  0       next generative shader (no real clip to mark in/out on here)
+  Bksp    cycle param layer: SHDR -> FX -> COLOUR -> BLEND -> SHDR
+  1       cycle the selected slot within the current param layer
+  2       selected slot -= step
+  3       selected slot += step
+  hold 0 + .     record toggle
+  hold 0 + 4-9   load the preset assigned to that slot (PRESETS menu)
+
+Param layers (Bksp cycles through whichever are available in the current
+mode — SHDR only exists in SHADER mode; see _PARAM_LAYERS below):
+  SHDR    the active generative shader's own params (SHADER mode only)
+  FX      the active FX shader's own params f1-f4
+  COLOUR  hue / saturation / trail decay
+  BLEND   compositing: shader<->video blend amount+mode+source (SHADER) or
+          overlay blend mode+opacity (SAMPLER/LIVE)
 
 MENU mode: Num Lock toggles the navigable menu on the SPI display; while it
 is active every key routes to `self.inst.menu.handle()` and none reach the
@@ -53,6 +72,8 @@ implement '000' by sending three rapid KEY_KP0 events instead.
 import logging
 import threading
 import time
+
+from engine.shader import clamp01
 
 log = logging.getLogger("kbd")
 
@@ -271,15 +292,7 @@ class KeyboardController:
 
         # ── hold-0 + 4-9: load preset slot (any mode) ─────────────────────
         if name.startswith("PRESET_"):
-            slot  = int(name[-1])
-            pname = inst.cfg.preset_slots.get(slot)
-            if pname:
-                data = inst.cfg.load_preset(pname)
-                if data:
-                    inst.apply_preset(data)
-                    inst.osd.show(f"P{slot}: {pname.replace('.json','').upper()}")
-            else:
-                inst.osd.show(f"PRESET {slot}: EMPTY")
+            inst.load_preset_slot(int(name[-1]))
             return
 
         # ── SHADER mode: 4-9 load assigned generative shader ──────────────
@@ -293,7 +306,15 @@ class KeyboardController:
                 inst.osd.show(f"SLOT {n}: EMPTY")
             return
 
-        # ── clip slots 4-9 (SAMPLER / LIVE) ───────────────────────────────
+        # ── LIVE mode: 4-9 recall presets — there's no "clip" to trigger
+        # while the camera is the source, so plain 4-9 does what hold-0+4-9
+        # does elsewhere instead of falling through to the clip-slot path
+        # below (which would kill the camera feed to play a stored clip).
+        if inst.mode == "LIVE" and name in ("4","5","6","7","8","9"):
+            inst.load_preset_slot(int(name))
+            return
+
+        # ── clip slots 4-9 (SAMPLER) ───────────────────────────────────────
         if name in ("4","5","6","7","8","9"):
             n = int(name)
             if s.slot(n):
@@ -361,22 +382,27 @@ class KeyboardController:
         elif name == "3":
             self._step_param(+PARAM_STEP)
         elif name == "0":
-            # 1st press: set in, 2nd press: set out, 3rd press: clear
-            stage = getattr(self, "_inout_stage", 0)
-            if stage == 0:
-                s.set_in()
-                inst.osd.show("IN POINT")
-                self._inout_stage = 1
-            elif stage == 1:
-                if s.set_out():
-                    inst.osd.show("OUT POINT")
-                    self._inout_stage = 2
-                else:
-                    inst.osd.show("OUT MUST BE AFTER IN")
+            if inst.mode == "SHADER":
+                # No real clip to mark in/out on — repurpose as next-shader.
+                sh.cycle(+1, kind="generative")
+                inst.osd.show(f"SHADER: {inst.cfg.current_shader.replace('.glsl', '').upper()}")
             else:
-                s.clear_points()
-                inst.osd.show("CLEARED IN/OUT")
-                self._inout_stage = 0
+                # 1st press: set in, 2nd press: set out, 3rd press: clear
+                stage = getattr(self, "_inout_stage", 0)
+                if stage == 0:
+                    s.set_in()
+                    inst.osd.show("IN POINT")
+                    self._inout_stage = 1
+                elif stage == 1:
+                    if s.set_out():
+                        inst.osd.show("OUT POINT")
+                        self._inout_stage = 2
+                    else:
+                        inst.osd.show("OUT MUST BE AFTER IN")
+                else:
+                    s.clear_points()
+                    inst.osd.show("CLEARED IN/OUT")
+                    self._inout_stage = 0
         elif name == "000":
             inst.trail_toggle()
         elif name == ".":
@@ -423,7 +449,7 @@ class KeyboardController:
                 return
             key = keys[self._param_idx % len(keys)]
             cur = cfg.params.get(key, 0.5)
-            new = max(0.0, min(1.0, cur + delta))
+            new = clamp01(cur + delta)
             if new == cur:
                 return
             inst.shader.set_param(key, new)
@@ -439,7 +465,7 @@ class KeyboardController:
             fx_keys = sorted(inst.shader.fx_param_labels().keys(), key=lambda k: int(k[1:]))
             key = fx_keys[self._param_idx % max(1, len(fx_keys))] if fx_keys else "f1"
             cur = cfg.fx_params.get(key, 0.5)
-            new = max(0.0, min(1.0, cur + delta))
+            new = clamp01(cur + delta)
             if new == cur:
                 return
             inst.shader.set_fx_param(key, new)
@@ -467,22 +493,12 @@ class KeyboardController:
             d     = 1 if delta > 0 else -1
             if slot == "mode":
                 if inst.mode == "SHADER":
-                    m = list(cfg.SHADER_BLEND_MODES)
-                    i = m.index(cfg.shader_blend_mode) if cfg.shader_blend_mode in m else 0
-                    cfg.shader_blend_mode = m[(i + d) % len(m)]
-                    inst.osd.show(f"BLEND: {cfg.shader_blend_mode}")
-                    if cfg.shader_blend:
-                        inst.shader.reapply()
+                    inst.shader_blend_cycle(d)
                 else:
-                    m = list(cfg.OVERLAY_MODES)
-                    i = m.index(cfg.overlay_mode) if cfg.overlay_mode in m else 0
-                    cfg.overlay_mode = m[(i + d) % len(m)]
-                    inst.osd.show(f"OVL: {cfg.overlay_mode}")
-                    if cfg.overlay_on:
-                        inst.sampler.refresh_overlay()
+                    inst.overlay_cycle_mode(d)
             elif slot == "amt":
                 cur = getattr(cfg, 'shader_blend_amount', 0.5)
-                new = max(0.0, min(1.0, round(cur + delta, 2)))
+                new = round(clamp01(cur + delta), 2)
                 if new == cur:
                     return
                 cfg.shader_blend_amount = new
@@ -491,7 +507,7 @@ class KeyboardController:
                     inst.shader.reapply()
             elif slot == "opc":
                 cur = getattr(cfg, 'overlay_blend_amount', 1.0)
-                new = max(0.0, min(1.0, round(cur + delta, 2)))
+                new = round(clamp01(cur + delta), 2)
                 if new == cur:
                     return
                 cfg.overlay_blend_amount = new

@@ -63,6 +63,10 @@ class SamplerEngine:
         self._active_source = None
         self.removable_paths: set = set()   # full paths of clips from /media or /mnt
         self._vf_had_trail = False          # was a tpad trail in the last vf chain
+        self._cam_proc = None
+        # Bumped on every _play_csi_camera()/_stop_cam_proc() call so a delayed
+        # rpicam-start thread can tell it's been superseded (see _play_csi_camera).
+        self._cam_gen  = 0
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -286,6 +290,8 @@ class SamplerEngine:
         if not chosen:
             log.warning("no working camera found; staying on current source")
             return
+        self._cmd_async("vf", "remove", "@overlay")
+        self._cmd_async("vf", "remove", "@trail")
         self._cmd_async("vf", "set", "")
         url = f"av://v4l2:{chosen}"
         # Per-file options override global --loop-file=inf and disable cache
@@ -329,6 +335,8 @@ class SamplerEngine:
         # Point mpv at the FIFO first; it will block-open waiting for writer.
         # Per-file options disable buffering/caching and enable latency hacks
         # so mpv always displays the freshest frame rather than a buffered one.
+        self._cmd_async("vf", "remove", "@overlay")
+        self._cmd_async("vf", "remove", "@trail")
         self._cmd_async("vf", "set", "")
         self._cmd_async("loadfile", fifo, "replace", 0,
                         "loop-file=no,cache=no,"
@@ -344,9 +352,16 @@ class SamplerEngine:
         cam_w = getattr(self.cfg, "camera_width",  640)
         cam_h = getattr(self.cfg, "camera_height", 360)
 
+        self._cam_gen += 1
+        my_gen = self._cam_gen
+
         def _start():
             time.sleep(0.3)
-            self._cam_proc = subprocess.Popen([
+            # A _stop_cam_proc()/restart that landed during the sleep above
+            # bumped _cam_gen — don't launch a now-unwanted rpicam-vid.
+            if self._cam_gen != my_gen:
+                return
+            proc = subprocess.Popen([
                 "rpicam-vid",
                 "-t", "0",                    # run until killed
                 "--nopreview",
@@ -367,13 +382,19 @@ class SamplerEngine:
                 "-o", fifo,
             ], stdout=subprocess.DEVNULL,
                stderr=open("/tmp/rpicam.err", "w"))
+            if self._cam_gen != my_gen:
+                # Stopped right as we launched — don't leak an untracked proc.
+                proc.terminate()
+                return
+            self._cam_proc = proc
             log.info("rpicam-vid started → %s  %dx%d  (pid %d)",
-                     fifo, cam_w, cam_h, self._cam_proc.pid)
+                     fifo, cam_w, cam_h, proc.pid)
 
         threading.Thread(target=_start, daemon=True, name="rpicam-start").start()
 
     def _stop_cam_proc(self):
         """Terminate any rpicam-vid subprocess started by _play_csi_camera."""
+        self._cam_gen += 1   # invalidate any in-flight delayed _start() above
         proc = getattr(self, "_cam_proc", None)
         if proc and proc.poll() is None:
             proc.terminate()
@@ -503,7 +524,10 @@ class SamplerEngine:
                     msg = json.loads(line.decode("utf-8", "replace"))
                 except Exception:
                     continue
-                self._handle_message(msg)
+                try:
+                    self._handle_message(msg)
+                except Exception as e:
+                    log.warning("error handling mpv event %r: %s", msg, e)
 
     def _handle_message(self, msg):
         # Reply to a sync get?

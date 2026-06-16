@@ -15,6 +15,7 @@ import os
 import time
 import logging
 import subprocess
+import threading
 
 log = logging.getLogger("mixer")
 
@@ -59,14 +60,20 @@ class MixerEngine:
         except FileNotFoundError:
             log.error("ffmpeg not found — install it to enable recording")
             return
-        # kmsgrab fails fast when it can't open the device or lacks
-        # CAP_SYS_ADMIN — surface that instead of pretending to record.
-        time.sleep(0.5)
-        if self.rec_proc.poll() is not None:
-            log.error("recording failed to start (see /tmp/ffmpeg-rec.err)")
-            self.rec_proc = None
-            return
         self.recording = True
+        # kmsgrab fails fast when it can't open the device or lacks
+        # CAP_SYS_ADMIN — surface that instead of pretending to record. Done
+        # on a background thread so the caller (the GPIO/input poll loop)
+        # isn't blocked for 0.5s on every recording toggle.
+        threading.Thread(target=self._verify_started, args=(self.rec_proc,),
+                          daemon=True, name="mixer-rec-verify").start()
+
+    def _verify_started(self, proc):
+        time.sleep(0.5)
+        if proc.poll() is not None and self.rec_proc is proc:
+            log.error("recording failed to start (see /tmp/ffmpeg-rec.err)")
+            self.rec_proc  = None
+            self.recording = False
 
     def stop_recording(self):
         if not self.recording:

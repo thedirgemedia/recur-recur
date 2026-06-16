@@ -69,7 +69,7 @@ class GpioController:
     def _setup_buttons(self):
         configs = [
             (BTN_MODE,    0.05, lambda: self.inst.cycle_mode(),             None),
-            (BTN_TRIGGER, 0.02, lambda: self.inst.sampler.trigger(),        lambda: self.inst.sampler.release()),
+            (BTN_TRIGGER, 0.02, lambda: self.inst.sampler.trigger(),        None),
             (BTN_REC,     0.1,  lambda: self.inst.mixer.toggle_recording(), None),
             (BTN_SHADER,  0.05, lambda: self.inst.sampler.cycle_mode(),     None),
         ]

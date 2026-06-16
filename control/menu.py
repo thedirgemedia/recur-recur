@@ -29,6 +29,7 @@ import os
 import threading
 
 from control.midi import MIDI_TARGETS, MIDI_TARGET_LABELS, MIDI_DEFAULTS
+from engine.shader import clamp01
 
 log = logging.getLogger("menu")
 
@@ -249,7 +250,7 @@ class Menu:
                             cfg.shader_slots[k] = None
                     cfg.shader_slots[slot] = shader
                     log.info("shader slot %d → %s", slot, shader)
-        elif page == "PRESETS":
+            elif page == "PRESETS":
                 presets = self._presets_list()
                 if 0 <= self.sel < len(presets):
                     preset = presets[self.sel]
@@ -485,6 +486,7 @@ class Menu:
             cur = MIDI_DEFAULTS.get(target) or (0 if d > 0 else 127)
         new = max(0, min(127, cur + d * 5))
         user_map[target] = new
+        self.inst.midi.invalidate_cc_map()
         log.info("midi %s → CC %d", target, new)
 
     def _midi_clear(self):
@@ -493,6 +495,7 @@ class Menu:
             return
         target = MIDI_TARGETS[self.sel]
         self.inst.cfg.midi_target_cc.pop(target, None)
+        self.inst.midi.invalidate_cc_map()
         log.info("midi %s → default", target)
 
     def _midi_begin_edit(self):
@@ -537,6 +540,7 @@ class Menu:
             return
         target = MIDI_TARGETS[self.sel]
         self.inst.cfg.midi_target_cc[target] = val
+        self.inst.midi.invalidate_cc_map()
         self._midi_editing   = False
         self._midi_input_buf = ""
         log.info("midi %s → CC %d", target, val)
@@ -689,7 +693,7 @@ class Menu:
         is_fx = key.startswith("f")
         vals  = cfg.fx_params if is_fx else cfg.params
         cur = vals.get(key, 0.5)
-        new = max(0.0, min(1.0, round(cur + delta, 3)))
+        new = round(clamp01(cur + delta), 3)
         if new != cur:
             if is_fx:
                 self.inst.shader.set_fx_param(key, new)

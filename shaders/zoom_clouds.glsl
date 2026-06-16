@@ -8,6 +8,7 @@
 #define PARAM_2 0.5    /* detail */
 #define PARAM_3 0.5    /* warp   */
 #define PARAM_4 0.5    /* hue    */
+#define PARAM_5 0.5    /* zoom   */
 
 vec3 hueShift(vec3 col, float h) {
     const vec3 k = vec3(0.57735);
@@ -18,6 +19,7 @@ vec3 hueShift(vec3 col, float h) {
 vec4 hook() {
     vec2 aspect = HOOKED_size / HOOKED_size.y;
     vec2 uv = (HOOKED_pos - 0.5) * aspect * 2.0;
+    uv *= mix(1.7, 0.3, PARAM_5);
     float speed = mix(0.2, 2.0, PARAM_1);
     float t   = float(frame) / 60.0 * speed;
     float mt  = t * speed;

@@ -22,6 +22,7 @@ Knob retuning strategy:
 
 import os
 import re
+import math
 import logging
 import threading
 import time
@@ -36,6 +37,13 @@ TMP_SHADER_PREFIX = "recur_s"
 # Regex matching `#define PARAM_N <value>` lines we want to substitute.
 # Supports up to PARAM_9 so shaders can expose as many controls as they need.
 PARAM_RE = re.compile(r'^(\s*#define\s+PARAM_([1-9][0-9]?)\s+)([^\s/]+)', re.M)
+
+
+def clamp01(x):
+    """Clamp to the [0, 1] param range. Single source of truth so
+    keyboard.py/menu.py compute the same clamped value they display in the
+    OSD as the one set_param/set_fx_param actually store."""
+    return max(0.0, min(1.0, x))
 
 
 def _subst(text, vals, prefix):
@@ -181,6 +189,11 @@ class ShaderEngine:
         self._pending = threading.Event()
         self._debounce_thread = None
         self._stop = threading.Event()
+        self._lock = threading.Lock()    # guards _apply_now/set_color/_cmd_clear —
+                                          # these run from both the main thread and
+                                          # the debounce thread and mutate shared
+                                          # tmp-file state (_tmp_active/_tmp_counter/
+                                          # _color_tmp), so they must not interleave
         self._tmp_counter = 0            # monotonically increasing; ensures unique paths
         self._tmp_active  = []           # base shader tmp files mpv currently has loaded
         self._color_tmp   = None         # colour-pass tmp file (appended last), or None
@@ -188,6 +201,18 @@ class ShaderEngine:
         self._label_cache    = {}  # {path: {p1:label, ...}} — avoid per-frame file reads
         self._fallback_label_path = None  # resolved fallback path when self.current is None
         self._gen_cache      = {}  # {basename: bool} — cached DESC scan results
+        self._sweep_stale_tmp_shaders()
+
+    def _sweep_stale_tmp_shaders(self):
+        """Remove tmp shader files left behind by an unclean shutdown (crash,
+        kill -9, power loss) of a previous run — they're never cleaned up by
+        the new process since _tmp_counter restarts from 0 each session."""
+        import glob
+        for path in glob.glob(os.path.join(TMP_SHADER_DIR, f"{TMP_SHADER_PREFIX}*.glsl")):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------- discovery
 
@@ -291,7 +316,7 @@ class ShaderEngine:
     def set_param(self, key, value):
         """Called by GPIO/MIDI when a knob moves. Schedules a debounced
         recompile."""
-        value = max(0.0, min(1.0, value))
+        value = clamp01(value)
         if self.cfg.params.get(key) == value:
             return
         self.cfg.params[key] = value
@@ -317,12 +342,24 @@ class ShaderEngine:
                     break
                 last_check = cur
             self._pending.clear()
-            self._apply_now()
+            self._commit_pending()
+
+    def _commit_pending(self):
+        """Apply whatever changed (shader params and/or colour) since the
+        last commit. Colour must still apply even with no base shader
+        active (it's a global pass), so it's refreshed independently of
+        _apply_now_locked, which is a no-op when self.current is None."""
+        with self._lock:
+            if self.current:
+                self._apply_now_locked()
+            else:
+                self._refresh_color()
+                self._push_shaders()
 
     def set_fx_param(self, key, value):
         """Adjust an FX param (f1–f4). Schedules a debounced recompile if an FX
         is active in the chain."""
-        value = max(0.0, min(1.0, value))
+        value = clamp01(value)
         if self.cfg.fx_params.get(key) == value:
             return
         self.cfg.fx_params[key] = value
@@ -336,7 +373,9 @@ class ShaderEngine:
 
     def _snapshot(self):
         return (tuple(self.cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
-                tuple(self.cfg.fx_params.get(k, 0.5) for k in sorted(self.cfg.fx_params, key=lambda k: int(k[1:]))))
+                tuple(self.cfg.fx_params.get(k, 0.5) for k in sorted(self.cfg.fx_params, key=lambda k: int(k[1:]))),
+                getattr(self.cfg, 'color_hue', 0.0),
+                getattr(self.cfg, 'color_sat', 1.0))
 
     def fx_param_labels(self):
         """Param labels for the current FX shader, keyed f1–f4."""
@@ -463,7 +502,16 @@ class ShaderEngine:
     def _apply_now(self):
         """Substitute PARAM_N values, write to a new unique tmp path, and
         push to mpv. A fresh path is used every call because mpv 0.40 caches
-        compiled shaders in-memory by path and skips recompilation otherwise."""
+        compiled shaders in-memory by path and skips recompilation otherwise.
+
+        Runs under self._lock since this is called from both the main thread
+        (load/apply_fx_overlay/reapply) and the debounce thread — without it,
+        an interleaved run could corrupt _tmp_counter/_tmp_active and leave
+        mpv pointed at a half-written or already-deleted tmp file."""
+        with self._lock:
+            self._apply_now_locked()
+
+    def _apply_now_locked(self):
         if not self.current:
             return
         try:
@@ -551,6 +599,28 @@ class ShaderEngine:
         elif is_generative and getattr(self.cfg, "shader_fx_stack", False) \
                 and self.cfg.current_fx:
             # ── generative + FX stacked ────────────────────────────────────
+            # Rotating FX (mirror/rotate_zoom/kaleido_warp) need margin to
+            # sample from or they show black where the rotated sample falls
+            # outside the frame. A width*width square only adds margin on
+            # the vertical axis (the horizontal axis is already at its
+            # native max) so it still clips during rotation — the square
+            # has to be sized to the frame's diagonal to guarantee no
+            # corner ever clips at any rotation angle. Render the
+            # generative pass into that diagonal*diagonal square buffer,
+            # then have the FX pass map both axes back down to the
+            # native frame when it samples.
+            fx_name = self.cfg.current_fx
+            square_mode = fx_name in getattr(self.cfg, "rotating_fx", set())
+
+            if square_mode:
+                w, h = self.cfg.width, self.cfg.height
+                side = int(math.ceil(math.hypot(w, h)))
+                out = out.replace("HOOKED_size / HOOKED_size.y",
+                                   f"vec2({side / h:.6f})")
+                out = out.replace("//!BIND HOOKED\n",
+                                   f"//!BIND HOOKED\n//!WIDTH {side}\n"
+                                   f"//!HEIGHT {side}\n", 1)
+
             # Write generative with live param substitution.
             try:
                 with open(gen_tmp, "w") as f:
@@ -562,7 +632,6 @@ class ShaderEngine:
 
             # Stack the FX with its own live params (cfg.fx_params), so the
             # generative (cfg.params) and the FX are tuned independently.
-            fx_name = self.cfg.current_fx
             fx_path = fx_name if os.path.isabs(fx_name) \
                                else os.path.join(self.cfg.shaders_dir, fx_name)
             try:
@@ -572,6 +641,24 @@ class ShaderEngine:
                 log.warning("can't read FX shader %s: %s", fx_path, e)
                 self._finalize_shaders(new_active, is_generative)
                 return
+
+            if square_mode:
+                native_aspect = w / h
+                fx_src = fx_src.replace("#define SQUARE_SRC 0",
+                                         "#define SQUARE_SRC 1", 1)
+                fx_src = re.sub(r"#define NATIVE_ASPECT [\d.]+",
+                                 f"#define NATIVE_ASPECT {native_aspect:.6f}",
+                                 fx_src, count=1)
+                fx_src = re.sub(r"#define SQ_SCALE_X [\d.]+",
+                                 f"#define SQ_SCALE_X {w / side:.6f}",
+                                 fx_src, count=1)
+                fx_src = re.sub(r"#define SQ_SCALE_Y [\d.]+",
+                                 f"#define SQ_SCALE_Y {h / side:.6f}",
+                                 fx_src, count=1)
+                fx_src = fx_src.replace(
+                    "//!BIND HOOKED\n",
+                    f"//!BIND HOOKED\n//!WIDTH {w}\n"
+                    f"//!HEIGHT {h}\n", 1)
 
             self._tmp_counter += 1
             fx_tmp = os.path.join(TMP_SHADER_DIR,
@@ -584,8 +671,9 @@ class ShaderEngine:
                 self._finalize_shaders(new_active, is_generative)
                 return
             new_active.append(fx_tmp)
-            log.debug("shaders -> %s + fx(%s)", os.path.basename(gen_tmp),
-                      os.path.basename(fx_path))
+            log.debug("shaders -> %s + fx(%s)%s", os.path.basename(gen_tmp),
+                      os.path.basename(fx_path),
+                      " [square]" if square_mode else "")
 
         else:
             # ── single shader ──────────────────────────────────────────────
@@ -656,24 +744,29 @@ class ShaderEngine:
                 pass
 
     def set_color(self, hue=None, sat=None):
-        """Update hue (turns 0..1) and/or saturation (0..2) and re-push so the
-        colour pass applies live in every mode."""
+        """Update hue (turns 0..1) and/or saturation (0..2). Debounced like
+        set_param/set_fx_param — holding a colour key down no longer does a
+        full tmp-file write + IPC round trip on every single keypress."""
         if hue is not None:
             self.cfg.color_hue = hue
         if sat is not None:
             self.cfg.color_sat = sat
-        self._refresh_color()
-        self._push_shaders()
+        self._pending.set()
+        if self._debounce_thread is None or not self._debounce_thread.is_alive():
+            self._debounce_thread = threading.Thread(
+                target=self._debounce_loop, daemon=True, name="shader-debounce")
+            self._debounce_thread.start()
 
     def reapply(self):
         """Re-emit the current shader (e.g. after blend mode or source changed)."""
         self._apply_now()
 
     def _cmd_clear(self):
-        old = self._tmp_active
-        self._tmp_active = []
-        self._refresh_color()
-        self._push_shaders()
+        with self._lock:
+            old = self._tmp_active
+            self._tmp_active = []
+            self._refresh_color()
+            self._push_shaders()
         for path in old:
             try:
                 os.unlink(path)

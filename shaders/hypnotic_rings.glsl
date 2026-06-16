@@ -8,6 +8,7 @@
 #define PARAM_2 0.5    /* freq  */
 #define PARAM_3 0.5    /* orbit */
 #define PARAM_4 0.5    /* hue   */
+#define PARAM_5 0.5    /* zoom  */
 
 vec3 hueShift(vec3 col, float h) {
     const vec3 k = vec3(0.57735);
@@ -23,6 +24,7 @@ float ring(vec2 p, vec2 src, float freq, float phase) {
 vec4 hook() {
     vec2 aspect = HOOKED_size / HOOKED_size.y;
     vec2 uv = (HOOKED_pos - 0.5) * aspect * 2.0;
+    uv *= mix(1.7, 0.3, PARAM_5);
     float t     = float(frame) / 60.0 * mix(0.1, 1.5, PARAM_1);
     float orbit = mix(0.1, 0.9, PARAM_3);
     float freq  = mix(4.0, 30.0, PARAM_2);

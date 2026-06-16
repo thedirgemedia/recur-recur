@@ -8,6 +8,7 @@
 // X:     0.5 = centre  |  0.0 = left edge  |  1.0 = right edge
 // Y:     0.5 = centre  |  0.0 = top edge   |  1.0 = bottom edge
 // Stars: 0.0 = 1 star  |  1.0 = 500 stars
+// Zoom:  0.5 = neutral |  > 0.5 = zoom in  |  < 0.5 = zoom out (both emitters)
 //
 #define PARAM_1  0.65   /* em1 speed  */
 #define PARAM_2  0.5    /* em1 X      */
@@ -23,6 +24,7 @@
 #define PARAM_12 0.5    /* em2 trail  */
 #define PARAM_13 0.5    /* em2 palette*/
 #define PARAM_14 1.0    /* em2 opacity*/
+#define PARAM_15 0.5    /* zoom       */
 
 vec3 palette(float t, float sel) {
     vec3 a = vec3(0.5), b = vec3(0.5);
@@ -109,6 +111,7 @@ vec3 emitter(vec2 uv, vec2 origin, float speed, int n,
 vec4 hook() {
     vec2 asp = HOOKED_size / HOOKED_size.y;
     vec2 uv  = (HOOKED_pos - 0.5) * asp * 2.0;
+    uv *= mix(1.7, 0.3, PARAM_15);
 
     // Map 0–1 speed params: centre (0.5) = frozen, extremes = ±0.8/s
     float s1 = (PARAM_1 - 0.5) * 1.6;

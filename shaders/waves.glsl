@@ -6,6 +6,7 @@
 #define PARAM_2 0.5    /* speed     */
 #define PARAM_3 0.5    /* count     */
 #define PARAM_4 0.5    /* palette   */
+#define PARAM_5 0.5    /* zoom      */
 
 vec3 palette(float t, float sel) {
     vec3 a = vec3(0.5), b = vec3(0.5);
@@ -16,6 +17,7 @@ vec3 palette(float t, float sel) {
 
 vec4 hook() {
     vec2 uv = (HOOKED_pos - 0.5) * (HOOKED_size / HOOKED_size.y) * 2.0;
+    uv *= mix(1.7, 0.3, PARAM_5);
     float t = float(frame) / 60.0 * mix(0.2, 3.0, PARAM_2);
     float freq = mix(2.0, 20.0, PARAM_1);
     int n = int(mix(2.0, 8.0, PARAM_3));

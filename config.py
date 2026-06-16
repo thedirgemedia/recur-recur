@@ -78,6 +78,14 @@ class Config:
         # so every + / - press lands on something visually interesting
         self.excluded_from_fx = {"passthrough.glsl"}
 
+        # FX shaders that rotate/spin their sample point. When one of these
+        # is stacked on a generative shader, the engine renders the
+        # generative pass into a square buffer sized to the frame's
+        # diagonal first so the rotation has margin to sample from in
+        # every direction instead of going out of bounds and showing
+        # black at the corners.
+        self.rotating_fx = {"mirror.glsl", "rotate_zoom.glsl", "kaleido_warp.glsl"}
+
         # User-defined MIDI CC assignments — map target name → CC number (0–127).
         # None means "use the built-in default from midi.py".
         # Targets: p1 p2 p3 p4  blend_amt ovl_opacity trl_decay

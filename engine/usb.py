@@ -187,6 +187,7 @@ class UsbManager:
     def copy_to_internal(self, src, progress=None):
         """Copy src into cfg.clips_dir. Returns (dest_path, status) where status
         is 'copied' | 'exists' | 'error'. Skips if a same-named file exists."""
+        tmp = None
         try:
             os.makedirs(self.cfg.clips_dir, exist_ok=True)
             dest = os.path.join(self.cfg.clips_dir, os.path.basename(src))
@@ -200,7 +201,7 @@ class UsbManager:
         except Exception as e:
             log.warning("copy %s failed: %s", src, e)
             try:
-                if os.path.exists(tmp):
+                if tmp and os.path.exists(tmp):
                     os.unlink(tmp)
             except Exception:
                 pass
