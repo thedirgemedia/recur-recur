@@ -148,7 +148,14 @@ class RecurInstrument:
         """
         if self._mode == "SAMPLER":
             self.shader.load(None)
-            self.sampler.start_playback()   # no-op if clip already active
+            if self.cfg.current_clip:
+                self.sampler.start_playback()   # no-op if clip already active
+            else:
+                # No clip yet: load a blank source so mpv initialises its DRM
+                # output immediately rather than staying idle (idle mode with
+                # --gpu-context=drm defers KMS init until content is loaded,
+                # which leaves the HDMI output dark until the first mode change).
+                self.sampler.play_blank()
             # SHADER mode forces loop-file=inf to keep frames flowing; restore
             # the sampler's real loop mode (oneshot/playlist/etc.) on return.
             self.sampler._apply_loop_mode()

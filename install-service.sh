@@ -15,12 +15,16 @@ echo "==> installing recur-recur as a boot service"
 echo "    user:    $USER_NAME"
 echo "    project: $PROJECT_DIR"
 
-# --- 1. boot to console (no desktop) ----------------------------------------
+# --- 1. ensure pmount is installed (USB import fallback for non-service runs) --
+echo "==> ensuring pmount is installed…"
+sudo apt-get install -y pmount
+
+# --- 2. boot to console (no desktop) ----------------------------------------
 # B2 = console autologin in raspi-config's nonint API.
 echo "==> setting boot target to console + autologin…"
 sudo raspi-config nonint do_boot_behaviour B2
 
-# --- 2. build the service file with the right paths -------------------------
+# --- 3. build the service file with the right paths -------------------------
 echo "==> writing /etc/systemd/system/recur.service…"
 sudo tee /etc/systemd/system/recur.service >/dev/null <<EOF
 [Unit]
@@ -60,7 +64,7 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# --- 3. enable -------------------------------------------------------------
+# --- 4. enable -------------------------------------------------------------
 echo "==> enabling service…"
 sudo systemctl daemon-reload
 sudo systemctl enable recur.service

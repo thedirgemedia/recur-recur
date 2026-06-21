@@ -13,9 +13,10 @@ echo "==> installing system packages…"
 sudo apt update
 sudo apt install -y \
     mpv ffmpeg \
-    python3-picamera2 python3-lgpio python3-pip \
+    python3-picamera2 python3-lgpio python3-spidev python3-pip \
     python3-pil python3-numpy python3-evdev \
     libasound2-dev libjack-jackd2-dev \
+    pmount \
     git build-essential
 
 # --- python packages (the ones not available via apt) ------------------------
@@ -32,9 +33,22 @@ sudo usermod -aG input,video,render "$USER"
 echo "==> setting boot mode to console autologin (no desktop)…"
 sudo raspi-config nonint do_boot_behaviour B2
 
-# --- GPU config for smooth playback ------------------------------------------
+# --- boot config: SPI + GPU --------------------------------------------------
 CONFIG=/boot/firmware/config.txt
-echo "==> tuning $CONFIG for GPU performance…"
+echo "==> tuning $CONFIG…"
+
+# SPI0 must be enabled for the 3.5" SPI display (ILI9486 on /dev/spidev0.0).
+# The default Pi OS config leaves it commented out.
+if grep -q "^#dtparam=spi=on" "$CONFIG"; then
+    sudo sed -i 's/^#dtparam=spi=on/dtparam=spi=on/' "$CONFIG"
+    echo "    enabled dtparam=spi=on"
+elif ! grep -q "^dtparam=spi=on" "$CONFIG"; then
+    echo "dtparam=spi=on" | sudo tee -a "$CONFIG"
+    echo "    added dtparam=spi=on"
+else
+    echo "    dtparam=spi=on already set"
+fi
+
 if ! grep -q "v3d_freq_min" "$CONFIG"; then
     echo "# recur-recur: prevent GPU frequency downscaling" | sudo tee -a "$CONFIG"
     echo "v3d_freq_min=500" | sudo tee -a "$CONFIG"

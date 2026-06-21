@@ -396,7 +396,7 @@ class Menu:
         mgr = getattr(self.inst, "usb", None)
         if not mgr or not mgr.available():
             self._usb_drives = []
-            self._usb_status = "no mount permission (restart service)"
+            self._usb_status = "no mount permission (install pmount or use service)"
             return
         self._usb_drives = mgr.list_drives()
         if not self._usb_drives:
@@ -417,7 +417,7 @@ class Menu:
         in the file list, copy the selected video to internal storage."""
         mgr = getattr(self.inst, "usb", None)
         if not mgr or not mgr.available():
-            self._usb_status = "no mount permission (restart service)"
+            self._usb_status = "no mount permission (install pmount or use service)"
             return
         if self._usb_dev is None:
             if not self._usb_drives or self.sel >= len(self._usb_drives):
