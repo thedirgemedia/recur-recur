@@ -26,10 +26,23 @@ HDMI video output is never changed by a keypress in menu mode.
 
 import logging
 import os
+import socket
 import threading
 
 from control.midi import MIDI_TARGETS, MIDI_TARGET_LABELS, MIDI_DEFAULTS
 from engine.shader import clamp01
+
+
+def _local_ip():
+    """Return the primary non-loopback IP address, or 'no network'."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "no network"
 
 log = logging.getLogger("menu")
 
@@ -858,6 +871,7 @@ class Menu:
                           font=font_sm, fill=C_HL, anchor="mm")
 
         else:  # SETTINGS
+            draw.text((10, 50), f"ip  {_local_ip()}", font=font_sm, fill=C_DIM)
             items = self._settings()
             rows = [(it.label, it.value()) for it in items]
             self._render_kv(draw, font_sm, W, H, palette, rows)
