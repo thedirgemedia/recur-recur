@@ -34,7 +34,6 @@ from engine.shader import clamp01
 
 
 def _local_ip():
-    """Return the primary non-loopback IP address, or 'no network'."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -80,11 +79,13 @@ class Menu:
         self._pending_clip_idx = None
         self._pending_shader   = None
         # IMPORT page (USB → internal) state.
-        self._usb_drives = []     # cached removable-drive list (drive-list view)
-        self._usb_dev    = None   # device currently mounted (None = drive list)
-        self._usb_mp     = None   # its mountpoint
-        self._usb_files  = []     # video files found on the mounted drive
-        self._usb_status = ""     # transient status line ("MOUNTING…", "COPIED", …)
+        self._usb_drives      = []    # cached removable-drive list (drive-list view)
+        self._usb_dev         = None  # device currently mounted (None = drive list)
+        self._usb_mp          = None  # its mountpoint
+        self._usb_files       = []    # video files found on the mounted drive
+        self._usb_status      = ""    # transient status line ("MOUNTING…", "COPIED", …)
+        self._usb_import_busy = False # True while a copy/transcode thread is running
+        self._usb_cancel      = threading.Event()  # set to abort in-progress import
 
     # ───────────────────────────────────────────────────────── lifecycle
     def toggle(self):
@@ -417,6 +418,7 @@ class Menu:
 
     def _usb_leave(self):
         """Leaving the IMPORT page (or closing the menu): release any drive."""
+        self._usb_cancel.set()
         mgr = getattr(self.inst, "usb", None)
         if mgr:
             mgr.unmount_all()
@@ -443,7 +445,12 @@ class Menu:
             if not self._usb_files or self.sel >= len(self._usb_files):
                 return
             src = self._usb_files[self.sel]
-            self._usb_status = "COPYING…"
+            if self._usb_import_busy:
+                self._usb_status = "import in progress"
+                return
+            self._usb_import_busy = True
+            self._usb_cancel.clear()
+            self._usb_status = "IMPORTING…"
             threading.Thread(target=self._usb_do_copy, args=(src,),
                              daemon=True).start()
 
@@ -461,18 +468,27 @@ class Menu:
             self._usb_status = "MOUNT FAILED"
 
     def _usb_do_copy(self, src):
-        mgr = self.inst.usb
-        _, status = mgr.copy_to_internal(src)
-        self._usb_status = {"copied": "COPIED  ✓",
-                            "exists": "already imported",
-                            "error":  "COPY FAILED"}.get(status, status)
-        if status == "copied":
-            # make the new clip immediately playable / assignable
-            threading.Thread(target=self.inst.sampler.rescan_clips,
-                             daemon=True).start()
+        try:
+            mgr = self.inst.usb
+
+            def _progress(frac):
+                self._usb_status = f"CONVERTING… {int(frac * 100)}%"
+
+            _, status = mgr.copy_to_internal(src, progress=_progress,
+                                             cancel=self._usb_cancel)
+            self._usb_status = {"copied": "IMPORTED  ✓",
+                                "exists": "already imported",
+                                "error":  "IMPORT FAILED"}.get(status, status)
+            if status == "copied":
+                # make the new clip immediately playable / assignable
+                threading.Thread(target=self.inst.sampler.rescan_clips,
+                                 daemon=True).start()
+        finally:
+            self._usb_import_busy = False
 
     def _usb_eject(self):
         """ENTER / BKSP on the IMPORT page: unmount and go back to the drive list."""
+        self._usb_cancel.set()
         mgr = getattr(self.inst, "usb", None)
         if self._usb_dev and mgr:
             mgr.unmount(self._usb_dev)

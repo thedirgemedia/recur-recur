@@ -54,15 +54,21 @@ if ! grep -q "v3d_freq_min" "$CONFIG"; then
     echo "v3d_freq_min=500" | sudo tee -a "$CONFIG"
 fi
 
+# --- install boot service -----------------------------------------------------
+echo "==> installing recur boot service…"
+bash "$(dirname "$0")/install-service.sh"
+
 cat <<'POST'
 
 ==> setup complete.
 
 NEXT STEPS:
-  1. reboot:           sudo reboot
-  2. land on console:  Pi will auto-log you in to a text prompt
-  3. put clips in:     ~/recur-recur/clips/
-  4. run:              cd ~/recur-recur && python3 main.py
+  1. put clips in:  ~/recur-recur/clips/
+  2. reboot:        sudo reboot
+     recur-recur will launch automatically on tty1.
+
+To test without rebooting:  sudo systemctl start recur
+Watch logs:                  journalctl -u recur -f
 
 CONTROLS (keyboard):
   TAB       cycle mode (SAMPLER / SHADER / LIVE / FX)
@@ -75,8 +81,6 @@ CONTROLS (keyboard):
   [ ]       prev / next shader
   `         toggle recording
   Q         quit
-
-OPTIONAL: for boot-as-appliance, run ./install-service.sh after this works.
 
 POST
 echo "==> reboot recommended:  sudo reboot"
