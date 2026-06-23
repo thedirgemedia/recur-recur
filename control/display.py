@@ -403,14 +403,21 @@ class DisplayController:
 
         # Highlight the bottom-row column that matches the active param layer.
         # SHDR→shader, FX→fx, BLEND→blend; COLOUR has no column so nothing lights up.
+        _hl_col = None
         if _hdr_layer == 0:
-            shader_col = C_SEL
+            shader_col = (0, 0, 0)
+            _hl_col = 0
         elif _hdr_layer == 1:
-            fx_col = C_SEL
+            fx_col = (0, 0, 0)
+            _hl_col = 1
         elif _hdr_layer == 3:
-            blend_col = C_SEL
+            blend_col = (0, 0, 0)
+            _hl_col = 2
 
         play_disp = inst.sampler.mode.upper()[:10]
+
+        if _hl_col is not None:
+            d.rectangle([COL_W * _hl_col, 28, COL_W * (_hl_col + 1), 54], fill=C_SEL)
 
         for col in range(1, 4):
             x = COL_W * col

@@ -129,9 +129,15 @@ def _run_ffmpeg(cmd, duration=0.0, progress=None, cancel=None):
     except OSError:
         pass
 
+    _stderr_tail = []
+
     def _drain():
         try:
             for line in proc.stderr:
+                stripped = line.rstrip()
+                _stderr_tail.append(stripped)
+                if len(_stderr_tail) > 12:
+                    _stderr_tail.pop(0)
                 if progress and duration > 0 and "time=" in line:
                     try:
                         t = line.split("time=")[1].split()[0]
@@ -164,6 +170,8 @@ def _run_ffmpeg(cmd, duration=0.0, progress=None, cancel=None):
     if cancelled:
         raise RuntimeError("ffmpeg cancelled")
     if proc.returncode != 0:
+        if _stderr_tail:
+            log.error("ffmpeg stderr:\n%s", "\n".join(_stderr_tail))
         raise RuntimeError(f"ffmpeg exited {proc.returncode}")
 
 
@@ -408,7 +416,11 @@ class UsbManager:
             info = _probe_video(src)
             action, target_fps = _classify(info, fallback_fps=self.cfg.fps)
 
-            cmd = ["ffmpeg", "-y", "-i", src]
+            duration = info["duration"] if info else 0.0
+            log.info("import %s: action=%s fps=%.3f dur=%.1fs",
+                     os.path.basename(src), action, target_fps, duration)
+
+            cmd = ["ffmpeg", "-y", "-threads", "2", "-i", src]
             if action == "remux":
                 cmd += ["-c:v", "copy", "-an"]
             else:
@@ -419,8 +431,9 @@ class UsbManager:
                     "-an",
                 ]
             cmd += ["-f", "mp4", tmp]
-            _run_ffmpeg(cmd, duration=info["duration"] if info else 0.0,
-                        progress=progress, cancel=cancel)
+            if progress:
+                progress(0.0)
+            _run_ffmpeg(cmd, duration=duration, progress=progress, cancel=cancel)
 
             os.replace(tmp, dest)
             log.info("imported %s -> %s (%s)", os.path.basename(src),

@@ -472,7 +472,8 @@ class Menu:
             mgr = self.inst.usb
 
             def _progress(frac):
-                self._usb_status = f"CONVERTING… {int(frac * 100)}%"
+                pct = int(frac * 100)
+                self._usb_status = f"CONVERTING… {pct}%"
 
             _, status = mgr.copy_to_internal(src, progress=_progress,
                                              cancel=self._usb_cancel)
