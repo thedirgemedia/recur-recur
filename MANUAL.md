@@ -109,6 +109,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | Key | Action |
 |---|---|
 | **4–9** | Load the generative shader assigned to that slot (assign in SHADERS menu) |
+| **Hold /** + **4–9** | Load + trigger the clip at that slot (assign in BROWSER menu), without leaving SHADER mode — change the blended video while the generative stays running |
 | **+** / **−** | Cycle FX shader *stacked on top of* the generative (generative stays loaded) |
 | **/** | Toggle shader blend (composite generative with clip or camera) |
 | **\*** | Cycle shader blend mode — full set: mix, screen, addition, multiply, overlay, hardlight, softlight, dodge, burn, lighten, darken, difference, exclusion, **displace**, subtract, divide, negation, reflect, glow, phoenix, vividlight, linearlight, hardmix, **hue**, **luminosity**, **color** |

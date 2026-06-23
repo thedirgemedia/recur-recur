@@ -51,6 +51,9 @@ PERFORM mode (SHADER):
   3       selected slot += step
   hold 0 + .     record toggle
   hold 0 + 4-9   load the preset assigned to that slot (PRESETS menu)
+  hold / + 4-9   load + trigger the clip assigned to that slot (BROWSER),
+                 without leaving SHADER mode — useful for changing the video
+                 source while blend is active
 
 Param layers (Bksp cycles through whichever are available in the current
 mode — SHDR only exists in SHADER mode; see _PARAM_LAYERS below):
@@ -142,6 +145,11 @@ class KeyboardController:
         self._kp0_history = []
         self._key0_held   = False   # True while KP0 is physically depressed
 
+        # hold-/ + 4-9 chord: defer the / action to key-up so we can detect
+        # whether it was used as a modifier before firing blend toggle.
+        self._keyslash_held        = False
+        self._keyslash_chord_used  = False
+
     # ------------------------------------------------------------- lifecycle
     def start(self):
         if not HAVE_EVDEV:
@@ -207,9 +215,33 @@ class KeyboardController:
                         self._key0_held = False
                         continue
 
+                    # Defer / action to key-up so hold-/ + 4-9 can be
+                    # detected. On key-up, fire blend toggle only if the
+                    # chord was not consumed by a 4-9 tap during the hold.
+                    if name == "/" and key.keystate == key.key_up:
+                        if not self._keyslash_chord_used:
+                            self._dispatch("/")
+                        self._keyslash_held       = False
+                        self._keyslash_chord_used = False
+                        continue
+
                     # All other processing is key-down only.
                     if key.keystate != key.key_down:
                         continue
+
+                    if name == "/":
+                        self._keyslash_held = True
+                        continue   # action deferred to key-up
+
+                    # hold-/ + 4-9 in SHADER mode: load+trigger clip slot
+                    # without leaving SHADER mode (for blend source change).
+                    if name in ("4","5","6","7","8","9") and self._keyslash_held:
+                        if self.inst.mode == "SHADER":
+                            self._keyslash_chord_used = True
+                            self._dispatch(f"CLIPSLOT_{name}")
+                            continue
+                        # In other modes fall through to normal 4-9 handling;
+                        # / will still fire its normal action on key-up.
 
                     if name == "0":
                         self._key0_held = True
@@ -293,6 +325,17 @@ class KeyboardController:
         # ── hold-0 + 4-9: load preset slot (any mode) ─────────────────────
         if name.startswith("PRESET_"):
             inst.load_preset_slot(int(name[-1]))
+            return
+
+        # ── hold-/ + 4-9 in SHADER mode: load+trigger clip slot ───────────
+        if name.startswith("CLIPSLOT_"):
+            n = int(name[-1])
+            if s.slot(n):
+                s.trigger()
+                clip = (inst.cfg.current_clip or "").split("/")[-1]
+                inst.osd.show(f"CLIP {n}: {clip.upper()[:14]}")
+            else:
+                inst.osd.show(f"CLIP {n}: EMPTY")
             return
 
         # ── SHADER mode: 4-9 load assigned generative shader ──────────────
