@@ -365,7 +365,7 @@ class DisplayController:
 
         # param-layer indicator (BKSP cycles): SHDR / FX / COLOUR / BLEND
         _hdr_layer = getattr(getattr(inst, "kb", None), "_param_layer", 0)
-        _hdr_lbl   = {1: "FX", 2: "COLOUR", 3: "BLEND"}.get(_hdr_layer)
+        _hdr_lbl   = {1: "FX", 2: "COLOUR", 3: "BLEND", 4: "TRAIL"}.get(_hdr_layer)
         _lx = 208   # shift right when REC/SAV chip is visible
         if _hdr_lbl:
             d.rectangle([_lx, 6, _lx + 76, 23], fill=C_SEL)
@@ -476,7 +476,7 @@ class DisplayController:
                 ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",        True),
                 ("—",       0.0,             "—",                  False),
             ]
-        else:                          # BLEND — compositing (shader blend / overlay)
+        elif _param_layer == 3:        # BLEND — compositing (shader blend / overlay)
             def _idx_frac(seq, val):
                 seq = list(seq)
                 i = seq.index(val) if val in seq else 0
@@ -503,6 +503,30 @@ class DisplayController:
                     ("—", 0.0, "—", False),
                     ("—", 0.0, "—", False),
                 ]
+        else:                          # TRAIL — temporal echo controls
+            def _idx_frac(seq, val):
+                seq = list(seq)
+                i = seq.index(val) if val in seq else 0
+                return i / max(1, len(seq) - 1)
+            trail_on  = getattr(cfg, 'trail_on', False)
+            btype     = getattr(cfg, 'trail_blend_type', 'mode')
+            tmode     = getattr(cfg, 'trail_mode', 'screen')
+            delay     = getattr(cfg, 'trail_delay_s', 2.0)
+            opacity   = getattr(cfg, 'trail_mode_opacity', 0.5)
+            btypes    = getattr(cfg, 'TRAIL_BLEND_TYPES', ('mode', 'opacity'))
+            tmodes    = getattr(cfg, 'TRAIL_MODES', ())
+            bar_items = [
+                ("TRL ON",  1.0 if trail_on else 0.0,
+                 "ON" if trail_on else "OFF",            True),
+                ("TYPE",    _idx_frac(btypes, btype),
+                 btype.upper(),                          True),
+                ("MODE",    _idx_frac(tmodes, tmode),
+                 tmode.upper()[:9],                      True),
+                ("DELAY",   (delay - 0.25) / 7.75,
+                 f"{delay:.2f}s",                        True),
+                ("OPACITY", opacity,
+                 f"{opacity:.2f}",                       True),
+            ]
 
         # Tighten row spacing when more than 4 bars so they all fit on screen.
         bar_gap = 16 if len(bar_items) > 4 else BAR_GAP

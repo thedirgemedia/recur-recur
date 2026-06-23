@@ -23,7 +23,7 @@ PERFORM mode (SAMPLER):
   -       previous FX shader
   +       next FX shader
   Enter   cycle instrument mode (SAMPLER -> SHADER -> LIVE)
-  Bksp    cycle param layer: FX -> COLOUR -> BLEND -> FX (see below)
+  Bksp    cycle param layer: FX -> COLOUR -> BLEND -> TRAIL -> FX (see below)
   1       cycle the selected slot within the current param layer
   2       selected slot -= step
   3       selected slot += step
@@ -45,7 +45,7 @@ PERFORM mode (SHADER):
   /       toggle shader blend (generative ↔ generative+clip)
   *       cycle shader blend mode
   0       next generative shader (no real clip to mark in/out on here)
-  Bksp    cycle param layer: SHDR -> FX -> COLOUR -> BLEND -> SHDR
+  Bksp    cycle param layer: SHDR -> FX -> COLOUR -> BLEND -> TRAIL -> SHDR
   1       cycle the selected slot within the current param layer
   2       selected slot -= step
   3       selected slot += step
@@ -62,6 +62,7 @@ mode — SHDR only exists in SHADER mode; see _PARAM_LAYERS below):
   COLOUR  hue / saturation / trail decay
   BLEND   compositing: shader<->video blend amount+mode+source (SHADER) or
           overlay blend mode+opacity (SAMPLER/LIVE)
+  TRAIL   temporal echo: on/off, blend type, blend mode, delay, opacity
 
 MENU mode: Num Lock toggles the navigable menu on the SPI display; while it
 is active every key routes to `self.inst.menu.handle()` and none reach the
@@ -121,9 +122,12 @@ PARAM_STEP = 0.05
 #   1 FX      the active FX shader's own params f1–f4
 #   2 COLOUR  palette (p4, SHADER only) + hue / sat / trail decay
 #   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
-_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND")
+#   4 TRAIL   temporal echo — on/off, blend type, mode, delay, opacity
+_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
 _COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_decay": "TRL OPC"}
+_TRAIL_LABELS  = {"on": "TRL ON", "type": "TYPE", "mode": "MODE",
+                  "delay": "DELAY", "opacity": "OPACITY"}
 
 
 class KeyboardController:
@@ -399,7 +403,11 @@ class KeyboardController:
             self._param_idx = 0
             inst.osd.show(f"PARAMS: {_PARAM_LAYERS[self._param_layer]}")
         elif name == "1":
-            if self._param_layer == 3:          # BLEND: compositing controls
+            if self._param_layer == 4:          # TRAIL: temporal echo controls
+                slots = self._trail_slots()
+                self._param_idx = (self._param_idx + 1) % len(slots)
+                inst.osd.show(f"TRAIL: {_TRAIL_LABELS[slots[self._param_idx]]}")
+            elif self._param_layer == 3:        # BLEND: compositing controls
                 slots = self._blend_slots()
                 self._param_idx = (self._param_idx + 1) % len(slots)
                 inst.osd.show(f"BLEND: {_BLEND_LABELS[slots[self._param_idx]]}")
@@ -457,8 +465,8 @@ class KeyboardController:
         """Param layers BKSP can reach in the current mode. SHDR (generative)
         is only meaningful in SHADER mode."""
         if self.inst.mode == "SHADER":
-            return [0, 1, 2, 3]   # SHDR, FX, COLOUR, BLEND
-        return [1, 2, 3]          # FX, COLOUR, BLEND
+            return [0, 1, 2, 3, 4]   # SHDR, FX, COLOUR, BLEND, TRAIL
+        return [1, 2, 3, 4]          # FX, COLOUR, BLEND, TRAIL
 
     def _get_shdr_keys(self):
         """Sorted param keys for the current generative shader (e.g. p1..p8)."""
@@ -473,6 +481,9 @@ class KeyboardController:
         if self.inst.mode == "SHADER":
             return ("mode", "amt", "src")
         return ("mode", "opc")
+
+    def _trail_slots(self):
+        return ("on", "type", "mode", "delay", "opacity")
 
     def sync_param_layer(self):
         """Keep the selected layer valid for the current mode (called on mode
@@ -530,7 +541,7 @@ class KeyboardController:
                 inst.osd.show(f"TRL OPC: {new:.2f}")
                 if getattr(cfg, 'trail_on', False):
                     inst.sampler.refresh_trail()
-        else:                             # ── BLEND: compositing controls
+        elif self._param_layer == 3:      # ── BLEND: compositing controls
             slots = self._blend_slots()
             slot  = slots[self._param_idx % len(slots)]
             d     = 1 if delta > 0 else -1
@@ -564,3 +575,43 @@ class KeyboardController:
                 inst.osd.show(f"BLEND SRC: {cfg.shader_blend_source}")
                 if cfg.shader_blend and inst.mode == "SHADER":
                     inst._start_blend_source()
+        else:                             # ── TRAIL: temporal echo controls
+            slots = self._trail_slots()
+            slot  = slots[self._param_idx % len(slots)]
+            d     = 1 if delta > 0 else -1
+            if slot == "on":
+                cfg.trail_on = not cfg.trail_on
+                inst.osd.show(f"TRAIL: {'ON' if cfg.trail_on else 'OFF'}")
+                inst.sampler.refresh_trail()
+            elif slot == "type":
+                types = list(cfg.TRAIL_BLEND_TYPES)
+                i = types.index(cfg.trail_blend_type) if cfg.trail_blend_type in types else 0
+                cfg.trail_blend_type = types[(i + d) % len(types)]
+                inst.osd.show(f"TRL TYPE: {cfg.trail_blend_type.upper()}")
+                if cfg.trail_on:
+                    inst.sampler.refresh_trail()
+            elif slot == "mode":
+                modes = list(cfg.TRAIL_MODES)
+                i = modes.index(cfg.trail_mode) if cfg.trail_mode in modes else 0
+                cfg.trail_mode = modes[(i + d) % len(modes)]
+                inst.osd.show(f"TRL MODE: {cfg.trail_mode.upper()}")
+                if cfg.trail_on:
+                    inst.sampler.refresh_trail()
+            elif slot == "delay":
+                cur = getattr(cfg, 'trail_delay_s', 2.0)
+                new = round(max(0.25, min(8.0, cur + d * 0.25)), 2)
+                if new == cur:
+                    return
+                cfg.trail_delay_s = new
+                inst.osd.show(f"TRL DLY: {new:.2f}s")
+                if cfg.trail_on:
+                    inst.sampler.refresh_trail()
+            elif slot == "opacity":
+                cur = getattr(cfg, 'trail_mode_opacity', 0.5)
+                new = round(clamp01(cur + delta), 3)
+                if new == cur:
+                    return
+                cfg.trail_mode_opacity = new
+                inst.osd.show(f"TRL OPC: {new:.2f}")
+                if cfg.trail_on:
+                    inst.sampler.refresh_trail()
