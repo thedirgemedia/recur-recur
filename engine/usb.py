@@ -196,6 +196,24 @@ class UsbManager:
         self._mounts    = {}   # dev -> mountpoint (mounts WE created)
         self._pmounted  = set()  # devs we mounted via pmount (use pumount)
         self._ext_mounts = {}  # dev -> mountpoint already mounted by OS
+        self._cleanup_stale_parts()
+
+    def _cleanup_stale_parts(self):
+        """Remove any .part files left in clips_dir from an interrupted import."""
+        try:
+            d = self.cfg.clips_dir
+            if not os.path.isdir(d):
+                return
+            for name in os.listdir(d):
+                if name.endswith(".part"):
+                    path = os.path.join(d, name)
+                    try:
+                        os.unlink(path)
+                        log.info("removed stale import file %s", name)
+                    except OSError as e:
+                        log.warning("could not remove %s: %s", name, e)
+        except Exception as e:
+            log.warning("stale-part cleanup failed: %s", e)
 
     # ------------------------------------------------------------- availability
     def available(self):
