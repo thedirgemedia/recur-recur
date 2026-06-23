@@ -279,7 +279,10 @@ class DisplayController:
                         tuple(cfg.fx_params.get(k, 0.5) for k in _F_SIG_KEYS),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
                         round(getattr(cfg, "overlay_blend_amount",  1.0) or 1.0, 2),
-                        round(getattr(cfg, "trail_decay",           0.93), 3),
+                        round(getattr(cfg, "trail_delay_s",         2.0),  2),
+                        round(getattr(cfg, "trail_mode_opacity",    0.5),  3),
+                        getattr(cfg, "trail_mode",       "screen"),
+                        getattr(cfg, "trail_blend_type", "mode"),
                         getattr(cfg, "overlay_on",    False),
                         getattr(cfg, "overlay_mode",  ""),
                         getattr(cfg, "shader_blend",  False),
@@ -469,11 +472,11 @@ class DisplayController:
             hue     = getattr(cfg, 'color_hue', 0.0)
             sat     = getattr(cfg, 'color_sat', 1.0)
             sat_max = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
-            trl     = getattr(cfg, 'trail_decay', 0.93)
+            opc = getattr(cfg, 'trail_mode_opacity', 0.5)
             bar_items = [
                 ("HUE",     hue,             f"{hue*360:.0f}°",    True),
                 ("SAT",     sat / sat_max,   f"{sat:.2f}",         True),
-                ("TRL DEC", (trl-0.80)/0.19, f"{trl:.2f}",        True),
+                ("TRL OPC", opc,             f"{opc:.2f}",         True),
                 ("—",       0.0,             "—",                  False),
             ]
         elif _param_layer == 3:        # BLEND — compositing (shader blend / overlay)
