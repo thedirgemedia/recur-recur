@@ -107,7 +107,11 @@ class Config:
         self.SHADER_BLEND_MODES  = ("mix", "screen", "addition", "multiply",
                                     "overlay", "hardlight", "softlight",
                                     "dodge", "burn", "lighten", "darken",
-                                    "difference", "exclusion", "displace")
+                                    "difference", "exclusion", "displace",
+                                    "subtract", "divide", "negation",
+                                    "reflect", "glow", "phoenix",
+                                    "vividlight", "linearlight", "hardmix",
+                                    "hue", "luminosity", "color")
         # Source for shader blend: "clip" uses the current sampler clip,
         # "live" uses the CSI/USB camera feed
         self.shader_blend_source  = "clip"
@@ -117,10 +121,15 @@ class Config:
         # mixed at overlay_blend_amount (OVL OPC). No time delay — echoes are
         # the trail's job now.
         self.overlay_on   = False
-        self.overlay_mode = "difference"   # difference | addition | multiply | screen | negate
+        self.overlay_mode = "difference"
         self.overlay_blend_amount  = 1.0   # blend opacity 0–1 (OVL OPC)
         self.OVERLAY_MODES = ("difference", "addition", "multiply",
-                              "screen", "negate")
+                              "screen", "negate",
+                              "subtract", "divide", "lighten", "darken",
+                              "hardlight", "softlight", "dodge", "burn",
+                              "phoenix", "negation", "vividlight",
+                              "linearlight", "pinlight", "hardmix",
+                              "grainmerge", "grainextract")
 
         # Whether LIVE mode appears in the ENTER-key cycle. When False,
         # cycle_mode() skips LIVE: SAMPLER → SHADER → SAMPLER.
@@ -133,7 +142,7 @@ class Config:
         #   "opacity" — weighted average of live + 5 delayed echoes (mix);
         #               clean motion ghosts, no wash-out (trail_step_weights)
         self.trail_on         = False
-        self.trail_mode       = "screen"   # screen | difference | multiply | overlay | addition
+        self.trail_mode       = "screen"
         self.trail_decay      = 0.93       # 0.90=short ghost, 0.93=medium, 0.97=long tail
         self.trail_delay_s    = 2.0        # echo delay in seconds (frames = delay * fps)
         self.trail_blend_type = "mode"     # "mode" or "opacity"
@@ -146,7 +155,8 @@ class Config:
         # overlay) accumulate via lagfun and wash out; tame them by mixing the
         # blend back toward the original on luma. 'difference' is left at full.
         self.trail_mode_opacity = 0.5
-        self.TRAIL_MODES       = ("screen", "difference", "multiply", "overlay", "addition")
+        self.TRAIL_MODES       = ("screen", "difference", "multiply", "overlay", "addition",
+                                  "subtract", "lighten", "darken", "phoenix", "negation", "divide")
         self.TRAIL_BLEND_TYPES = ("mode", "opacity")
 
         # Global colour control (GLSL pass applied last in every mode).

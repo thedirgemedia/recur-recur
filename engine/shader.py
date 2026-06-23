@@ -56,20 +56,32 @@ def _subst(text, vals, prefix):
 # Blend modes for shader+clip compositing (SHADER mode). Integers are
 # substituted into the blend shader; the names match cfg.SHADER_BLEND_MODES.
 BLEND_MODE_MAP = {
-    "difference": 1,
-    "addition":   2,
-    "multiply":   3,
-    "screen":     4,
-    "mix":        5,
-    "overlay":    6,
-    "hardlight":  7,
-    "softlight":  8,
-    "dodge":      9,
-    "burn":      10,
-    "lighten":   11,
-    "darken":    12,
-    "exclusion": 13,
-    "displace":  14,   # special: warps the video by the shader (not a blend)
+    "difference":  1,
+    "addition":    2,
+    "multiply":    3,
+    "screen":      4,
+    "mix":         5,
+    "overlay":     6,
+    "hardlight":   7,
+    "softlight":   8,
+    "dodge":       9,
+    "burn":       10,
+    "lighten":    11,
+    "darken":     12,
+    "exclusion":  13,
+    "displace":   14,   # special: warps the video by the shader (not a blend)
+    "subtract":   15,
+    "divide":     16,
+    "negation":   17,
+    "reflect":    18,
+    "glow":       19,
+    "phoenix":    20,
+    "vividlight": 21,
+    "linearlight":22,
+    "hardmix":    23,
+    "hue":        24,   # non-separable: hue from shader, SV from video
+    "luminosity": 25,   # non-separable: value from shader, HS from video
+    "color":      26,   # non-separable: HS from shader, V from video
 }
 
 # Second-pass hook: reads the generative output (gen_out, saved by the first
@@ -87,52 +99,103 @@ BLEND_SHADER_SRC = """\
 #define BLEND_AMT  __BLEND_AMT__
 
 // per-channel blend: b = base (video), s = blend layer (shader)
+// Modes 1-13: W3C/Photoshop separable set. 15-23: extended separable set.
+// Non-separable HSV modes (24-26) and displace (14) are handled in hook().
 float bmode(float b, float s) {
 #if   BLEND_MODE == 1
-    return abs(b - s);                                            // difference
+    return abs(b - s);                                               // difference
 #elif BLEND_MODE == 2
-    return min(b + s, 1.0);                                       // addition
+    return min(b + s, 1.0);                                          // addition
 #elif BLEND_MODE == 3
-    return b * s;                                                 // multiply
+    return b * s;                                                    // multiply
 #elif BLEND_MODE == 4
-    return 1.0 - (1.0 - b) * (1.0 - s);                           // screen
+    return 1.0 - (1.0 - b) * (1.0 - s);                             // screen
 #elif BLEND_MODE == 6
-    return b < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);         // overlay
+    return b < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);          // overlay
 #elif BLEND_MODE == 7
-    return s < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);         // hard light
+    return s < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);          // hardlight
 #elif BLEND_MODE == 8
     return (s <= 0.5)
-        ? b - (1.0 - 2.0*s) * b * (1.0 - b)                       // soft light
+        ? b - (1.0 - 2.0*s) * b * (1.0 - b)                        // softlight
         : b + (2.0*s - 1.0) *
           ((b <= 0.25 ? ((16.0*b - 12.0)*b + 4.0)*b : sqrt(b)) - b);
 #elif BLEND_MODE == 9
-    return s >= 1.0 ? 1.0 : min(1.0, b / (1.0 - s));              // colour dodge
+    return s >= 1.0 ? 1.0 : min(1.0, b / (1.0 - s));               // dodge
 #elif BLEND_MODE == 10
-    return s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0 - b) / s);        // colour burn
+    return s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0 - b) / s);         // burn
 #elif BLEND_MODE == 11
-    return max(b, s);                                             // lighten
+    return max(b, s);                                                // lighten
 #elif BLEND_MODE == 12
-    return min(b, s);                                             // darken
+    return min(b, s);                                                // darken
 #elif BLEND_MODE == 13
-    return b + s - 2.0*b*s;                                       // exclusion
+    return b + s - 2.0*b*s;                                         // exclusion
+#elif BLEND_MODE == 15
+    return max(b - s, 0.0);                                          // subtract
+#elif BLEND_MODE == 16
+    return s <= 0.0 ? 1.0 : min(b / s, 1.0);                        // divide
+#elif BLEND_MODE == 17
+    return clamp(abs(1.0 - b - s), 0.0, 1.0);                       // negation
+#elif BLEND_MODE == 18
+    return s >= 1.0 ? 1.0 : min(b*b / (1.0 - s), 1.0);             // reflect
+#elif BLEND_MODE == 19
+    return b >= 1.0 ? 1.0 : min(s*s / (1.0 - b), 1.0);             // glow
+#elif BLEND_MODE == 20
+    return 1.0 - abs(b - s);                                         // phoenix
+#elif BLEND_MODE == 21
+    return s < 0.5                                                   // vividlight
+        ? (s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0-b)/(2.0*s)))
+        : (s >= 1.0 ? 1.0 : min(1.0, b/(2.0*(1.0-s))));
+#elif BLEND_MODE == 22
+    return clamp(b + 2.0*s - 1.0, 0.0, 1.0);                        // linearlight
+#elif BLEND_MODE == 23
+    return b + s >= 1.0 ? 1.0 : 0.0;                                // hardmix
 #else
-    return mix(b, s, 0.5);                                        // mix (normal)
+    return mix(b, s, 0.5);                                           // mix (normal)
 #endif
+}
+
+// RGB <-> HSV helpers for non-separable blend modes (24-26)
+vec3 rgb2hsv(vec3 c) {
+    float cmax = max(c.r, max(c.g, c.b));
+    float cmin = min(c.r, min(c.g, c.b));
+    float d = cmax - cmin;
+    float h = 0.0;
+    if (d > 0.0001) {
+        if      (cmax == c.r) h = mod((c.g - c.b) / d, 6.0) / 6.0;
+        else if (cmax == c.g) h = ((c.b - c.r) / d + 2.0) / 6.0;
+        else                  h = ((c.r - c.g) / d + 4.0) / 6.0;
+    }
+    return vec3(h, cmax > 0.0001 ? d / cmax : 0.0, cmax);
+}
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
 vec4 hook() {
     vec4 gen = gen_out_texOff(vec2(0.0));
 #if BLEND_MODE == 14
-    // Displace: offset the video by the shader's R/G channels — the shader
-    // refracts the footage like textured glass. BLEND_AMT scales the warp.
+    // Displace: offset the video by the shader's R/G channels.
     vec2 disp = (gen.rg - 0.5) * 2.0 * BLEND_AMT * 48.0;
     return vec4(HOOKED_texOff(disp).rgb, 1.0);
 #else
     vec3 vid = HOOKED_texOff(vec2(0.0)).rgb;
-    vec3 bl  = vec3(bmode(vid.r, gen.r),
-                    bmode(vid.g, gen.g),
-                    bmode(vid.b, gen.b));
-    // BLEND_AMT: 0 = pure video, 1 = full blend result
+#if BLEND_MODE == 24 || BLEND_MODE == 25 || BLEND_MODE == 26
+    vec3 vh = rgb2hsv(vid);
+    vec3 gh = rgb2hsv(gen.rgb);
+#if   BLEND_MODE == 24
+    vec3 bl = hsv2rgb(vec3(gh.x, vh.y, vh.z));                      // hue from shader
+#elif BLEND_MODE == 25
+    vec3 bl = hsv2rgb(vec3(vh.x, vh.y, gh.z));                      // luminosity from shader
+#else
+    vec3 bl = hsv2rgb(vec3(gh.x, gh.y, vh.z));                      // color (HS) from shader
+#endif
+#else
+    vec3 bl = vec3(bmode(vid.r, gen.r),
+                   bmode(vid.g, gen.g),
+                   bmode(vid.b, gen.b));
+#endif
     return vec4(mix(vid, bl, BLEND_AMT), 1.0);
 #endif
 }

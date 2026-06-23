@@ -8,22 +8,26 @@
 #define PARAM_4 0.3    /* trail depth */
 
 // Blend modes for the echo layer against source.
-// PARAM_3 selects in five equal zones across [0, 1]:
-//   0.0 – 0.2  addition    bright halo, can wash out (original behaviour)
-//   0.2 – 0.4  screen      soft-clips to white instead of blowing out
-//   0.4 – 0.6  difference  psychedelic inverted trails
-//   0.6 – 0.8  multiply    dark ghost trails, darkens with echo
-//   0.8 – 1.0  overlay     contrast-boosting trails
+// PARAM_3 selects in seven equal zones across [0, 1]:
+//   0.00 – 0.14  addition    bright halo, can wash out (original behaviour)
+//   0.14 – 0.29  screen      soft-clips to white instead of blowing out
+//   0.29 – 0.43  difference  psychedelic inverted trails
+//   0.43 – 0.57  multiply    dark ghost trails, darkens with echo
+//   0.57 – 0.71  overlay     contrast-boosting trails
+//   0.71 – 0.86  subtract    dark erasure trails, frames eat each other
+//   0.86 – 1.00  phoenix     1-|a-b|, bright where similar, dark where different
 vec3 echo_blend(vec3 src, vec3 echo) {
-    int m = int(PARAM_3 * 4.999);
-    if (m == 1) return 1.0 - (1.0 - src) * (1.0 - echo);           // screen
+    int m = int(PARAM_3 * 6.999);
+    if (m == 1) return 1.0 - (1.0 - src) * (1.0 - echo);            // screen
     if (m == 2) return abs(src - echo);                               // difference
-    if (m == 3) return clamp(src * echo * 2.0, 0.0, 1.0);           // multiply
+    if (m == 3) return clamp(src * echo * 2.0, 0.0, 1.0);            // multiply
     if (m == 4) {                                                      // overlay
         vec3 lo = 2.0 * src * echo;
         vec3 hi = 1.0 - 2.0 * (1.0 - src) * (1.0 - echo);
         return mix(lo, hi, step(vec3(0.5), src));
     }
+    if (m == 5) return max(src - echo, vec3(0.0));                    // subtract
+    if (m == 6) return 1.0 - abs(src - echo);                        // phoenix
     return clamp(src + echo, 0.0, 1.0);                               // addition (default)
 }
 

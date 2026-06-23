@@ -401,6 +401,15 @@ class DisplayController:
             blend_disp = "—"
             blend_col  = C_HINT
 
+        # Highlight the bottom-row column that matches the active param layer.
+        # SHDR→shader, FX→fx, BLEND→blend; COLOUR has no column so nothing lights up.
+        if _hdr_layer == 0:
+            shader_col = C_SEL
+        elif _hdr_layer == 1:
+            fx_col = C_SEL
+        elif _hdr_layer == 3:
+            blend_col = C_SEL
+
         play_disp = inst.sampler.mode.upper()[:10]
 
         for col in range(1, 4):

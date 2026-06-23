@@ -1,6 +1,6 @@
 # recur-recur — Operator Manual
 
-*Accurate as of 2026-06-12. Generated from the actual code paths — where the
+*Accurate as of 2026-06-23. Generated from the actual code paths — where the
 code and older docs disagreed, this manual follows the code.*
 
 ---
@@ -102,7 +102,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **4–9** | Trigger the clip assigned to that slot (assign in BROWSER menu) |
 | **+** / **−** | Next / previous FX shader applied over the video |
 | **/** | Toggle V-overlay (self-blend echo) |
-| **\*** | Cycle overlay blend mode (difference → addition → multiply → screen → negate) |
+| **\*** | Cycle overlay blend mode — many modes available: difference, addition, multiply, screen, negate, subtract, divide, lighten, darken, hardlight, softlight, dodge, burn, phoenix, negation, and more |
 
 ### SHADER mode
 
@@ -111,7 +111,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **4–9** | Load the generative shader assigned to that slot (assign in SHADERS menu) |
 | **+** / **−** | Cycle FX shader *stacked on top of* the generative (generative stays loaded) |
 | **/** | Toggle shader blend (composite generative with clip or camera) |
-| **\*** | Cycle shader blend mode (mix, screen, add, multiply, overlay, hardlight, softlight, dodge, burn, lighten, darken, difference, exclusion, **displace**) |
+| **\*** | Cycle shader blend mode — full set: mix, screen, addition, multiply, overlay, hardlight, softlight, dodge, burn, lighten, darken, difference, exclusion, **displace**, subtract, divide, negation, reflect, glow, phoenix, vividlight, linearlight, hardmix, **hue**, **luminosity**, **color** |
 
 > Note the pattern: **/** always *toggles* an effect, **\*** always *cycles its
 > mode* — in both mode families.
@@ -157,8 +157,10 @@ All colour controls in one place. Key **1** cycles slots; **2/3** step:
 | `TRL DEC` | 0.80–0.99 | trail persistence (0.80 short ghost → 0.99 long tail) | always |
 
 `PAL` is the generative shader's p4 parameter — it selects the IQ cosine
-palette used by plasma, waves, starfield, voronoi and similar shaders. It only
-appears in SHADER mode. HUE/SAT apply to the final picture in every mode via a
+palette for plasma, waves, tunnel, voronoi and similar shaders, or acts as a
+hue rotation for flowing_colours, hypnotic_rings, squarewaves, zoom_clouds.
+Note: starfield's P4 is emitter-1 star count — tune starfield palettes via P6/P13
+on the SHDR layer directly. `PAL` only appears in SHADER mode. HUE/SAT apply to the final picture in every mode via a
 GLSL pass (no cost at neutral hue 0°, sat 1.0). All four values persist in
 `prefs.json`.
 
@@ -169,8 +171,8 @@ cycles the mode or steps the amount:
 
 | Mode | Slots |
 |---|---|
-| **SHADER** | `MODE` (shader↔video blend, 14 modes incl. displace), `BLD AMT`, `SRC` (clip/live) |
-| **SAMPLER / LIVE** | `OVL MODE` (5 self-blend modes), `OVL OPC` |
+| **SHADER** | `MODE` (shader↔video blend, 26 modes incl. displace, hue, luminosity, color), `BLD AMT`, `SRC` (clip/live) |
+| **SAMPLER / LIVE** | `OVL MODE` (21 self-blend modes), `OVL OPC` |
 
 In SHADER mode the `SRC` slot selects what the generative is composited
 against: `clip` (the looping sampler clip) or `live` (the camera input).
@@ -227,6 +229,8 @@ one; for clips from a mounted removable drive it shows a short drive label.
 Same as BROWSER but for generative shaders, feeding the SHADER-mode 4–9 keys.
 
 ### SETTINGS page
+
+The SETTINGS page header shows the Pi's current IP address (useful for SSH when the display is the only UI available).
 
 | Row | Description |
 |---|---|
@@ -325,7 +329,9 @@ shows `RUN install-usb-import.sh`.
      fade. Static areas stay clean — only motion ghosts — so it never washes
      out. The tail spans ~1.7× the base delay (≈3.3 s by default).
 3. SETTINGS → **TRAIL MODE** (only active in MODE type) picks the luma blend:
-   `screen` brightens ghosts, `difference` shows motion, etc.
+   `screen` brightens ghosts, `difference` shows motion, `subtract` darkens,
+   `phoenix` shows similarity. Full set: screen, difference, multiply, overlay,
+   addition, subtract, lighten, darken, phoenix, negation, divide.
 4. `TRL DEC` (FX layer) controls fade persistence in MODE type (0.80–0.99).
 5. The base delay (`trail_delay_s`, default 2 s) is set in `prefs.json`. The
    OPACITY layer weights are `trail_step_weights` (default
@@ -352,8 +358,9 @@ Works in all three modes. Two types selectable via SETTINGS → TRAIL TYPE:
 
 **MODE** — `split → tpad(delay) → lagfun(decay) → blend` on the luma plane
 only (chroma passed through — no colour shifts). One continuous fading ghost.
-Blend modes: screen, difference, multiply, overlay, addition. Decay 0.80–0.99
-via `TRL DEC`; delay via `trail_delay_s` in `prefs.json`.
+Blend modes: screen, difference, multiply, overlay, addition, subtract, lighten,
+darken, phoenix, negation, divide. Decay 0.80–0.99 via `TRL DEC`; delay via
+`trail_delay_s` in `prefs.json`.
 
 **OPACITY** — `split=6 → 5×tpad(step×1…5) → mix=inputs=6:weights=…`.
 A weighted average of the live frame plus five progressively-delayed past
@@ -376,18 +383,29 @@ be done on this hardware. Toggling the trail in SHADER mode shows
 passes through clean). A stylising blend — e.g. `screen` brightens, `multiply`
 darkens — with **no time delay** (temporal echoes are the trail's job now).
 `OVL OPC` (0–1) is the blend opacity. Modes: difference, addition, multiply,
-screen, negate (`difference` self-blends to black). Blocked in SHADER mode
-(the shader pipeline owns the picture).
+screen, negate, subtract, divide, lighten, darken, hardlight, softlight, dodge,
+burn, phoenix, negation, vividlight, linearlight, pinlight, hardmix,
+grainmerge, grainextract (`difference` self-blends to black).
+Blocked in SHADER mode (the shader pipeline owns the picture).
 
 ### Shader blend (`/` in SHADER)
 Two-pass GLSL composite: the generative output is saved (`//!SAVE gen_out`)
 and a second hook composites it with the video, scaled by `BLD AMT`.
-The full W3C/Photoshop separable set: `mix` (normal), `screen`, `addition`,
-`multiply`, `overlay`, `hardlight`, `softlight`, `dodge`, `burn`, `lighten`,
-`darken`, `difference`, `exclusion`. Plus **`displace`** — a Resolume-style
-refraction where the shader's R/G channels warp the video like textured glass
-(`BLD AMT` scales the warp, ±~95 px). The punchy ones (hardlight, overlay,
-vivid dodge/burn, displace) read far stronger than the gentle screen/multiply.
+
+**Separable modes:** `mix` (normal), `screen`, `addition`, `multiply`, `overlay`,
+`hardlight`, `softlight`, `dodge`, `burn`, `lighten`, `darken`, `difference`,
+`exclusion`, `subtract`, `divide`, `negation`, `reflect`, `glow`, `phoenix`,
+`vividlight`, `linearlight`, `hardmix`.
+
+**Non-separable (HSV) modes:** `hue` — takes the shader's hue, video's
+saturation/value; `luminosity` — takes the shader's value (brightness), video's
+hue/saturation; `color` — takes the shader's hue and saturation, video's value.
+
+**`displace`** — a Resolume-style refraction where the shader's R/G channels warp
+the video like textured glass (`BLD AMT` scales the warp, ±~95 px).
+
+The punchy ones (hardlight, overlay, vividlight, dodge/burn, displace) read far
+stronger than the gentle screen/multiply.
 
 ---
 
@@ -411,35 +429,67 @@ vivid dodge/burn, displace) read far stronger than the gentle screen/multiply.
 | Shader | P1 | P2 | P3 | P4 |
 |---|---|---|---|---|
 | **bitcrush** | block size | colour depth | gap width | mix original |
-| **feedback** | echo amount | spread | blend mode | trail depth |
+| **colorizer** | speed | bands | spread | mix |
+| **feedback** | echo amount | spread | blend mode (7 modes) | trail depth |
 | **glitch** | slice intensity | update rate | channel corrupt | block density |
 | **grain** | scanline depth | noise amplitude | luma crush | speed |
+| **hsv_shift** | hue | saturation | value | amount |
 | **hue_cycle** | speed | threshold | saturation | intensity |
+| **invert** | R invert | G invert | B invert | amount |
+| **kaleido_warp** | sectors | spin | centre X | centre Y |
+| **mirror** | axes | rotation | centre X | centre Y |
+| **posterize** | levels | mix | contrast | tint hue |
+| **rotate_zoom** | spin | centre X | centre Y | zoom |
 | **vhs** | chroma shift | scanline depth | noise | tracking jitter |
+| **wobble** | X amplitude | X frequency | Y amplitude | Y frequency |
+| **zoom** | zoom | centre X | centre Y | pulse |
 | **passthrough** | — (excluded from +/− cycling) | | | |
 
 **hue_cycle** is two-pass temporal: still pixels accumulate hue rotation,
 changed pixels reset. Best on slow footage.
 
+**kaleido_warp**, **mirror**, and **rotate_zoom** rotate/spin their sample
+point and use square-buffer rendering when stacked on a generative shader —
+the generative pass is rendered into a diagonal-sized square buffer first so
+no corner clips to black at any rotation angle.
+
 ### Generative shaders (SHADER mode)
 
-P4 (palette) for all shaders is edited in the **COLOUR layer** (`PAL` slot),
-not on the SHDR layer, so it is always reachable without disrupting P1–P3.
+P4 (palette) is edited in the **COLOUR layer** (`PAL` slot) for shaders that
+use the IQ cosine palette system (plasma, waves, tunnel, voronoi, starfield
+emitters). Shaders with their own per-channel colouring (flowing_colours,
+hypnotic_rings, squarewaves, zoom_clouds, kaleidoscope) use P4 as a hue
+rotation instead — still accessible via `PAL` in the COLOUR layer.
 
 | Shader | P1 | P2 | P3 | P4 |
 |---|---|---|---|---|
+| **flowing_colours** | speed | detail | warp | hue |
+| **hypnotic_rings** | speed | frequency | orbit | hue |
+| **kaleidoscope** | sides | spin | zoom | colour shift |
 | **plasma** | speed | scale | warp | palette |
-| **waves** | frequency | speed | count | palette |
+| **squarewaves** | amplitude | warp | frequency | hue |
 | **tunnel** | speed | segments | twist | palette |
 | **voronoi** | cell density | speed | edge sharpness | palette |
-| **kaleidoscope** | sides | spin | zoom | colour shift |
-| **starfield** | speed | density | trail | palette |
+| **waves** | frequency | speed | count | palette |
+| **zoom_clouds** | speed | detail | warp | hue |
 
-**starfield** — three independent warp-speed star layers (background/mid/
-foreground) radiating from centre. P2 sets the number of angular lanes (star
-count). P3 adds radial streak trails behind each star. All three layers share
-the IQ cosine palette set by P4/PAL, with each layer offset by 120° for
-distinct hues.
+**starfield** has two independent warp-speed emitters, each with full per-emitter
+controls (15 params total — edited on the SHDR layer with key **1** to scroll):
+
+| Param | Emitter 1 | Emitter 2 |
+|---|---|---|
+| speed | P1 | P8 |
+| X position | P2 | P9 |
+| Y position | P3 | P10 |
+| star count | P4 | P11 |
+| trail | P5 | P12 |
+| palette | P6 | P13 |
+| opacity | P7 | P14 |
+| (global) zoom | P15 | — |
+
+Note: starfield's per-emitter palette (P6/P13) is independent — the `PAL`
+slot in the COLOUR layer maps to P4 (emitter 1 star count), not palette.
+Use the SHDR layer directly to tune starfield palettes.
 
 **Adding your own shaders:** drop a `.glsl` file into `shaders/` and restart.
 The app classifies it automatically by reading its `//!DESC` line — include
