@@ -123,7 +123,7 @@ PARAM_STEP = 0.05
 #   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
 _PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
-_COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_decay": "TRL DEC"}
+_COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_decay": "TRL OPC"}
 
 
 class KeyboardController:
@@ -522,12 +522,12 @@ class KeyboardController:
             elif slot == "sat":
                 inst.color_adjust_sat(sign * 0.05)
             elif slot == "trl_decay":
-                cur = getattr(cfg, 'trail_decay', 0.93)
-                new = round(max(0.80, min(0.99, cur + delta)), 3)
+                cur = getattr(cfg, 'trail_mode_opacity', 0.5)
+                new = round(max(0.0, min(1.0, cur + delta)), 3)
                 if new == cur:
                     return
-                cfg.trail_decay = new
-                inst.osd.show(f"TRL DEC: {new:.2f}")
+                cfg.trail_mode_opacity = new
+                inst.osd.show(f"TRL OPC: {new:.2f}")
                 if getattr(cfg, 'trail_on', False):
                     inst.sampler.refresh_trail()
         else:                             # ── BLEND: compositing controls

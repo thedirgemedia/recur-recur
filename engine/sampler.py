@@ -179,15 +179,11 @@ class SamplerEngine:
                 )
                 parts.append(f"@trail:lavfi=[{g}]")
             else:
-                # Mode blend: an IMMEDIATE decaying smear. lagfun is a recursive
-                # decaying peak-hold fed by the *clean* current frame (split [b])
-                # — it never reads the trailed output, so there is no trail-on-
-                # trail feedback. (No tpad pre-delay: that delayed the whole
-                # smear by trail_delay_s and made it lag behind the motion.)
-                # Blended on luma only (c0); difference stays full strength,
-                # brightening/darkening modes are tamed with c0_opacity so they
-                # don't wash out.
-                decay_t = getattr(self.cfg, 'trail_decay', 0.93)
+                # Mode blend: delay a copy of the frame by trail_delay_s and
+                # blend it onto the live frame with the configured blend mode.
+                # c1/c2 normal preserves chroma from the live frame.
+                # difference stays at full strength; other modes are tamed by
+                # trail_mode_opacity so they don't wash out.
                 tm = self.cfg.trail_mode
                 if tm == 'difference':
                     c0 = "c0_mode=difference"
@@ -197,7 +193,7 @@ class SamplerEngine:
                 parts.append(
                     f"@trail:lavfi=["
                     f"split[a][b];"
-                    f"[b]lagfun=decay={decay_t:.3f}[t];"
+                    f"[b]tpad=start_mode=clone:start={delay_f}[t];"
                     f"[a][t]blend={c0}:"
                     f"c1_mode=normal:c2_mode=normal:shortest=1"
                     f"]"
