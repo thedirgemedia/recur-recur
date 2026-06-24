@@ -608,7 +608,7 @@ class KeyboardController:
                     inst.sampler.refresh_trail()
             elif slot == "echos":
                 cur = getattr(cfg, 'trail_echo_count', 1)
-                new = max(1, min(15, cur + d))
+                new = max(1, min(5, cur + d))
                 if new == cur:
                     return
                 cfg.trail_echo_count = new

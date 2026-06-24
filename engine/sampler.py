@@ -153,7 +153,7 @@ class SamplerEngine:
         if getattr(self.cfg, 'trail_on', False):
             delay_f = max(1, int(round(
                 getattr(self.cfg, 'trail_delay_s', 2.0) * self.cfg.fps)))
-            n = max(1, min(15, getattr(self.cfg, 'trail_echo_count', 1)))
+            n = max(1, min(5, getattr(self.cfg, 'trail_echo_count', 1)))
             step_f = max(1, delay_f // n)
             blend_type = getattr(self.cfg, 'trail_blend_type', 'mode')
             if blend_type == 'opacity':

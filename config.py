@@ -141,13 +141,13 @@ class Config:
         #   "mode"    — tpad+blend delayed echoes chained with creative blend modes
         #   "opacity" — weighted average of live + N delayed echoes (mix);
         #               clean motion ghosts, no wash-out
-        # trail_echo_count controls N for both types (1–15, shown as hex 1–f).
+        # trail_echo_count controls N for both types (1–5).
         self.trail_on          = False
         self.trail_mode        = "screen"
         self.trail_decay       = 0.93       # 0.90=short ghost, 0.93=medium, 0.97=long tail
         self.trail_delay_s     = 2.0        # delay to furthest echo in seconds
         self.trail_blend_type  = "mode"     # "mode" or "opacity"
-        self.trail_echo_count  = 1          # number of delayed echoes (1–15)
+        self.trail_echo_count  = 1          # number of delayed echoes (1–5)
         # mode-type: brightening/darkening blends (screen/addition/multiply/
         # overlay) accumulate and wash out; tame them by mixing the blend back
         # toward the original on luma. 'difference' is left at full.
