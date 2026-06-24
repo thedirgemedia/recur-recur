@@ -120,12 +120,12 @@ PARAM_STEP = 0.05
 # Param layers (indices). BKSP cycles the ones available in the current mode:
 #   0 SHDR    generative shader params p1–p3              (SHADER mode only)
 #   1 FX      the active FX shader's own params f1–f4
-#   2 COLOUR  palette (p4, SHADER only) + hue / sat / trail decay
+#   2 COLOUR  palette (p4, SHADER only) + hue / sat / trail opacity / trail decay
 #   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
 #   4 TRAIL   temporal echo — on/off, blend type, mode, delay, opacity
 _PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
-_COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_decay": "TRL OPC"}
+_COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_opc": "TRL OPC", "trl_decay": "TRL DEC"}
 _TRAIL_LABELS  = {"on": "TRL ON", "type": "TYPE", "mode": "MODE",
                   "delay": "DELAY", "echos": "ECHOS", "opacity": "OPACITY"}
 
@@ -411,7 +411,7 @@ class KeyboardController:
                 slots = self._blend_slots()
                 self._param_idx = (self._param_idx + 1) % len(slots)
                 inst.osd.show(f"BLEND: {_BLEND_LABELS[slots[self._param_idx]]}")
-            elif self._param_layer == 2:        # COLOUR: hue / sat / trl dec
+            elif self._param_layer == 2:        # COLOUR: hue / sat / trl opc / trl dec
                 slots = self._colour_slots()
                 self._param_idx = (self._param_idx + 1) % len(slots)
                 slot = slots[self._param_idx]
@@ -473,7 +473,7 @@ class KeyboardController:
         return sorted(self.inst.shader.param_labels().keys(), key=lambda k: int(k[1:]))
 
     def _colour_slots(self):
-        return ("hue", "sat", "trl_decay")
+        return ("hue", "sat", "trl_opc", "trl_decay")
 
     def _blend_slots(self):
         """BLEND-layer slots for the current mode: shader↔video blend in SHADER,
@@ -525,20 +525,29 @@ class KeyboardController:
             inst.shader.set_fx_param(key, new)
             lbl = inst.shader.fx_param_labels().get(key, key.upper())
             inst.osd.show(f"{lbl.upper()}: {new:.2f}")
-        elif self._param_layer == 2:      # ── COLOUR: hue / sat / trl dec
+        elif self._param_layer == 2:      # ── COLOUR: hue / sat / trl opc / trl dec
             slots = self._colour_slots()
             slot  = slots[self._param_idx % len(slots)]
             if slot == "hue":
                 inst.color_adjust_hue(sign * 0.02)
             elif slot == "sat":
                 inst.color_adjust_sat(sign * 0.05)
-            elif slot == "trl_decay":
+            elif slot == "trl_opc":
                 cur = getattr(cfg, 'trail_mode_opacity', 0.5)
                 new = round(max(0.0, min(1.0, cur + delta)), 3)
                 if new == cur:
                     return
                 cfg.trail_mode_opacity = new
                 inst.osd.show(f"TRL OPC: {new:.2f}")
+                if getattr(cfg, 'trail_on', False):
+                    inst.sampler.refresh_trail()
+            elif slot == "trl_decay":
+                cur = round(getattr(cfg, 'trail_decay', 0.93), 3)
+                new = round(max(0.80, min(0.99, cur + delta)), 3)
+                if new == cur:
+                    return
+                cfg.trail_decay = new
+                inst.osd.show(f"TRL DEC: {new:.2f}")
                 if getattr(cfg, 'trail_on', False):
                     inst.sampler.refresh_trail()
         elif self._param_layer == 3:      # ── BLEND: compositing controls

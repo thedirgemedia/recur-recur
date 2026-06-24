@@ -468,16 +468,17 @@ class DisplayController:
                  has_fx)
                 for k in sorted(_flabels.keys(), key=lambda k: int(k[1:]))
             ]
-        elif _param_layer == 2:        # COLOUR — hue / sat / trl dec
+        elif _param_layer == 2:        # COLOUR — hue / sat / trl opc / trl dec
             hue     = getattr(cfg, 'color_hue', 0.0)
             sat     = getattr(cfg, 'color_sat', 1.0)
             sat_max = getattr(cfg, 'COLOR_SAT_MAX', 2.0)
-            opc = getattr(cfg, 'trail_mode_opacity', 0.5)
+            opc     = getattr(cfg, 'trail_mode_opacity', 0.5)
+            dec     = getattr(cfg, 'trail_decay', 0.93)
             bar_items = [
-                ("HUE",     hue,             f"{hue*360:.0f}°",    True),
-                ("SAT",     sat / sat_max,   f"{sat:.2f}",         True),
-                ("TRL OPC", opc,             f"{opc:.2f}",         True),
-                ("—",       0.0,             "—",                  False),
+                ("HUE",     hue,                    f"{hue*360:.0f}°", True),
+                ("SAT",     sat / sat_max,           f"{sat:.2f}",      True),
+                ("TRL OPC", opc,                    f"{opc:.2f}",      True),
+                ("TRL DEC", (dec - 0.80) / 0.19,   f"{dec:.2f}",      True),
             ]
         elif _param_layer == 3:        # BLEND — compositing (shader blend / overlay)
             def _idx_frac(seq, val):

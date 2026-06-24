@@ -89,7 +89,7 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 | **Num** | Toggle the menu (while the menu is open, no key reaches the video) |
 | **Enter** | Cycle instrument mode (SAMPLER → SHADER → LIVE → …; LIVE skipped if disabled in SETTINGS) |
 | **000** or **.** | Toggle the temporal trail (echo time delay) |
-| **Bksp** | Cycle param layer for this mode: SHADER mode = SHDR → FX → COLOUR → BLEND; SAMPLER/LIVE = FX → COLOUR → BLEND. Top-bar chip shows `SHDR` / `FX` / `COLOUR` / `BLEND` |
+| **Bksp** | Cycle param layer for this mode: SHADER mode = SHDR → FX → COLOUR → BLEND → TRAIL; SAMPLER/LIVE = FX → COLOUR → BLEND → TRAIL. Top-bar chip shows `SHDR` / `FX` / `COLOUR` / `BLEND` / `TRAIL` |
 | **1** | Cycle the selected parameter (see *Parameter editing*) |
 | **2** / **3** | Selected parameter − / + |
 | **0** | In/out points: 1st press = IN, 2nd = OUT, 3rd = clear |
@@ -127,8 +127,8 @@ the bars below the header. Key **1** cycles the selection within a layer;
 **2/3** step (or cycle, for the BLEND mode/source slots); knobs and MIDI feed
 the same params.
 
-- **SHADER mode:** SHDR → FX → COLOUR → BLEND
-- **SAMPLER / LIVE mode:** FX → COLOUR → BLEND  (no generative shader → SHDR skipped)
+- **SHADER mode:** SHDR → FX → COLOUR → BLEND → TRAIL
+- **SAMPLER / LIVE mode:** FX → COLOUR → BLEND → TRAIL  (no generative shader → SHDR skipped)
 
 ### Layer SHDR — generative shader params *(SHADER mode only)*
 
@@ -155,7 +155,8 @@ All colour controls in one place. Key **1** cycles slots; **2/3** step:
 | `PAL` | 0–1 | IQ cosine palette selector for the generative | SHADER mode only |
 | `HUE` | 0–360° | global hue rotation (0 = no shift); wraps. GLSL colour pass | always |
 | `SAT` | 0–2 | global saturation (0 = greyscale, 1 = normal, 2 = vivid) | always |
-| `TRL DEC` | 0.80–0.99 | trail persistence (0.80 short ghost → 0.99 long tail) | always |
+| `TRL OPC` | 0–1 | trail blend opacity — how far MODE-type brightening blends are pulled back toward the original (prevents wash-out) | always |
+| `TRL DEC` | 0.80–0.99 | trail persistence in MODE type (0.80 short ghost → 0.99 long tail) | always |
 
 `PAL` is the generative shader's p4 parameter — it selects the IQ cosine
 palette for plasma, waves, tunnel, voronoi and similar shaders, or acts as a
@@ -180,6 +181,19 @@ against: `clip` (the looping sampler clip) or `live` (the camera input).
 Blend defaults to `clip`; enabling blend while the camera is not already
 running will not auto-switch to live.
 
+### Layer TRAIL — temporal echo controls (all modes)
+
+All trail parameters in one place. Key **1** cycles slots; **2/3** step:
+
+| Slot | Meaning |
+|---|---|
+| `TRL ON` | trail on/off toggle |
+| `TYPE` | blend type: `MODE` (lagfun ghost) or `OPACITY` (weighted echo mix) |
+| `MODE` | luma blend formula for MODE type (screen, difference, multiply…) |
+| `DELAY` | time to the furthest echo (0.25–8 s) |
+| `ECHOS` | number of delayed echoes in OPACITY type (1–5) |
+| `OPACITY` | trail blend opacity for MODE type (same as `TRL OPC` on COLOUR layer) |
+
 ---
 
 ## SPI display
@@ -187,7 +201,7 @@ running will not auto-switch to live.
 **Top bar (status view):**
 - Row 1: mode name (colour-coded), `TRAIL` chip (green when on),
   `REC` chip (red while recording, amber while saving), param-layer chip
-  (`SHDR` / `FX` / `COLOUR` / `BLEND`), current clip name.
+  (`SHDR` / `FX` / `COLOUR` / `BLEND` / `TRAIL`), current clip name.
 - Row 2, four columns: generative shader | FX shader | active blend mode | sampler play mode.
 - Below: the four parameter bars of the active layer (selected bar is orange);
   the SHDR layer adds a `BLD AMT` bar when shader-blending.
@@ -239,12 +253,11 @@ The SETTINGS page header shows the Pi's current IP address (useful for SSH when 
 | LIVE MODE | ON/OFF — OFF removes LIVE from the Enter-key cycle |
 | PLAY | sampler playback mode (see *Playback modes*) |
 | CAM RES | camera capture: 320×180 / 640×360 / 1280×720 (applies on next LIVE entry) |
-| OVERLAY / OVL MODE | V-overlay toggle and blend mode |
-| TRAIL / TRAIL TYPE / TRAIL MODE | trail toggle, blend type (MODE/OPACITY), and blend mode |
-| BLEND / BLEND MODE / BLEND AMT / BLEND SRC | shader blend toggle, mode, mix, source (clip/live) |
+| OVERLAY | V-overlay on/off toggle (mode and opacity live on Bksp BLEND layer) |
+| BLEND | shader blend on/off toggle (mode, amount, source live on Bksp BLEND layer) |
 | FX / GEN | cycle the active FX / generative shader |
-| P1–P4 | shader params (±0.05 per press, labels from shader source) |
 | SAVE PREFS | write current state to `prefs.json` now |
+| RESTART | restart the application |
 | SYSTEM | quit the application (a Pi poweroff would need root; the service can't escalate) |
 
 ### MIDI page
@@ -318,26 +331,17 @@ shows `RUN install-usb-import.sh`.
 
 ### Echo trail
 1. Press **.** (or **000**) in any mode to toggle the trail on/off.
-2. SETTINGS → **TRAIL TYPE** selects how the echo is rendered:
-   - **MODE** — one continuous ghost blended on the luma plane using lagfun
-     decay. TRAIL MODE and `TRL DEC` control the blend formula and persistence.
-     `difference` is clean; the brightening/darkening modes (`screen`,
-     `addition`, `multiply`, `overlay`) are tamed toward the original on luma
-     (`trail_mode_opacity`, default 0.5) so they no longer wash out to white.
-   - **OPACITY** — a weighted average of the live frame plus **five**
-     progressively-delayed past echoes (mix). The echoes fall behind the
-     motion (no pre-echo); the live frame is the sharpest and older echoes
-     fade. Static areas stay clean — only motion ghosts — so it never washes
-     out. The tail spans ~1.7× the base delay (≈3.3 s by default).
-3. SETTINGS → **TRAIL MODE** (only active in MODE type) picks the luma blend:
-   `screen` brightens ghosts, `difference` shows motion, `subtract` darkens,
-   `phoenix` shows similarity. Full set: screen, difference, multiply, overlay,
-   addition, subtract, lighten, darken, phoenix, negation, divide.
-4. `TRL DEC` (FX layer) controls fade persistence in MODE type (0.80–0.99).
-5. The base delay (`trail_delay_s`, default 2 s) is set in `prefs.json`. The
-   OPACITY layer weights are `trail_step_weights` (default
-   `[1.0, 0.9, 0.8, 0.7, 0.6, 0.5]`, live first then oldest→ five echoes);
-   raise the echo weights for a stronger trail.
+2. **Bksp** to the **TRAIL** layer to access all trail controls. Key **1** cycles slots, **2/3** adjust:
+   - **TRL ON** — same toggle as the `.` key.
+   - **TYPE** — selects how the echo is rendered:
+     - **MODE** — one continuous ghost blended on the luma plane using lagfun decay. `TRAIL MODE` picks the blend formula; `TRL DEC` (COLOUR layer) sets persistence. Brightening modes (`screen`, `addition`, `multiply`, `overlay`) are tamed toward the original (`TRL OPC`) so they don't wash out.
+     - **OPACITY** — a weighted average of the live frame plus 1–5 progressively-delayed echoes. Echoes fall behind motion (no pre-echo); static areas stay sharp. Never washes out.
+   - **MODE** — luma blend formula (MODE type only): `screen` brightens, `difference` shows motion, `subtract` darkens, `phoenix` shows similarity. Full set: screen, difference, multiply, overlay, addition, subtract, lighten, darken, phoenix, negation, divide.
+   - **DELAY** — time to the furthest echo (0.25–8 s).
+   - **ECHOS** — number of echoes in OPACITY type (1–5, shown as hex `1`–`5`).
+   - **OPACITY** — blend strength for MODE type (same as `TRL OPC` on COLOUR layer).
+3. `TRL DEC` on the **COLOUR** layer controls lagfun fade persistence in MODE type (0.80–0.99; 0.80 = short ghost, 0.99 = long tail).
+4. The OPACITY-type echo weights are `trail_step_weights` in `prefs.json` (default `[1.0, 0.9, 0.8, 0.7, 0.6, 0.5]`, live first); raise echo weights for a stronger trail.
 
 ### Map a MIDI controller
 1. Plug in — connects automatically within 3 s.
@@ -363,13 +367,14 @@ Blend modes: screen, difference, multiply, overlay, addition, subtract, lighten,
 darken, phoenix, negation, divide. Decay 0.80–0.99 via `TRL DEC`; delay via
 `trail_delay_s` in `prefs.json`.
 
-**OPACITY** — `split=6 → 5×tpad(step×1…5) → mix=inputs=6:weights=…`.
-A weighted average of the live frame plus five progressively-delayed past
-echoes, spaced `delay/3` apart (tail ≈1.7× the delay window). `mix` normalises
-by the weight sum, so brightness is preserved and identical static regions
-stay sharp — only moving content ghosts (no wash-out, no pre-echo).
+**OPACITY** — `split → N×tpad(step×1…N) → mix=inputs=N+1:weights=…`.
+A weighted average of the live frame plus N progressively-delayed past echoes
+(N = `trail_echo_count`, 1–5; set on the Bksp TRAIL layer), spaced
+`delay/N` apart (tail ≈1.7× the delay window). `mix` normalises by the weight
+sum, so brightness is preserved and identical static regions stay sharp —
+only moving content ghosts (no wash-out, no pre-echo).
 Layer weights tunable as `trail_step_weights` in `prefs.json` (live first,
-then five echoes); TRAIL MODE and `TRL DEC` have no effect in this type.
+then N echoes); TRAIL MODE and `TRL DEC` have no effect in this type.
 
 **In SHADER mode the trail is unavailable.** The lavfi trail runs in the vf
 chain *before* the generative shader, which renders over it, so it never shows.
@@ -552,7 +557,7 @@ clip slot `note % 10` (only 4–9 are real slots).
 
 | File | Contents | Written |
 |---|---|---|
-| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity` | clean shutdown + SAVE PREFS |
+| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count` | clean shutdown + SAVE PREFS |
 | `presets/NN.json` | shader + fx + params snapshot | via Python API only; loaded by MIDI program change |
 | `/tmp/recur_s*.glsl` | live shader temp files (unique path per recompile — mpv caches by path) | automatic |
 
