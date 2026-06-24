@@ -8,8 +8,8 @@ to recur-recur's modes and engines. Four pages cycled with 7 / 9:
   BROWSER  — clips list; 5 stages a pick (loads on menu close); ENTER+4–9 assigns
              the highlighted clip to that performance slot
   SHADERS  — generative shaders list; same bindings as BROWSER
-  SETTINGS — editable options (mode, sampler mode, overlay, trail, blend,
-             shaders, params, prefs/system actions)
+  SETTINGS — editable options (mode, sampler mode, overlay/blend toggles,
+             shader/fx selectors, prefs/system actions)
   MIDI     — per-target CC overrides; 4/6 step ±5, 5 = numeric entry,
              BKSP = reset to built-in default
 
@@ -30,7 +30,6 @@ import socket
 import threading
 
 from control.midi import MIDI_TARGETS, MIDI_TARGET_LABELS, MIDI_DEFAULTS
-from engine.shader import clamp01
 
 
 def _local_ip():
@@ -62,15 +61,6 @@ def _drive_label(path):
         return parts[2][:6]
     return "USB"
 
-def _trail_echo_adjust(cfg, inst, d):
-    cur = max(1, min(15, getattr(cfg, 'trail_echo_count', 1)))
-    new = max(1, min(15, cur + (1 if d > 0 else -1)))
-    if new != cur:
-        cfg.trail_echo_count = new
-        if getattr(cfg, 'trail_on', False):
-            inst.sampler.refresh_trail()
-
-PARAM_STEP = 0.05
 
 
 class Menu:
@@ -626,55 +616,19 @@ class Menu:
             adjust=lambda d: _cam_res_cycle(d),
             select=lambda: _cam_res_cycle(+1)))
 
-        # overlay on/off + mode (SAMPLER/FX/LIVE)
+        # overlay on/off (mode/opacity live on Bksp BLEND layer)
         items.append(_Item(
             "OVERLAY", lambda: "ON" if cfg.overlay_on else "OFF",
             adjust=lambda d: self._set_overlay(not cfg.overlay_on),
             select=lambda: self._set_overlay(not cfg.overlay_on)))
-        items.append(_Item(
-            "OVL MODE", lambda: cfg.overlay_mode,
-            adjust=lambda d: inst.overlay_cycle_mode(d),
-            select=lambda: inst.overlay_cycle_mode(+1)))
 
-        # temporal trail (000 key / any mode)
-        items.append(_Item(
-            "TRAIL", lambda: "ON" if cfg.trail_on else "OFF",
-            adjust=lambda d: inst.trail_toggle(),
-            select=lambda: inst.trail_toggle()))
-        items.append(_Item(
-            "TRAIL TYPE", lambda: getattr(cfg, 'trail_blend_type', 'mode').upper(),
-            adjust=lambda d: inst.trail_cycle_blend_type(),
-            select=lambda: inst.trail_cycle_blend_type()))
-        items.append(_Item(
-            "TRAIL MODE", lambda: cfg.trail_mode,
-            adjust=lambda d: inst.trail_cycle_mode(d),
-            select=lambda: inst.trail_cycle_mode(+1)))
-        items.append(_Item(
-            "TRAIL ECHOS",
-            lambda: format(max(1, min(15, getattr(cfg, 'trail_echo_count', 1))), 'x'),
-            adjust=lambda d: _trail_echo_adjust(cfg, inst, d),
-            select=lambda: _trail_echo_adjust(cfg, inst, +1)))
-
-        # shader blend on/off + mode (SHADER)
+        # shader blend on/off (mode/amount/source live on Bksp BLEND layer)
         items.append(_Item(
             "BLEND", lambda: "ON" if cfg.shader_blend else "OFF",
             adjust=lambda d: inst.shader_blend_toggle(),
             select=lambda: inst.shader_blend_toggle()))
-        items.append(_Item(
-            "BLEND MODE", lambda: cfg.shader_blend_mode,
-            adjust=lambda d: inst.shader_blend_cycle(),
-            select=lambda: inst.shader_blend_cycle()))
-        items.append(_Item(
-            "BLEND AMT",
-            lambda: f"{cfg.shader_blend_amount:.2f}",
-            adjust=lambda d: inst.shader_blend_adjust_amount(d * 0.05),
-            select=lambda: None))
-        items.append(_Item(
-            "BLEND SRC", lambda: cfg.shader_blend_source,
-            adjust=lambda d: inst.shader_blend_source_cycle(),
-            select=lambda: inst.shader_blend_source_cycle()))
 
-        # shaders
+        # shaders (params live on Bksp SHDR/FX layers; trail on Bksp TRAIL layer)
         items.append(_Item(
             "FX", lambda: cfg.current_fx or "—",
             adjust=lambda d: inst.shader.cycle(d, kind="fx"),
@@ -683,32 +637,6 @@ class Menu:
             "GEN", lambda: (cfg.current_shader or "—"),
             adjust=lambda d: inst.shader.cycle(d, kind="generative"),
             select=lambda: inst.shader.cycle(+1, kind="generative")))
-
-        # (Colour hue/saturation live on their own Bksp param layer — COLOR —
-        #  not here, so the perform colour page is the single place to tune it.)
-
-        # Params — all shader params in SHADER mode (dynamic count), FX f1–f4 otherwise.
-        if inst.mode == "SHADER":
-            plabels = inst.shader.param_labels()
-            pkeys   = sorted(plabels.keys(), key=lambda k: int(k[1:]))
-            pvals   = cfg.params
-        else:
-            plabels = inst.shader.fx_param_labels()
-            pkeys   = sorted(plabels.keys(), key=lambda k: int(k[1:]))
-            pvals   = cfg.fx_params
-        for key in pkeys:
-            lbl = plabels.get(key, key.upper()).upper()
-            ul  = lbl
-            if ul.endswith(' X') or ul.endswith(' Y') or ul in ('X', 'Y'):
-                val_fn = (lambda k=key, vv=pvals: f"{(vv.get(k, 0.5) - 0.5)*200:+.0f}")
-            elif ul.endswith('STARS') or ul == 'STARS':
-                val_fn = (lambda k=key, vv=pvals: str(max(1, round(vv.get(k, 0.5) * 500))))
-            else:
-                val_fn = (lambda k=key, vv=pvals: f"{vv.get(k, 0.5):.2f}")
-            items.append(_Item(
-                lbl, val_fn,
-                adjust=(lambda k=key: (lambda d: self._step_param(k, d * PARAM_STEP)))(),
-                select=lambda: None))
 
         # prefs / system
         def _do_save():
@@ -738,18 +666,6 @@ class Menu:
         # overlay_toggle() itself blocks SHADER mode; no need to filter here
         if self.inst.cfg.overlay_on != state:
             self.inst.overlay_toggle()
-
-    def _step_param(self, key, delta):
-        cfg = self.inst.cfg
-        is_fx = key.startswith("f")
-        vals  = cfg.fx_params if is_fx else cfg.params
-        cur = vals.get(key, 0.5)
-        new = round(clamp01(cur + delta), 3)
-        if new != cur:
-            if is_fx:
-                self.inst.shader.set_fx_param(key, new)
-            else:
-                self.inst.shader.set_param(key, new)
 
     # ───────────────────────────────────────────────────────── rendering
     def render(self, img, draw, font_lg, font_md, font_sm, W, H, palette):

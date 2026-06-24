@@ -518,6 +518,7 @@ class DisplayController:
             opacity   = getattr(cfg, 'trail_mode_opacity', 0.5)
             btypes    = getattr(cfg, 'TRAIL_BLEND_TYPES', ('mode', 'opacity'))
             tmodes    = getattr(cfg, 'TRAIL_MODES', ())
+            echos = max(1, min(15, getattr(cfg, 'trail_echo_count', 1)))
             bar_items = [
                 ("TRL ON",  1.0 if trail_on else 0.0,
                  "ON" if trail_on else "OFF",            True),
@@ -527,6 +528,8 @@ class DisplayController:
                  tmode.upper()[:9],                      True),
                 ("DELAY",   (delay - 0.25) / 7.75,
                  f"{delay:.2f}s",                        True),
+                ("ECHOS",   (echos - 1) / 14,
+                 format(echos, 'x'),                     True),
                 ("OPACITY", opacity,
                  f"{opacity:.2f}",                       True),
             ]
