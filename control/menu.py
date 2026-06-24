@@ -616,6 +616,12 @@ class Menu:
             adjust=lambda d: _cam_res_cycle(d),
             select=lambda: _cam_res_cycle(+1)))
 
+        # video scaling for mismatched aspect ratios
+        items.append(_Item(
+            "VID SCALE", lambda: getattr(cfg, 'video_scale_mode', 'fit').upper(),
+            adjust=lambda d: inst.video_scale_cycle(d),
+            select=lambda: inst.video_scale_cycle(+1)))
+
         # overlay on/off (mode/opacity live on Bksp BLEND layer)
         items.append(_Item(
             "OVERLAY", lambda: "ON" if cfg.overlay_on else "OFF",

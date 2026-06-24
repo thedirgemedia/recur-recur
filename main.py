@@ -439,6 +439,13 @@ class RecurInstrument:
         self.osd.show(f"TRAIL {'ON' if state else 'OFF'} ({self.cfg.trail_mode})")
         self.sampler.refresh_trail()
 
+    def video_scale_cycle(self, direction=1):
+        modes = self.cfg.VIDEO_SCALE_MODES
+        i = list(modes).index(self.cfg.video_scale_mode) if self.cfg.video_scale_mode in modes else 0
+        self.cfg.video_scale_mode = modes[(i + direction) % len(modes)]
+        self.sampler.apply_video_scale()
+        self.osd.show(f"SCALE: {self.cfg.video_scale_mode.upper()}")
+
     def record_toggle(self):
         """Start or stop recording the live camera to a clip file.
         Uses mpv stream-record (no device conflict). On stop, ffmpeg remuxes
@@ -514,6 +521,8 @@ class RecurInstrument:
         if saved_sm:
             self.sampler.set_mode(saved_sm)
             del self.cfg._prefs_sampler_mode
+
+        self.sampler.apply_video_scale()
 
         log.info("ready. numpad ENTER cycles modes, NumLock opens the menu.")
         try:

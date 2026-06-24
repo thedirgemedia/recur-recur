@@ -135,6 +135,13 @@ class Config:
         # cycle_mode() skips LIVE: SAMPLER → SHADER → SAMPLER.
         self.live_mode_enabled = True
 
+        # How video is scaled when its aspect ratio differs from the output.
+        #   "fit"     — letterbox/pillarbox; whole frame visible, bars on edges
+        #   "fill"    — zoom until video fills screen; edges may be cropped
+        #   "stretch" — stretch to fill exactly; aspect ratio not preserved
+        self.video_scale_mode  = "fit"
+        self.VIDEO_SCALE_MODES = ("fit", "fill", "stretch")
+
         # Temporal trail — echo time delay.
         # Toggle: 000 key.  Mode: menu TRAIL MODE row.  Decay: FX layer TRL DEC param.
         # Two blend types selectable from menu TRAIL TYPE row:
@@ -183,6 +190,7 @@ class Config:
         'current_clip', 'current_shader', 'current_fx',
         'start_mode', 'live_mode_enabled',
         'camera_width', 'camera_height',
+        'video_scale_mode',
         'midi_target_cc',
     ]
 

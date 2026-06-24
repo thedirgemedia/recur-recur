@@ -104,6 +104,19 @@ class SamplerEngine:
     def pause(self):  self._cmd_async("set_property", "pause", True)
     def resume(self): self._cmd_async("set_property", "pause", False)
 
+    def apply_video_scale(self):
+        """Push video_scale_mode to mpv (keepaspect + panscan)."""
+        mode = getattr(self.cfg, 'video_scale_mode', 'fit')
+        if mode == 'fill':
+            self._cmd_async("set_property", "keepaspect", True)
+            self._cmd_async("set_property", "panscan", 1.0)
+        elif mode == 'stretch':
+            self._cmd_async("set_property", "keepaspect", False)
+            self._cmd_async("set_property", "panscan", 0.0)
+        else:  # fit
+            self._cmd_async("set_property", "keepaspect", True)
+            self._cmd_async("set_property", "panscan", 0.0)
+
     def stop_playback(self):
         """Stop mpv playback. In v2 we usually don't need this since mpv
         keeps owning the screen across modes — but it's still useful when
