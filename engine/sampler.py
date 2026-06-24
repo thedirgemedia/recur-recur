@@ -152,9 +152,10 @@ class SamplerEngine:
         'vf remove' + 'vf add' are sent as two separate commands — mpv renders
         one unfiltered frame in the gap between them.
         """
-        # tpad generates synthetic frames that strip rotation side-data, so
-        # mpv's display-level rotation stops applying to those frames. Bake the
-        # rotation into the lavfi chain instead and suppress display rotation.
+        # --autorotate=no means mpv never applies metadata rotation itself.
+        # We always apply it manually: via video-rotate when there's no lavfi
+        # chain, or via a transpose prefix inside lavfi (where tpad would
+        # otherwise strip the rotation side-data from its synthetic frames).
         _rot = self._clip_rotate % 360
         _rot_prefix = {
             90:  "transpose=1,",   # 90° clockwise
@@ -163,10 +164,9 @@ class SamplerEngine:
         }.get(_rot, "")
         _has_lavfi = (getattr(self.cfg, 'overlay_on', False) or
                       getattr(self.cfg, 'trail_on', False))
-        if _has_lavfi and _rot:
-            self._cmd_async("set_property", "video-rotate", 0)
-        elif not _has_lavfi and _rot:
-            self._cmd_async("set_property", "video-rotate", _rot)
+        # With lavfi: bake rotation into the graph, tell mpv to add 0° extra.
+        # Without lavfi: let mpv rotate the display by the full angle.
+        self._cmd_async("set_property", "video-rotate", 0 if _has_lavfi else _rot)
 
         parts = []
         if getattr(self.cfg, 'overlay_on', False):
@@ -475,6 +475,9 @@ class SamplerEngine:
             # the EOF-driven play modes (playlist/random/oneshot/randstart)
             # rely on eof-reached firing while the picture stays up.
             "--keep-open=always",
+            # Never auto-rotate from metadata — we manage video-rotate manually
+            # so it stays correct when lavfi filters (tpad) strip rotation side-data.
+            "--autorotate=no",
         ]
         log.debug("launching mpv")
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
@@ -585,7 +588,10 @@ class SamplerEngine:
             elif pid == OBS_EOF and data:
                 self._on_eof()
             elif pid == OBS_ROTATE and data is not None:
-                self._clip_rotate = int(data)
+                new_rot = int(data)
+                if new_rot != self._clip_rotate:
+                    self._clip_rotate = new_rot
+                    self._rebuild_vf()
 
     def _enforce_out_point(self):
         if self.mode in ("loop", "random", "randstart", "fixed"):
