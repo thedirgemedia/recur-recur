@@ -498,6 +498,21 @@ class RecurInstrument:
         self.running = True
         log.info("recur-recur starting — output: %s", self.cfg.output)
 
+        # Unbind the framebuffer text console from HDMI so mpv gets a clean
+        # display. vtcon1 is the fb console; vtcon0 is the dummy console.
+        # Must run on every start — including in-app restarts (os.execv bypasses
+        # the systemd TTYVHangup/TTYReset, so it must be done here).
+        # The service has CAP_SYS_ADMIN so the sysfs write is permitted.
+        for vtcon in ("/sys/class/vtconsole/vtcon1/bind",
+                      "/sys/class/vtconsole/vtcon0/bind"):
+            try:
+                with open(vtcon) as f:
+                    if f.read().strip() == "1":
+                        with open(vtcon, "w") as fw:
+                            fw.write("0")
+            except Exception:
+                pass
+
         # Pin Python control threads to cores 0-1 so media processes get
         # exclusive use of cores 2-3. Best-effort, silent on failure.
         try:
