@@ -33,6 +33,7 @@ MODES = ["loop", "oneshot", "playlist", "random", "fixed", "randstart"]
 OBS_TIME_POS = 1
 OBS_DURATION = 2
 OBS_EOF      = 3
+OBS_ROTATE   = 4
 
 
 class SamplerEngine:
@@ -62,7 +63,8 @@ class SamplerEngine:
         # Values: 'clip' | 'blank' | 'camera' | None
         self._active_source = None
         self.removable_paths: set = set()   # full paths of clips from /media or /mnt
-        self._vf_had_trail = False          # was a tpad trail in the last vf chain
+        self._vf_had_trail  = False         # was a tpad trail in the last vf chain
+        self._clip_rotate   = 0            # rotation metadata of current clip (degrees)
         self._cam_proc = None
         # Bumped on every _play_csi_camera()/_stop_cam_proc() call so a delayed
         # rpicam-start thread can tell it's been superseded (see _play_csi_camera).
@@ -81,6 +83,7 @@ class SamplerEngine:
         self._cmd_async("observe_property", OBS_TIME_POS, "time-pos")
         self._cmd_async("observe_property", OBS_DURATION, "duration")
         self._cmd_async("observe_property", OBS_EOF,      "eof-reached")
+        self._cmd_async("observe_property", OBS_ROTATE,   "video-params/rotate")
         if self.clips:
             self.load(0)
         log.info("sampler started (%d clips)", len(self.clips))
@@ -136,6 +139,22 @@ class SamplerEngine:
         'vf remove' + 'vf add' are sent as two separate commands — mpv renders
         one unfiltered frame in the gap between them.
         """
+        # tpad generates synthetic frames that strip rotation side-data, so
+        # mpv's display-level rotation stops applying to those frames. Bake the
+        # rotation into the lavfi chain instead and suppress display rotation.
+        _rot = self._clip_rotate % 360
+        _rot_prefix = {
+            90:  "transpose=1,",   # 90° clockwise
+            180: "hflip,vflip,",
+            270: "transpose=2,",   # 90° counter-clockwise
+        }.get(_rot, "")
+        _has_lavfi = (getattr(self.cfg, 'overlay_on', False) or
+                      getattr(self.cfg, 'trail_on', False))
+        if _has_lavfi and _rot:
+            self._cmd_async("set_property", "video-rotate", 0)
+        elif not _has_lavfi and _rot:
+            self._cmd_async("set_property", "video-rotate", _rot)
+
         parts = []
         if getattr(self.cfg, 'overlay_on', False):
             # Self-blend of the current frame using overlay_mode, mixed at
@@ -144,6 +163,7 @@ class SamplerEngine:
             opacity = max(0.0, min(1.0, getattr(self.cfg, 'overlay_blend_amount', 1.0)))
             parts.append(
                 f"@overlay:lavfi=["
+                f"{_rot_prefix}"
                 f"split[a][b];"
                 f"[a][b]blend=c0_mode={self.cfg.overlay_mode}:"
                 f"c1_mode=normal:c2_mode=normal:"
@@ -170,6 +190,7 @@ class SamplerEngine:
                 split_outs = f"[_cur]" + "".join(f"[_s{i}]" for i in range(1, n + 1))
                 weights = " ".join(f"{x:.3f}" for x in w)
                 g = (
+                    f"{_rot_prefix}"
                     f"split={n+1}{split_outs};"
                     f"{taps}"
                     f"{inputs}"
@@ -201,7 +222,7 @@ class SamplerEngine:
                         f"c1_mode=normal:c2_mode=normal:shortest=1{out};"
                     )
                 blends = blends.rstrip(";")
-                g = f"split={n+1}{split_outs};{taps}{blends}"
+                g = f"{_rot_prefix}split={n+1}{split_outs};{taps}{blends}"
                 parts.append(f"@trail:lavfi=[{g}]")
         self._cmd_async("vf", "set", ",".join(parts))
 
@@ -550,6 +571,8 @@ class SamplerEngine:
                 self.duration = data
             elif pid == OBS_EOF and data:
                 self._on_eof()
+            elif pid == OBS_ROTATE and data is not None:
+                self._clip_rotate = int(data)
 
     def _enforce_out_point(self):
         if self.mode in ("loop", "random", "randstart", "fixed"):
