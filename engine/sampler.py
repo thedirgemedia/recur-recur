@@ -153,35 +153,33 @@ class SamplerEngine:
         if getattr(self.cfg, 'trail_on', False):
             delay_f = max(1, int(round(
                 getattr(self.cfg, 'trail_delay_s', 2.0) * self.cfg.fps)))
+            n = max(1, min(15, getattr(self.cfg, 'trail_echo_count', 1)))
+            step_f = max(1, delay_f // n)
             blend_type = getattr(self.cfg, 'trail_blend_type', 'mode')
             if blend_type == 'opacity':
-                # 5-echo onion-skin trail: a weighted average (mix) of the live
-                # frame plus five progressively-delayed PAST copies. tpad
-                # clone-pads the START of each copy, shifting it later in time,
-                # so every echo falls BEHIND the live motion (no pre-echo). The
-                # live frame carries the highest weight (sharpest); older echoes
-                # fade. mix normalises by the weight sum, so brightness is
+                # Onion-skin trail: weighted average (mix) of the live frame
+                # plus n progressively-delayed PAST copies. tpad clone-pads the
+                # START of each copy so every echo falls BEHIND live motion.
+                # Weights decay linearly; mix normalises so brightness is
                 # preserved and static areas stay clean — only motion ghosts.
-                # Echoes are spaced delay_f/3 apart → the tail spans ~1.7×
-                # trail_delay_s for a long, clearly-stepped trail.
-                w = getattr(self.cfg, 'trail_step_weights',
-                            (1.0, 0.9, 0.8, 0.7, 0.6, 0.5))
-                step_f = max(1, delay_f // 3)
+                w = [max(0.05, 1.0 - i * 0.1) for i in range(n + 1)]
                 taps = "".join(
                     f"[_s{i}]tpad=start_mode=clone:start={step_f*i}[_d{i}];"
-                    for i in range(1, 6))
-                weights = " ".join(f"{x:.3f}" for x in w[:6])
+                    for i in range(1, n + 1))
+                inputs = f"[_cur]" + "".join(f"[_d{i}]" for i in range(1, n + 1))
+                split_outs = f"[_cur]" + "".join(f"[_s{i}]" for i in range(1, n + 1))
+                weights = " ".join(f"{x:.3f}" for x in w)
                 g = (
-                    f"split=6[_cur][_s1][_s2][_s3][_s4][_s5];"
+                    f"split={n+1}{split_outs};"
                     f"{taps}"
-                    f"[_cur][_d1][_d2][_d3][_d4][_d5]"
-                    f"mix=inputs=6:weights={weights}"
+                    f"{inputs}"
+                    f"mix=inputs={n+1}:weights={weights}"
                 )
                 parts.append(f"@trail:lavfi=[{g}]")
             else:
-                # Mode blend: delay a copy of the frame by trail_delay_s and
-                # blend it onto the live frame with the configured blend mode.
-                # c1/c2 normal preserves chroma from the live frame.
+                # Mode blend: chain n delayed copies blended onto the live frame
+                # with the configured blend mode. Echoes are spaced step_f apart
+                # so the furthest echo lands at trail_delay_s.
                 # difference stays at full strength; other modes are tamed by
                 # trail_mode_opacity so they don't wash out.
                 tm = self.cfg.trail_mode
@@ -190,14 +188,21 @@ class SamplerEngine:
                 else:
                     op = getattr(self.cfg, 'trail_mode_opacity', 0.5)
                     c0 = f"c0_mode={tm}:c0_opacity={op:.3f}"
-                parts.append(
-                    f"@trail:lavfi=["
-                    f"split[a][b];"
-                    f"[b]tpad=start_mode=clone:start={delay_f}[t];"
-                    f"[a][t]blend={c0}:"
-                    f"c1_mode=normal:c2_mode=normal:shortest=1"
-                    f"]"
-                )
+                split_outs = "[_ma]" + "".join(f"[_ms{i}]" for i in range(1, n + 1))
+                taps = "".join(
+                    f"[_ms{i}]tpad=start_mode=clone:start={step_f*i}[_md{i}];"
+                    for i in range(1, n + 1))
+                blends = ""
+                for i in range(1, n + 1):
+                    inp = "[_ma]" if i == 1 else f"[_mr{i-1}]"
+                    out = f"[_mr{i}]" if i < n else ""
+                    blends += (
+                        f"{inp}[_md{i}]blend={c0}:"
+                        f"c1_mode=normal:c2_mode=normal:shortest=1{out};"
+                    )
+                blends = blends.rstrip(";")
+                g = f"split={n+1}{split_outs};{taps}{blends}"
+                parts.append(f"@trail:lavfi=[{g}]")
         self._cmd_async("vf", "set", ",".join(parts))
 
         # The trail uses tpad, which extends the filter timeline; on a short

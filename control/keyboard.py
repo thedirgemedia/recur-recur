@@ -127,7 +127,7 @@ _PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
 _COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_decay": "TRL OPC"}
 _TRAIL_LABELS  = {"on": "TRL ON", "type": "TYPE", "mode": "MODE",
-                  "delay": "DELAY", "opacity": "OPACITY"}
+                  "delay": "DELAY", "echos": "ECHOS", "opacity": "OPACITY"}
 
 
 class KeyboardController:
@@ -483,7 +483,7 @@ class KeyboardController:
         return ("mode", "opc")
 
     def _trail_slots(self):
-        return ("on", "type", "mode", "delay", "opacity")
+        return ("on", "type", "mode", "delay", "echos", "opacity")
 
     def sync_param_layer(self):
         """Keep the selected layer valid for the current mode (called on mode
@@ -604,6 +604,15 @@ class KeyboardController:
                     return
                 cfg.trail_delay_s = new
                 inst.osd.show(f"TRL DLY: {new:.2f}s")
+                if cfg.trail_on:
+                    inst.sampler.refresh_trail()
+            elif slot == "echos":
+                cur = getattr(cfg, 'trail_echo_count', 1)
+                new = max(1, min(15, cur + d))
+                if new == cur:
+                    return
+                cfg.trail_echo_count = new
+                inst.osd.show(f"TRL ECHOS: {format(new, 'x')}")
                 if cfg.trail_on:
                     inst.sampler.refresh_trail()
             elif slot == "opacity":

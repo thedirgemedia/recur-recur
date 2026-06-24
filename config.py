@@ -138,22 +138,19 @@ class Config:
         # Temporal trail — echo time delay.
         # Toggle: 000 key.  Mode: menu TRAIL MODE row.  Decay: FX layer TRL DEC param.
         # Two blend types selectable from menu TRAIL TYPE row:
-        #   "mode"    — tpad+lagfun decay blended on luma only (creative modes)
-        #   "opacity" — weighted average of live + 5 delayed echoes (mix);
-        #               clean motion ghosts, no wash-out (trail_step_weights)
-        self.trail_on         = False
-        self.trail_mode       = "screen"
-        self.trail_decay      = 0.93       # 0.90=short ghost, 0.93=medium, 0.97=long tail
-        self.trail_delay_s    = 2.0        # echo delay in seconds (frames = delay * fps)
-        self.trail_blend_type = "mode"     # "mode" or "opacity"
-        # opacity-mode: weighted average of the live frame + 5 progressively
-        # delayed echoes (mix filter). First weight = live (sharpest), the rest
-        # fade for older echoes. Brightness is preserved (mix normalises by the
-        # weight sum) and static areas stay clean — only motion ghosts.
-        self.trail_step_weights = (1.0, 0.9, 0.8, 0.7, 0.6, 0.5)
+        #   "mode"    — tpad+blend delayed echoes chained with creative blend modes
+        #   "opacity" — weighted average of live + N delayed echoes (mix);
+        #               clean motion ghosts, no wash-out
+        # trail_echo_count controls N for both types (1–15, shown as hex 1–f).
+        self.trail_on          = False
+        self.trail_mode        = "screen"
+        self.trail_decay       = 0.93       # 0.90=short ghost, 0.93=medium, 0.97=long tail
+        self.trail_delay_s     = 2.0        # delay to furthest echo in seconds
+        self.trail_blend_type  = "mode"     # "mode" or "opacity"
+        self.trail_echo_count  = 1          # number of delayed echoes (1–15)
         # mode-type: brightening/darkening blends (screen/addition/multiply/
-        # overlay) accumulate via lagfun and wash out; tame them by mixing the
-        # blend back toward the original on luma. 'difference' is left at full.
+        # overlay) accumulate and wash out; tame them by mixing the blend back
+        # toward the original on luma. 'difference' is left at full.
         self.trail_mode_opacity = 0.5
         self.TRAIL_MODES       = ("screen", "difference", "multiply", "overlay", "addition",
                                   "subtract", "lighten", "darken", "phoenix", "negation", "divide")
@@ -180,7 +177,7 @@ class Config:
     _PREFS_ATTRS = [
         'overlay_on', 'overlay_mode', 'overlay_blend_amount',
         'trail_on', 'trail_mode', 'trail_decay', 'trail_delay_s',
-        'trail_blend_type', 'trail_step_weights', 'trail_mode_opacity',
+        'trail_blend_type', 'trail_echo_count', 'trail_mode_opacity',
         'color_hue', 'color_sat',
         'shader_blend', 'shader_blend_mode', 'shader_blend_amount', 'shader_blend_source',
         'current_clip', 'current_shader', 'current_fx',

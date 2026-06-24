@@ -61,6 +61,15 @@ def _drive_label(path):
     if len(parts) >= 3 and parts[1] == "mnt":
         return parts[2][:6]
     return "USB"
+
+def _trail_echo_adjust(cfg, inst, d):
+    cur = max(1, min(15, getattr(cfg, 'trail_echo_count', 1)))
+    new = max(1, min(15, cur + (1 if d > 0 else -1)))
+    if new != cur:
+        cfg.trail_echo_count = new
+        if getattr(cfg, 'trail_on', False):
+            inst.sampler.refresh_trail()
+
 PARAM_STEP = 0.05
 
 
@@ -640,6 +649,11 @@ class Menu:
             "TRAIL MODE", lambda: cfg.trail_mode,
             adjust=lambda d: inst.trail_cycle_mode(d),
             select=lambda: inst.trail_cycle_mode(+1)))
+        items.append(_Item(
+            "TRAIL ECHOS",
+            lambda: format(max(1, min(15, getattr(cfg, 'trail_echo_count', 1))), 'x'),
+            adjust=lambda d: _trail_echo_adjust(cfg, inst, d),
+            select=lambda: _trail_echo_adjust(cfg, inst, +1)))
 
         # shader blend on/off + mode (SHADER)
         items.append(_Item(
@@ -704,6 +718,13 @@ class Menu:
             "SAVE PREFS", lambda: "ENTER to save",
             adjust=lambda d: None,
             select=_do_save))
+        def _do_restart():
+            inst.osd.show("RESTARTING…")
+            inst.restart()
+        items.append(_Item(
+            "RESTART", lambda: "restart app ↺",
+            adjust=lambda d: None,
+            select=_do_restart))
         # Quits the application (prefs auto-save in teardown).  A true Pi
         # poweroff would need root; the service user can't escalate.
         items.append(_Item(

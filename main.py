@@ -36,9 +36,10 @@ class RecurInstrument:
     MODES = ["SAMPLER", "SHADER", "LIVE"]
 
     def __init__(self, cfg: Config):
-        self.cfg     = cfg
-        self.running = False
-        self._mode   = "SAMPLER"
+        self.cfg              = cfg
+        self.running          = False
+        self._restart_pending = False
+        self._mode            = "SAMPLER"
         self._lock   = threading.Lock()
 
         # engines
@@ -522,8 +523,15 @@ class RecurInstrument:
             pass
         finally:
             self._teardown()
+            if self._restart_pending:
+                log.info("restarting…")
+                os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _shutdown(self, *_):
+        self.running = False
+
+    def restart(self):
+        self._restart_pending = True
         self.running = False
 
     def _teardown(self):
