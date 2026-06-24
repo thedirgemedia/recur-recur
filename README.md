@@ -197,3 +197,9 @@ When a knob moves, the engine rewrites the `PARAM_N` values and writes the
 shader to a **new unique temp path** before handing it to mpv — mpv 0.40
 caches compiled shaders by path and will not recompile a reused path.
 Changes are debounced 100 ms to avoid recompile storms.
+
+## Credits
+
+**Big Buck Bunny** sample clip included under the
+[Creative Commons Attribution 3.0 license](https://creativecommons.org/licenses/by/3.0/).  
+© 2008 Blender Foundation / www.bigbuckbunny.org
