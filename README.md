@@ -46,7 +46,7 @@ terminal.
 
 ```bash
 cd ~
-git clone https://github.com/dirge/recur-recur.git
+git clone https://github.com/thedirgemedia/recur-recur.git
 cd recur-recur
 ```
 
