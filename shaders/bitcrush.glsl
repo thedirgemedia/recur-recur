@@ -19,7 +19,7 @@ vec4 hook() {
     // PARAM_3 maps 0..1 → 0..6 px, rounded to whole pixels so the line
     // width is the same regardless of block size.
     vec2  posInBlock = mod(uv * size, blockPx);
-    float gap        = floor(PARAM_3 * 6.0 + 0.5);
+    float gap        = ceil(PARAM_3 * 6.0);
     if (gap >= 0.5 && (posInBlock.x < gap || posInBlock.y < gap)) {
         return vec4(0.0, 0.0, 0.0, 1.0);
     }
