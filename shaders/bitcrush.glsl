@@ -15,11 +15,12 @@ vec4 hook() {
     // Block edge length in pixels: 1..256 (square-law — fine steps at low end)
     float blockPx = max(1.0, PARAM_1 * PARAM_1 * 255.0 + 1.0);
 
-    // Optional grid gap — thin black lines drawn at block boundaries.
-    // PARAM_3 controls gap thickness as a fraction of the block size.
+    // Optional grid gap — fixed-width black lines at block boundaries.
+    // PARAM_3 maps 0..1 → 0..6 px, rounded to whole pixels so the line
+    // width is the same regardless of block size.
     vec2  posInBlock = mod(uv * size, blockPx);
-    float gap        = PARAM_3 * blockPx * 0.25;
-    if (gap > 0.5 && (posInBlock.x < gap || posInBlock.y < gap)) {
+    float gap        = floor(PARAM_3 * 6.0 + 0.5);
+    if (gap >= 0.5 && (posInBlock.x < gap || posInBlock.y < gap)) {
         return vec4(0.0, 0.0, 0.0, 1.0);
     }
 
