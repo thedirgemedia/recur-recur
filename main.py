@@ -498,11 +498,12 @@ class RecurInstrument:
         self.running = True
         log.info("recur-recur starting — output: %s", self.cfg.output)
 
-        # Unbind the framebuffer text console from HDMI so mpv gets a clean
-        # display. vtcon1 is the fb console; vtcon0 is the dummy console.
-        # Must run on every start — including in-app restarts (os.execv bypasses
-        # the systemd TTYVHangup/TTYReset, so it must be done here).
-        # The service has CAP_SYS_ADMIN so the sysfs write is permitted.
+        # Best-effort: unbind the framebuffer text console from HDMI so mpv
+        # gets a clean display.  This succeeds if the process is running as
+        # root (e.g. via ExecStartPre in the systemd unit) but silently fails
+        # for an unprivileged user — vtcon1/bind is owned by root and requires
+        # CAP_DAC_OVERRIDE, not just CAP_SYS_ADMIN.  mpv's DRM scan-out will
+        # override the fbcon display regardless, so this is cosmetic only.
         for vtcon in ("/sys/class/vtconsole/vtcon1/bind",
                       "/sys/class/vtconsole/vtcon0/bind"):
             try:

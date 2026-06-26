@@ -164,9 +164,13 @@ class SamplerEngine:
         }.get(_rot, "")
         _has_lavfi = (getattr(self.cfg, 'overlay_on', False) or
                       getattr(self.cfg, 'trail_on', False))
-        # With lavfi: bake rotation into the graph, tell mpv to add 0° extra.
-        # Without lavfi: let mpv rotate the display by the full angle.
-        self._cmd_async("set_property", "video-rotate", 0 if _has_lavfi else _rot)
+        # video-rotate=0 means "apply metadata rotation + 0° extra", which is
+        # correct for both cases.  With lavfi: _rot_prefix bakes rotation into
+        # the graph; lavfi output frames lose their rotation side-data so VO
+        # doesn't double-rotate.  Without lavfi: VO applies metadata rotation
+        # directly.  We launched with --video-rotate=no so we must explicitly
+        # set 0 on every _rebuild_vf call to re-enable metadata-driven rotation.
+        self._cmd_async("set_property", "video-rotate", 0)
 
         parts = []
         if getattr(self.cfg, 'overlay_on', False):
@@ -475,9 +479,11 @@ class SamplerEngine:
             # the EOF-driven play modes (playlist/random/oneshot/randstart)
             # rely on eof-reached firing while the picture stays up.
             "--keep-open=always",
-            # Never auto-rotate from metadata — we manage video-rotate manually
-            # so it stays correct when lavfi filters (tpad) strip rotation side-data.
-            "--autorotate=no",
+            # Disable metadata auto-rotation so we control it entirely ourselves.
+            # --video-rotate=no means mpv never applies the file's rotate tag;
+            # we apply the correct angle via video-rotate at runtime (or via
+            # a transpose prefix inside the lavfi chain for tpad trails).
+            "--video-rotate=no",
         ]
         log.debug("launching mpv")
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
