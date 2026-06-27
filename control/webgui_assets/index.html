@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>recur-recur</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { width:100%; height:100%; background:#000; color:#0a0; font-family:'Courier New',monospace; overflow-x:hidden; }
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+#header {
+  position:fixed; top:0; left:0; right:0; z-index:100;
+  padding:8px 12px 6px;
+  background:rgba(0,12,0,.97);
+  border-bottom:1px solid #0a0;
+  display:flex; align-items:center; gap:8px;
+}
+#title { font-size:13px; font-weight:bold; color:#0a0; letter-spacing:3px; }
+#mode-display {
+  font-size:16px; font-weight:bold; color:#0ff;
+  text-shadow:0 0 8px #0ff; letter-spacing:4px; flex:1;
+}
+#ws-dot { font-size:14px; line-height:1; }
+#ws-dot.on  { color:#0f0; text-shadow:0 0 6px #0f0; }
+#ws-dot.off { color:#a00; }
+
+/* ── Body ────────────────────────────────────────────────────────────────────── */
+#body { margin-top:45px; padding:8px 10px 60px; }
+
+/* ── Section labels ──────────────────────────────────────────────────────────── */
+.spi-section {
+  font-size:9px; color:#0a0; letter-spacing:2px;
+  text-transform:uppercase; margin:10px 0 4px;
+  border-bottom:1px solid #0a0; padding-bottom:2px;
+}
+.spi-section:first-child { margin-top:0; }
+
+/* ── Status lines ────────────────────────────────────────────────────────────── */
+#status-clip   { font-size:12px; color:#ff0; text-shadow:0 0 4px #ff0; margin-bottom:2px; min-height:16px; letter-spacing:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#status-shader { font-size:11px; color:#0f0; margin-bottom:1px; min-height:14px; letter-spacing:1px; }
+#status-fx     { font-size:10px; color:#0a0; margin-bottom:6px; min-height:14px; letter-spacing:1px; }
+
+/* ── Button grid ─────────────────────────────────────────────────────────────── */
+.spi-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; margin-bottom:4px; }
+.spi-grid.g2 { grid-template-columns:repeat(2,1fr); }
+.spi-grid.g4 { grid-template-columns:repeat(4,1fr); }
+
+.sk {
+  background:rgba(0,40,0,.9); border:1px solid #0a0; border-radius:3px;
+  padding:8px 4px 7px; cursor:pointer; text-align:center;
+  transition:background .1s,border-color .1s,color .1s;
+  user-select:none; -webkit-user-select:none;
+  min-height:44px; position:relative;
+  display:flex; align-items:center; justify-content:center;
+}
+.sk:hover  { background:rgba(0,80,0,.95);  border-color:#0f0; }
+.sk:active { background:rgba(0,150,0,.95); border-color:#fff; }
+.sk.sk-active { background:rgba(0,80,0,.95); border-color:#0ff; }
+
+.sk-label {
+  font-size:10px; color:#cfc; letter-spacing:.3px;
+  display:block; line-height:1.3; text-transform:uppercase;
+}
+.sk:hover   .sk-label { color:#fff; }
+.sk.sk-active .sk-label { color:#0ff; }
+
+.sk.wide { grid-column:span 2; }
+.sk.full { grid-column:span 3; }
+
+/* Mode colour variants */
+.sk.c-cyan  { border-color:#066; }
+.sk.c-cyan  .sk-label { color:#0cc; }
+.sk.c-cyan:hover { border-color:#0ff; background:rgba(0,60,80,.9); }
+.sk.c-cyan.sk-active { border-color:#0ff; background:rgba(0,60,80,.95); }
+.sk.c-cyan.sk-active .sk-label { color:#0ff; }
+
+.sk.c-yellow { border-color:#aa0; }
+.sk.c-yellow .sk-label { color:#ff0; }
+.sk.c-yellow:hover { border-color:#ff0; }
+.sk.c-yellow:hover .sk-label { color:#fff; }
+.sk.c-yellow.sk-active { border-color:#ff0; background:rgba(60,50,0,.95); }
+.sk.c-yellow.sk-active .sk-label { color:#fff; }
+
+.sk.c-red { border-color:#a00; }
+.sk.c-red .sk-label { color:#f88; }
+.sk.c-red:hover { border-color:#f44; }
+.sk.c-red:hover .sk-label { color:#fff; }
+
+/* ── Param rows ───────────────────────────────────────────────────────────────── */
+.sp-row {
+  display:flex; align-items:center; gap:6px;
+  font-size:10px; color:#0a0; margin-bottom:5px;
+  cursor:ew-resize; touch-action:none;
+}
+.sp-label { width:68px; text-transform:uppercase; letter-spacing:.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
+.sp-bar-wrap { flex:1; height:6px; background:rgba(0,255,0,.12); border:1px solid currentColor; position:relative; }
+.sp-bar-fill { position:absolute; top:0; left:0; height:100%; background:currentColor; pointer-events:none; }
+.sp-val { width:28px; text-align:right; font-size:10px; }
+
+/* ── Blend slider ─────────────────────────────────────────────────────────────── */
+.spi-blend-row { display:flex; align-items:center; gap:6px; padding:5px 2px 3px; }
+.spi-blend-label { font-size:9px; color:#0a0; letter-spacing:1px; width:52px; flex-shrink:0; }
+.spi-blend-track {
+  flex:1; height:8px; background:rgba(0,255,0,.1);
+  border:1px solid #0f0; border-radius:3px; position:relative;
+  cursor:ew-resize; touch-action:none;
+}
+.spi-blend-fill { position:absolute; top:0; left:0; height:100%; background:#0a0; border-radius:3px; pointer-events:none; width:50%; }
+.spi-blend-thumb {
+  position:absolute; top:50%; width:12px; height:12px;
+  background:#0f0; border:1px solid #fff; border-radius:50%;
+  transform:translate(-50%,-50%); pointer-events:none; left:50%;
+}
+.spi-blend-val { font-size:10px; color:#0f0; width:28px; text-align:right; flex-shrink:0; }
+
+/* ── Clip list ───────────────────────────────────────────────────────────────── */
+.clip-item {
+  font-size:10px; padding:5px 8px; border:1px solid #020; border-radius:2px;
+  margin-bottom:3px; cursor:pointer; letter-spacing:.5px; color:#0a0;
+  text-transform:uppercase; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  transition:border-color .1s, color .1s;
+}
+.clip-item:hover  { border-color:#0a0; color:#0f0; background:rgba(0,30,0,.8); }
+.clip-item:active { background:rgba(0,80,0,.9); }
+.clip-item.sk-active { border-color:#0ff; color:#0ff; background:rgba(0,30,50,.8); }
+
+/* ── Preset list ─────────────────────────────────────────────────────────────── */
+.preset-row { display:flex; gap:4px; margin-bottom:3px; }
+.preset-name { flex:1; font-size:10px; padding:6px 8px; border:1px solid #0a0; border-radius:3px; cursor:pointer; color:#0a0; text-transform:uppercase; letter-spacing:.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:rgba(0,30,0,.9); }
+.preset-name:hover { border-color:#0f0; color:#0f0; }
+.preset-del { font-size:9px; padding:6px 8px; border:1px solid #a00; border-radius:3px; cursor:pointer; color:#f88; background:rgba(30,0,0,.9); white-space:nowrap; }
+.preset-del:hover { border-color:#f44; color:#fff; }
+
+/* ── Toast ───────────────────────────────────────────────────────────────────── */
+#toast {
+  position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+  background:rgba(0,0,0,.9); border:1px solid #0f0; padding:8px 18px;
+  font-size:12px; color:#0f0; letter-spacing:2px;
+  opacity:0; transition:opacity .25s; pointer-events:none;
+  border-radius:3px; text-shadow:0 0 6px #0f0; white-space:nowrap;
+}
+#toast.on { opacity:1; }
+
+/* ── Save modal ──────────────────────────────────────────────────────────────── */
+.sls-overlay {
+  display:none; position:fixed; inset:0;
+  background:rgba(0,0,0,.88); z-index:300;
+  align-items:center; justify-content:center;
+}
+.sls-overlay.vis { display:flex; }
+.sls-box {
+  background:rgba(0,12,0,.97); border:1px solid #0a0; border-radius:6px;
+  padding:20px 24px; width:300px; max-width:90%;
+}
+.sls-box h3 { font-size:12px; color:#0ff; letter-spacing:3px; margin-bottom:14px; }
+.sls-input {
+  width:100%; background:rgba(0,30,0,.9); border:1px solid #0a0; border-radius:3px;
+  padding:8px; color:#0f0; font-family:'Courier New',monospace; font-size:12px;
+  letter-spacing:1px; margin-bottom:10px;
+}
+.sls-input:focus { outline:none; border-color:#0f0; }
+.sls-row { display:flex; gap:8px; }
+.sls-btn {
+  flex:1; padding:8px; background:rgba(0,40,0,.9); border:1px solid #0a0;
+  border-radius:3px; color:#0f0; font-family:'Courier New',monospace;
+  font-size:11px; letter-spacing:1px; cursor:pointer;
+}
+.sls-btn:hover { background:rgba(0,80,0,.95); border-color:#0f0; color:#fff; }
+.sls-btn.c-cancel { border-color:#050; color:#0a0; }
+.sls-btn.c-ok { border-color:#0f0; }
+</style>
+</head>
+<body>
+
+<div id="header">
+  <div id="title">recur-recur</div>
+  <div id="mode-display">—</div>
+  <span id="ws-dot" class="off" title="WebSocket">◉</span>
+</div>
+
+<div id="body">
+
+  <!-- Status -->
+  <div id="status-clip"></div>
+  <div id="status-shader"></div>
+  <div id="status-fx"></div>
+
+  <!-- MODE -->
+  <div class="spi-section">MODE</div>
+  <div class="spi-grid">
+    <div class="sk c-cyan mode-btn" data-mode="SAMPLER" onclick="send({action:'set-mode',mode:'SAMPLER'})"><span class="sk-label">sampler</span></div>
+    <div class="sk c-cyan mode-btn" data-mode="SHADER"  onclick="send({action:'set-mode',mode:'SHADER'})"><span class="sk-label">shader</span></div>
+    <div class="sk c-cyan mode-btn" data-mode="LIVE"    onclick="send({action:'set-mode',mode:'LIVE'})"><span class="sk-label">live</span></div>
+  </div>
+
+  <!-- CLIPS (SAMPLER / LIVE) -->
+  <div id="clips-section">
+    <div class="spi-section">CLIPS</div>
+    <div id="clips-list"></div>
+  </div>
+
+  <!-- GEN SHADER (SHADER mode) -->
+  <div id="gen-section">
+    <div class="spi-section">GEN SHADER</div>
+    <div id="gen-grid" class="spi-grid"></div>
+    <div class="spi-grid g2" style="margin-top:3px">
+      <div class="sk c-yellow" onclick="send({action:'cycle-shader',dir:-1})"><span class="sk-label">◀ prev</span></div>
+      <div class="sk c-yellow" onclick="send({action:'cycle-shader',dir:1})"><span class="sk-label">next ▶</span></div>
+    </div>
+  </div>
+
+  <!-- FX SHADER -->
+  <div class="spi-section">FX SHADER</div>
+  <div id="fx-grid" class="spi-grid"></div>
+  <div class="spi-grid g2" style="margin-top:3px">
+    <div class="sk c-red" onclick="send({action:'cycle-fx',dir:-1})"><span class="sk-label">◀ prev fx</span></div>
+    <div class="sk c-red" onclick="send({action:'cycle-fx',dir:1})"><span class="sk-label">next fx ▶</span></div>
+  </div>
+
+  <!-- GEN PARAMETERS -->
+  <div class="spi-section">GEN PARAMETERS</div>
+  <div id="gen-params"></div>
+
+  <!-- FX PARAMETERS -->
+  <div class="spi-section">FX PARAMETERS</div>
+  <div id="fx-params"></div>
+
+  <!-- PLAYBACK -->
+  <div class="spi-section">PLAYBACK</div>
+  <div class="spi-grid g2">
+    <div class="sk" id="btn-pause" onclick="togglePause()"><span class="sk-label" id="lbl-pause">play / pause</span></div>
+    <div class="sk" onclick="send({action:'reverse'})"><span class="sk-label">reverse</span></div>
+  </div>
+
+  <!-- VIDEO -->
+  <div class="spi-section">VIDEO</div>
+  <div class="spi-grid g2">
+    <div class="sk" id="btn-overlay" onclick="send({action:'toggle-overlay'})"><span class="sk-label" id="lbl-overlay">overlay off</span></div>
+    <div class="sk" id="btn-trail"   onclick="send({action:'toggle-trail'})"><span class="sk-label"   id="lbl-trail">trail off</span></div>
+  </div>
+
+  <!-- BLEND -->
+  <div class="spi-section">BLEND</div>
+  <div class="spi-grid g2">
+    <div class="sk" id="btn-blend"       onclick="send({action:'toggle-blend'})"><span class="sk-label" id="lbl-blend">blend off</span></div>
+    <div class="sk" id="btn-blend-mode"  onclick="send({action:'cycle-blend-mode'})"><span class="sk-label" id="lbl-blend-mode">normal</span></div>
+    <div class="sk" id="btn-blend-src"   onclick="send({action:'cycle-blend-source'})"><span class="sk-label" id="lbl-blend-src">src: clip</span></div>
+  </div>
+  <div class="spi-blend-row">
+    <span class="spi-blend-label">BLEND AMT</span>
+    <div class="spi-blend-track" id="blend-track">
+      <div class="spi-blend-fill"  id="blend-fill"></div>
+      <div class="spi-blend-thumb" id="blend-thumb"></div>
+    </div>
+    <span class="spi-blend-val" id="blend-val">50%</span>
+  </div>
+
+  <!-- PRESETS -->
+  <div class="spi-section">PRESETS</div>
+  <div class="spi-grid g2" style="margin-bottom:6px">
+    <div class="sk c-yellow wide" onclick="openSaveModal()"><span class="sk-label">save preset</span></div>
+  </div>
+  <div id="presets-list"></div>
+
+</div><!-- /body -->
+
+<div id="toast"></div>
+
+<!-- Save preset modal -->
+<div class="sls-overlay" id="save-modal">
+  <div class="sls-box">
+    <h3>SAVE PRESET</h3>
+    <input class="sls-input" id="preset-name-input" type="text" placeholder="preset name" autocomplete="off" autocorrect="off" autocapitalize="off">
+    <div class="sls-row">
+      <button class="sls-btn c-cancel" onclick="closeSaveModal()">CANCEL</button>
+      <button class="sls-btn c-ok"     onclick="doSavePreset()">SAVE</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─── State & connection ──────────────────────────────────────────────────────
+
+let ws        = null;
+let state     = {};
+let retryTimer= null;
+let _paused   = false;
+
+const WS_PORT = 8081;
+
+function connect() {
+  ws = new WebSocket(`ws://${location.hostname}:${WS_PORT}`);
+  ws.onopen    = onOpen;
+  ws.onclose   = onClose;
+  ws.onerror   = () => ws.close();
+  ws.onmessage = e => { try { state = JSON.parse(e.data); render(state); } catch(_){} };
+}
+
+function onOpen() {
+  document.getElementById('ws-dot').className = 'on';
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+}
+
+function onClose() {
+  document.getElementById('ws-dot').className = 'off';
+  retryTimer = setTimeout(connect, 2000);
+}
+
+function send(msg) {
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify(msg));
+}
+
+// ─── Render ──────────────────────────────────────────────────────────────────
+
+function render(s) {
+  document.getElementById('mode-display').textContent = s.mode || '—';
+
+  document.querySelectorAll('.mode-btn').forEach(el =>
+    el.classList.toggle('sk-active', el.dataset.mode === s.mode)
+  );
+
+  document.getElementById('status-clip').textContent =
+    s.clip ? `▶ ${s.clip}` : '▶ NO CLIP';
+  document.getElementById('status-shader').textContent =
+    s.shader ? `~ ${s.shader.replace('.glsl','')}` : '';
+  const fxName = s.fx ? s.fx.replace('.glsl','') : '';
+  document.getElementById('status-fx').textContent =
+    fxName ? (s.shader_fx_stack ? `fx+ ${fxName}` : `fx ${fxName}`) : '';
+
+  const isShader = s.mode === 'SHADER';
+  document.getElementById('clips-section').style.display = isShader ? 'none' : '';
+  document.getElementById('gen-section').style.display   = isShader ? ''     : 'none';
+
+  renderClips(s);
+  renderGenGrid(s);
+  renderFxGrid(s);
+  renderParams('gen-params', s.params    || {}, s.param_labels || {}, 'set-param');
+  renderParams('fx-params',  s.fx_params || {}, s.fx_labels    || {}, 'set-fx-param');
+
+  _paused = !!s.paused;
+  document.getElementById('btn-pause').classList.toggle('sk-active', _paused);
+  document.getElementById('lbl-pause').textContent = _paused ? '⏸ paused' : '▶ play';
+
+  const ovlOn   = !!s.overlay_on;
+  const trailOn = !!s.trail_on;
+  document.getElementById('btn-overlay').classList.toggle('sk-active', ovlOn);
+  document.getElementById('lbl-overlay').textContent = ovlOn  ? 'overlay on'  : 'overlay off';
+  document.getElementById('btn-trail').classList.toggle('sk-active', trailOn);
+  document.getElementById('lbl-trail').textContent   = trailOn ? 'trail on' : 'trail off';
+
+  const blendOn = isShader ? !!s.shader_blend : !!s.overlay_on;
+  document.getElementById('btn-blend').classList.toggle('sk-active', blendOn);
+  document.getElementById('lbl-blend').textContent      = blendOn ? 'blend on' : 'blend off';
+  document.getElementById('lbl-blend-mode').textContent =
+    isShader ? (s.shader_blend_mode || 'normal') : (s.overlay_mode || 'normal');
+  document.getElementById('lbl-blend-src').textContent  = `src: ${s.shader_blend_source || 'clip'}`;
+
+  setBlendUI(s.shader_blend_amount ?? 0.5);
+  renderPresets(s.presets || []);
+}
+
+function setBlendUI(val) {
+  const pct = Math.round(val * 100);
+  document.getElementById('blend-fill').style.width  = pct + '%';
+  document.getElementById('blend-thumb').style.left  = pct + '%';
+  document.getElementById('blend-val').textContent   = pct + '%';
+}
+
+// ─── Clips ───────────────────────────────────────────────────────────────────
+
+function renderClips(s) {
+  const el = document.getElementById('clips-list');
+  const clips = s.clips || [];
+  if (!clips.length) {
+    el.innerHTML = '<div style="font-size:10px;color:#050;padding:4px 0;">no clips</div>';
+    return;
+  }
+  el.innerHTML = clips.map((c,i) =>
+    `<div class="clip-item${i===s.clip_idx?' sk-active':''}" onclick="send({action:'load-clip',idx:${i}})">${esc(c)}</div>`
+  ).join('');
+}
+
+// ─── Shader grids ────────────────────────────────────────────────────────────
+
+function renderGenGrid(s) {
+  const el = document.getElementById('gen-grid');
+  const shaders = s.gen_shaders || [];
+  el.style.gridTemplateColumns = `repeat(${Math.min(3, shaders.length) || 3},1fr)`;
+  el.innerHTML = shaders.map(sh => {
+    const name = sh.replace('.glsl','');
+    return `<div class="sk c-yellow${sh===s.shader?' sk-active':''}" onclick="send({action:'set-shader',shader:'${esc(sh)}'})"><span class="sk-label">${esc(name)}</span></div>`;
+  }).join('');
+}
+
+function renderFxGrid(s) {
+  const el = document.getElementById('fx-grid');
+  const shaders = s.fx_shaders || [];
+  el.style.gridTemplateColumns = 'repeat(3,1fr)';
+  el.innerHTML = shaders.map(sh => {
+    const name = sh.replace('.glsl','');
+    return `<div class="sk${sh===s.fx?' sk-active':''}" onclick="send({action:'set-fx',shader:'${esc(sh)}'})"><span class="sk-label">${esc(name)}</span></div>`;
+  }).join('');
+}
+
+// ─── Params ───────────────────────────────────────────────────────────────────
+
+function renderParams(containerId, params, labels, action) {
+  const el = document.getElementById(containerId);
+  const hasLabels = Object.keys(labels).length > 0;
+  const keys = Object.keys(params)
+    .filter(k => !hasLabels || k in labels)
+    .sort((a,b) => parseInt(a.slice(1)) - parseInt(b.slice(1)));
+
+  if (!keys.length) { el.innerHTML = ''; return; }
+
+  el.innerHTML = keys.map(k => {
+    const val = params[k] ?? 0.5;
+    const lbl = labels[k] || k.toUpperCase();
+    const pct = Math.round(val * 100);
+    return `<div class="sp-row" data-key="${k}" data-action="${action}">
+      <span class="sp-label">${esc(lbl)}</span>
+      <div class="sp-bar-wrap"><div class="sp-bar-fill" style="width:${pct}%"></div></div>
+      <span class="sp-val">${pct}%</span>
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('.sp-row').forEach(row => attachParamDrag(row));
+}
+
+function attachParamDrag(row) {
+  const bar  = row.querySelector('.sp-bar-wrap');
+  const fill = row.querySelector('.sp-bar-fill');
+  const val  = row.querySelector('.sp-val');
+  let active = false;
+
+  function apply(clientX) {
+    const rect = bar.getBoundingClientRect();
+    const v = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    fill.style.width = Math.round(v*100) + '%';
+    val.textContent  = Math.round(v*100) + '%';
+    send({ action: row.dataset.action, key: row.dataset.key, value: v });
+  }
+
+  bar.addEventListener('mousedown',  e => { active=true; apply(e.clientX); });
+  bar.addEventListener('touchstart', e => { active=true; apply(e.touches[0].clientX); e.preventDefault(); }, { passive:false });
+  document.addEventListener('mousemove',  e => { if(active) apply(e.clientX); });
+  document.addEventListener('touchmove',  e => { if(active){ apply(e.touches[0].clientX); e.preventDefault(); } }, { passive:false });
+  document.addEventListener('mouseup',  () => active=false);
+  document.addEventListener('touchend', () => active=false);
+}
+
+// ─── Blend slider ─────────────────────────────────────────────────────────────
+
+(function(){
+  const track = document.getElementById('blend-track');
+  let active = false;
+  function apply(clientX) {
+    const rect = track.getBoundingClientRect();
+    const v = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    setBlendUI(v);
+    send({ action:'set-blend-amt', value:v });
+  }
+  track.addEventListener('mousedown',  e => { active=true; apply(e.clientX); });
+  track.addEventListener('touchstart', e => { active=true; apply(e.touches[0].clientX); e.preventDefault(); }, { passive:false });
+  document.addEventListener('mousemove',  e => { if(active) apply(e.clientX); });
+  document.addEventListener('touchmove',  e => { if(active){ apply(e.touches[0].clientX); e.preventDefault(); } }, { passive:false });
+  document.addEventListener('mouseup',  () => active=false);
+  document.addEventListener('touchend', () => active=false);
+})();
+
+// ─── Pause ────────────────────────────────────────────────────────────────────
+
+function togglePause() {
+  _paused = !_paused;
+  document.getElementById('btn-pause').classList.toggle('sk-active', _paused);
+  document.getElementById('lbl-pause').textContent = _paused ? '⏸ paused' : '▶ play';
+  send({ action:'play-pause' });
+}
+
+// ─── Presets ──────────────────────────────────────────────────────────────────
+
+function renderPresets(presets) {
+  const el = document.getElementById('presets-list');
+  if (!presets.length) {
+    el.innerHTML = '<div style="font-size:10px;color:#050;padding:4px 0;">no presets</div>';
+    return;
+  }
+  el.innerHTML = presets.map(p => {
+    const name = p.replace('.json','');
+    return `<div class="preset-row">
+      <div class="preset-name" onclick="loadPreset('${esc(p)}')">${esc(name)}</div>
+      <div class="preset-del"  onclick="deletePreset('${esc(p)}')">del</div>
+    </div>`;
+  }).join('');
+}
+
+function loadPreset(name) {
+  send({ action:'load-preset', name });
+  toast('LOADED: ' + name.replace('.json','').toUpperCase());
+}
+
+function deletePreset(name) {
+  if (!confirm(`Delete preset "${name.replace('.json','')}"?`)) return;
+  send({ action:'delete-preset', name });
+  toast('DELETED');
+}
+
+// ─── Save modal ───────────────────────────────────────────────────────────────
+
+function openSaveModal() {
+  document.getElementById('preset-name-input').value = '';
+  document.getElementById('save-modal').classList.add('vis');
+  document.getElementById('preset-name-input').focus();
+}
+
+function closeSaveModal() {
+  document.getElementById('save-modal').classList.remove('vis');
+}
+
+function doSavePreset() {
+  let name = document.getElementById('preset-name-input').value.trim();
+  if (!name) return;
+  if (!name.endsWith('.json')) name += '.json';
+  send({ action:'save-preset', name });
+  closeSaveModal();
+  toast('SAVED: ' + name.replace('.json','').toUpperCase());
+}
+
+document.getElementById('preset-name-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter')  doSavePreset();
+  if (e.key === 'Escape') closeSaveModal();
+});
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+
+let _toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('on');
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => el.classList.remove('on'), 2000);
+}
+
+// ─── Util ─────────────────────────────────────────────────────────────────────
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ─── Go ───────────────────────────────────────────────────────────────────────
+
+connect();
+</script>
+</body>
+</html>

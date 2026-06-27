@@ -2,4 +2,5 @@
 # Most are installed via apt in setup.sh; this file is for pip-only deps.
 python-rtmidi>=1.5.8
 gpiozero>=2.0
+websockets>=13.0
 # evdev, picamera2, pillow, numpy are installed via apt

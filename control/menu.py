@@ -679,11 +679,13 @@ class Menu:
         C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT = palette
         page = PAGES[self.page]
 
-        # title bar
-        draw.rectangle([0, 0, W, 40], fill=C_ACCENT)
-        draw.text((10, 6), f"MENU · {page}", font=font_md, fill=(0, 0, 0))
+        # title bar — dark bg with cyan text, green border (matches web SPI panel)
+        _hdr_bg = tuple(c // 8 for c in C_ACCENT)   # very dark tint of accent
+        draw.rectangle([0, 0, W, 40], fill=_hdr_bg)
+        draw.line([0, 40, W, 40], fill=C_ACCENT, width=1)
+        draw.text((10, 6), f"MENU · {page}", font=font_md, fill=C_HL)
         draw.text((W - 10, 12), f"{self.page+1}/{len(PAGES)}",
-                  font=font_sm, fill=(0, 0, 0), anchor="rm")
+                  font=font_sm, fill=C_LABEL, anchor="rm")
 
         if page == "BROWSER":
             if self._confirm_delete:
@@ -802,7 +804,7 @@ class Menu:
                 draw.text((10,     mid), lbl[:18],    font=font_sm, fill=lc, anchor="lm")
                 if i == self.sel and self._midi_editing:
                     entry_str = (self._midi_input_buf or "") + "_"
-                    draw.text((W - 12, mid), entry_str, font=font_sm, fill=C_HL, anchor="rm")
+                    draw.text((W - 12, mid), entry_str, font=font_sm, fill=C_VALUE, anchor="rm")
                 else:
                     draw.text((W - 12, mid), val_str[:12], font=font_sm, fill=vc, anchor="rm")
 

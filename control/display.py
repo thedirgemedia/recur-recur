@@ -40,24 +40,30 @@ SPI_SPEED = 8_000_000
 GPIO_DC   = 24
 GPIO_RST  = 25
 
-# ── palette ──────────────────────────────────────────────────────────────────
-C_BG        = (0x0d, 0x0d, 0x0d)
-C_DIVIDER   = (0x2a, 0x2a, 0x2a)
-C_LABEL     = (0x77, 0x77, 0x77)
-C_VALUE     = (0xee, 0xee, 0xee)
-C_BAR_TRACK = (0x22, 0x22, 0x22)
-C_BAR_FILL  = (0x00, 0xbb, 0xff)
-C_ON        = (0x00, 0xff, 0x88)
-C_SEL       = (0xff, 0x88, 0x00)   # orange — selected parameter bar
-C_HINT      = (0x44, 0x44, 0x44)
+# ── palette — terminal green, matching dirgemedia.com/recur-recur ─────────────
+C_BG        = (0x00, 0x00, 0x00)   # pure black
+C_DIVIDER   = (0x00, 0x2a, 0x00)   # dark green line
+C_LABEL     = (0x00, 0xaa, 0x00)   # medium green  (#0a0)
+C_VALUE     = (0x00, 0xff, 0x00)   # bright green  (#0f0)
+C_BAR_TRACK = (0x00, 0x11, 0x00)   # very dark green
+C_BAR_FILL  = (0x00, 0xaa, 0x00)   # medium green  (#0a0)
+C_ON        = (0x00, 0xff, 0xff)   # cyan          (#0ff) — active / on states
+C_SEL       = (0x00, 0xff, 0xff)   # cyan          (#0ff) — selected parameter
+C_HINT      = (0x00, 0x44, 0x00)   # dim green     (#050 approx)
 
 MODE_COLOURS = {
-    "SAMPLER": (0xff, 0x99, 0x00),
-    "SHADER":  (0xaa, 0x44, 0xff),
-    "LIVE":    (0x00, 0xff, 0x55),
+    "SAMPLER": (0x00, 0xff, 0xff),  # cyan   — matches web version mode display
+    "SHADER":  (0xff, 0xff, 0x00),  # yellow — matches web gen-shader accent
+    "LIVE":    (0x00, 0xff, 0x55),  # green  — keep
 }
 
-FONT_PATH = "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"
+# Monospace font gives the Courier-New terminal look of the web version.
+# Fall back through available options to the PIL default.
+FONT_PATH = "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf"
+FONT_PATH_FALLBACKS = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+]
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -102,10 +108,12 @@ def _to_spi_bytes(img):
 
 
 def _load_font(size):
-    try:
-        return ImageFont.truetype(FONT_PATH, size)
-    except (OSError, IOError):
-        return ImageFont.load_default()
+    for path in [FONT_PATH] + FONT_PATH_FALLBACKS:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
 
 
 # ── ILI9486 direct SPI driver ─────────────────────────────────────────────────
@@ -336,16 +344,21 @@ class DisplayController:
         # when the navigable menu is active, draw it instead of the status view
         menu = getattr(inst, "menu", None)
         if menu is not None and menu.active:
-            palette = (C_BG, (0xcc, 0x66, 0x00), C_LABEL, C_VALUE,
-                       C_HINT, C_BAR_FILL)
+            # palette: (bg, highlight/accent, label, value, dim, bar-fill)
+            # C_ON (cyan) as accent matches the web version's header colour.
+            palette = (C_BG, C_ON, C_LABEL, C_VALUE, C_HINT, C_BAR_FILL)
             menu.render(img, d, font_lg, font_md, font_sm, FB_W, FB_H, palette)
             return img
 
         mc     = MODE_COLOURS.get(mode, (0xff, 0xff, 0xff))
-        mc_dim = tuple(c // 5 for c in mc)
+        # Very dark tint of the mode colour — keeps colour identity without
+        # washing out the green-on-black terminal aesthetic.
+        mc_dim = tuple(max(0, c // 8) for c in mc)
 
-        # header background
+        # header background — near-black tinted with mode colour
         d.rectangle([0, 0, FB_W, 54], fill=mc_dim)
+        # bottom border of header in dim green (like the web's border-bottom)
+        d.line([0, 54, FB_W, 54], fill=C_DIVIDER, width=1)
 
         # top half: mode label (left) + TRAIL indicator + clip name (right)
         d.text((10, 2), mode, font=font_md, fill=mc)
