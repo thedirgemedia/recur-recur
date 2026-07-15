@@ -116,6 +116,13 @@ NUMPAD_MAP = {
 # The 000 key is detected as three rapid KP0 presses within this window.
 TRIPLE_ZERO_WINDOW = 0.15   # seconds
 PARAM_STEP = 0.05
+SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
+
+# Numpad key → grid position (top-left=0 … bottom-right=8), matching display layout:
+#   7 8 9   →   0 1 2
+#   4 5 6   →   3 4 5
+#   1 2 3   →   6 7 8
+_GRID_KEY_TO_POS = {7: 0, 8: 1, 9: 2, 4: 3, 5: 4, 6: 5, 1: 6, 2: 7, 3: 8}
 
 # Param layers (indices). BKSP cycles the ones available in the current mode:
 #   0 SHDR    generative shader params p1–p3              (SHADER mode only)
@@ -123,11 +130,13 @@ PARAM_STEP = 0.05
 #   2 COLOUR  palette (p4, SHADER only) + hue / sat / trail opacity / trail decay
 #   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
 #   4 TRAIL   temporal echo — on/off, blend type, mode, delay, opacity
-_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL")
+#   5 SPEED   sampler playback speed + direction
+_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL", "SPEED")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
 _COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_opc": "TRL OPC", "trl_decay": "TRL DEC"}
 _TRAIL_LABELS  = {"on": "TRL ON", "type": "TYPE", "mode": "MODE",
                   "delay": "DELAY", "echos": "ECHOS", "opacity": "OPACITY"}
+_SPEED_LABELS  = {"speed": "SPEED", "dir": "DIR"}
 
 
 class KeyboardController:
@@ -137,22 +146,8 @@ class KeyboardController:
         self._thread= None
         self.dev    = None
 
-        # Which parameter the 2/3 keys currently adjust. BKSP cycles the layer:
-        # 0 = shader p1-p4, 1 = FX controls, 2 = COLOUR (hue/sat).
         self._param_layer = 0
         self._param_idx   = 0
-
-        # in/out point stage: 0=waiting for IN, 1=waiting for OUT, 2=waiting for clear
-        self._inout_stage = 0
-
-        # 000 detection: track recent KP0 timestamps.
-        self._kp0_history = []
-        self._key0_held   = False   # True while KP0 is physically depressed
-
-        # hold-/ + 4-9 chord: defer the / action to key-up so we can detect
-        # whether it was used as a modifier before firing blend toggle.
-        self._keyslash_held        = False
-        self._keyslash_chord_used  = False
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -213,66 +208,8 @@ class KeyboardController:
                     if name is None:
                         continue
 
-                    # Track KP0 hold state using key-up events so the
-                    # hold-0 + tap-dot combo can be detected below.
-                    if name == "0" and key.keystate == key.key_up:
-                        self._key0_held = False
-                        continue
-
-                    # Defer / action to key-up so hold-/ + 4-9 can be
-                    # detected. On key-up, fire blend toggle only if the
-                    # chord was not consumed by a 4-9 tap during the hold.
-                    if name == "/" and key.keystate == key.key_up:
-                        if not self._keyslash_chord_used:
-                            self._dispatch("/")
-                        self._keyslash_held       = False
-                        self._keyslash_chord_used = False
-                        continue
-
-                    # All other processing is key-down only.
+                    # Key-down only.
                     if key.keystate != key.key_down:
-                        continue
-
-                    if name == "/":
-                        self._keyslash_held = True
-                        continue   # action deferred to key-up
-
-                    # hold-/ + 4-9 in SHADER mode: load+trigger clip slot
-                    # without leaving SHADER mode (for blend source change).
-                    if name in ("4","5","6","7","8","9") and self._keyslash_held:
-                        if self.inst.mode == "SHADER":
-                            self._keyslash_chord_used = True
-                            self._dispatch(f"CLIPSLOT_{name}")
-                            continue
-                        # In other modes fall through to normal 4-9 handling;
-                        # / will still fire its normal action on key-up.
-
-                    if name == "0":
-                        self._key0_held = True
-                        now = time.monotonic()
-                        self._kp0_history = [t for t in self._kp0_history
-                                             if now - t < TRIPLE_ZERO_WINDOW]
-                        self._kp0_history.append(now)
-                        if len(self._kp0_history) >= 3:
-                            self._kp0_history.clear()
-                            self._dispatch("000")
-                            continue
-                        threading.Timer(TRIPLE_ZERO_WINDOW + 0.01,
-                                        self._maybe_emit_single_zero,
-                                        args=(now,)).start()
-                        continue
-
-                    # Hold-0 + tap-dot → record toggle.
-                    # Clear kp0_history so the pending 0 timer becomes a no-op.
-                    if name == "." and self._key0_held:
-                        self._kp0_history.clear()
-                        self._dispatch("REC")
-                        continue
-
-                    # Hold-0 + tap-4-9 → load preset slot.
-                    if name in ("4","5","6","7","8","9") and self._key0_held:
-                        self._kp0_history.clear()
-                        self._dispatch(f"PRESET_{name}")
                         continue
 
                     self._dispatch(name)
@@ -286,187 +223,322 @@ class KeyboardController:
                 self.dev = None
                 time.sleep(1)   # brief pause before scanning for reconnect
 
-    def _maybe_emit_single_zero(self, ts):
-        """If the KP0 timestamp `ts` is still in the history (no
-        subsequent triple consumed it), emit a single '0' action.
-        Then remove ts from the history so subsequent timers for the
-        same burst don't double-fire."""
-        try:
-            self._kp0_history.remove(ts)
-        except ValueError:
-            # ts already consumed (by a triple-emit, which clears history)
-            return
-        # If there are still entries in the history newer than ts, those
-        # are part of the same burst and one of their own timers will
-        # handle emitting. If our ts was the most recent, we own the
-        # single-zero emit.
-        if any(t > ts for t in self._kp0_history):
-            return
-        # Clear remaining entries (they're older and irrelevant now)
-        self._kp0_history.clear()
-        self._dispatch("0")
-
     # ------------------------------------------------------------- dispatch
     def _dispatch(self, name):
-        # NumLock toggles the on-screen menu. While the menu is active, EVERY
-        # key routes to menu navigation and NONE reach the perform handlers —
-        # so the HDMI video output is never changed by a keypress in menu mode.
+        # Top-row keys always select display tabs.
+        _disp = getattr(self.inst, "display", None)
         if name == "NUM":
-            self.inst.menu.toggle()
+            if _disp:
+                _disp.set_tab(0)   # SHADER
+            return
+        if name == "/":
+            if _disp:
+                _disp.set_tab(1)   # SAMPLER
+            return
+        if name == "*":
+            if _disp:
+                _disp.set_tab(2)   # LIVE
+            return
+        if name == "-":
+            if _disp:
+                _disp.set_tab(3)   # FX
+            return
+        if name == ".":
+            if _disp:
+                _disp.set_tab(4)   # SETTINGS
             return
 
         if self.inst.menu.active:
             self.inst.menu.handle(name)
             return
 
+        # Grid first screen: 1-9 select slot; ENTER pushes staged; 0 toggles staged.
+        if _disp and _disp.is_grid_screen():
+            tab = _disp._active_tab
+            if name in ("1","2","3","4","5","6","7","8","9"):
+                self._grid_select(name, _disp)
+                return
+            if name == "+":
+                if tab == 3:
+                    _disp.fx_grid_page(+1)
+                elif tab == 0:
+                    _disp.shader_grid_page(+1)
+                return
+            if name == "BKSP":
+                if tab == 3:
+                    _disp.fx_grid_page(-1)
+                elif tab == 0:
+                    _disp.shader_grid_page(-1)
+                return
+            if name == "ENTER":
+                if _disp._staged:
+                    self._push_staged(_disp)
+                return
+            if name == "0":
+                staged = _disp.toggle_staged()
+                if not staged:
+                    _disp._grid_pending = [None, None, None, None, None]
+                self.inst.osd.show("STAGED" if staged else "LIVE")
+                return
+            if name == "000":
+                self.inst.trail_toggle()
+                return
+            return
+
         self._dispatch_perform(name)
 
-    def _dispatch_perform(self, name):
+    # --------------------------------------------------------- grid selection
+    def _grid_select(self, key, _disp):
+        """Handle a 1-9 keypress on a grid first-screen.
+
+        Keys map to slot numbers directly (key "7" → slot 7, displayed top-left).
+
+        Behaviour:
+          • Pressing the key of the CURRENTLY ACTIVE item → drill into params screen.
+          • LIVE mode: load immediately (no staging for presets).
+          • STAGED mode: stage the slot (show amber) — ENTER pushes to output.
+          • LIVE mode: load immediately.
+        """
+        slot = int(key)
         inst = self.inst
-        s    = inst.sampler
-        sh   = inst.shader
+        tab  = _disp._active_tab
 
-        # ── hold-0 + 4-9: load preset slot (any mode) ─────────────────────
-        if name.startswith("PRESET_"):
-            inst.load_preset_slot(int(name[-1]))
-            return
-
-        # ── hold-/ + 4-9 in SHADER mode: load+trigger clip slot ───────────
-        if name.startswith("CLIPSLOT_"):
-            n = int(name[-1])
-            if s.slot(n):
-                s.trigger()
-                clip = (inst.cfg.current_clip or "").split("/")[-1]
-                inst.osd.show(f"CLIP {n}: {clip.upper()[:14]}")
+        if tab == 0:   # SHADER_GRID: load generative shader from current page
+            from control.display import _GRID_SLOTS as _GS
+            try:
+                pos = _GS.index(slot)
+            except ValueError:
+                return
+            sh_list = inst.shader.list_shaders(kind="generative")
+            idx     = _disp._shader_grid_offset + pos
+            if idx >= len(sh_list):
+                return
+            sname = sh_list[idx]
+            if sname == (inst.cfg.current_shader or "") or sname == (_disp._grid_pending[0] or ""):
+                _disp.go_to_params_screen()
+                inst.osd.show("PARAMS")
+                return
+            if _disp._staged:
+                _disp._grid_pending[0] = sname
+                inst.osd.show(f"STAGED: {sname.replace('.glsl','').upper()}")
             else:
-                inst.osd.show(f"CLIP {n}: EMPTY")
+                inst.shader.load(sname)
+                inst.osd.show(f"SHADER: {sname.replace('.glsl','').upper()}")
             return
 
-        # ── SHADER mode: 4-9 load assigned generative shader ──────────────
-        if inst.mode == "SHADER" and name in ("4","5","6","7","8","9"):
-            n    = int(name)
-            sname = inst.cfg.shader_slots.get(n)
-            if sname:
-                sh.load(sname)
-                inst.osd.show(f"SLOT {n}: {sname.replace('.glsl','').upper()}")
+        if tab == 3:   # FX_GRID: toggle FX in the chain
+            from control.display import _GRID_SLOTS as _GS
+            try:
+                pos = _GS.index(slot)
+            except ValueError:
+                return
+            fx_list = inst.shader.list_shaders(kind="fx")
+            offset  = _disp._fx_grid_offset
+            idx     = offset + pos
+            if idx < len(fx_list):
+                name_fx  = fx_list[idx]
+                fx_chain = inst.cfg.fx_chain
+                if name_fx in fx_chain:
+                    chain_pos = fx_chain.index(name_fx)
+                    if inst.cfg.fx_edit_slot == chain_pos:
+                        # Second press on the selected chain slot → drill into params
+                        self._param_layer = 1
+                        self._param_idx   = 0
+                        _disp.go_to_params_screen()
+                        inst.osd.show("FX PARAMS")
+                        return
+                    # Different slot already in chain → select it for editing
+                    inst.cfg.fx_edit_slot = chain_pos
+                    inst.cfg._sync_fx_compat()
+                    inst.osd.show(f"FX [{chain_pos+1}]: {name_fx.replace('.glsl','').upper()}")
+                else:
+                    # Not in chain → add (toggle)
+                    inst.shader.fx_chain_toggle(name_fx)
+                    chain_str = " > ".join(f.replace(".glsl","").upper()
+                                           for f in inst.cfg.fx_chain) if inst.cfg.fx_chain else "—"
+                    inst.osd.show(f"FX: {chain_str}")
+            return
+
+        if tab == 4:   # SETTINGS_GRID: open menu page
+            _SETTINGS_PAGES = ("BROWSER", "SHADERS", "PRESETS", "SETTINGS", "MIDI", "IMPORT")
+            from control.display import _GRID_SLOTS as _GS
+            try:
+                pos = _GS.index(slot)
+            except ValueError:
+                return
+            if pos < len(_SETTINGS_PAGES):
+                page_name = _SETTINGS_PAGES[pos]
+                from control.menu import PAGES
+                menu = inst.menu
+                menu.page   = list(PAGES).index(page_name)
+                menu.sel    = 0
+                menu.active = True
+                menu._cancel_edits()
+                if page_name == "BROWSER":
+                    threading.Thread(target=inst.sampler.rescan_clips, daemon=True).start()
+            return
+
+        # SAMPLER: pressing the already-active clip slot drills into speed params.
+        active_slot = self._active_slot_for_tab(tab, inst)
+        if active_slot == slot and tab == 1:
+            self._param_layer = 5   # SPEED layer
+            self._param_idx   = 0
+            _disp.go_to_params_screen()
+            spd = getattr(inst.sampler, "speed", 1.0)
+            inst.osd.show(f"SPEED: {spd:.2f}x")
+            return
+
+        # LIVE tab: always load immediately (no staging for presets).
+        if tab == 2:
+            inst.load_preset_slot(slot)
+            return
+
+        # STAGED mode: stage without loading.
+        if _disp._staged:
+            _disp._grid_pending[tab] = slot
+            name = self._slot_display_name(tab, slot, inst)
+            inst.osd.show(f"STAGED: {name}")
+            return
+
+        # LIVE mode: load immediately.
+        self._load_slot(tab, slot, inst)
+
+    def _active_slot_for_tab(self, tab, inst):
+        """Return the slot number of the currently loaded item, or None."""
+        cfg = inst.cfg
+        if tab == 0:
+            cur = cfg.current_shader
+            return next((k for k, v in cfg.shader_slots.items() if v == cur), None)
+        if tab == 1:
+            cur = cfg.current_clip
+            return next((k for k, v in cfg.clip_slots.items() if v == cur), None)
+        return None
+
+    def _slot_display_name(self, tab, slot, inst):
+        cfg = inst.cfg
+        if tab == 0:
+            n = cfg.shader_slots.get(slot) or ""
+            return n.replace(".glsl", "").upper() or f"SLOT {slot}"
+        if tab == 1:
+            import os
+            p = cfg.clip_slots.get(slot) or ""
+            return os.path.splitext(os.path.basename(p))[0].upper() if p else f"SLOT {slot}"
+        return f"SLOT {slot}"
+
+    def _load_slot(self, tab, slot, inst):
+        """Immediately load the item in the given tab slot.
+
+        For tab 0, slot is a shader filename (from paged grid).
+        """
+        if tab == 0:
+            # slot is the shader filename stored by the paged grid
+            inst.shader.load(slot)
+            inst.osd.show(f"SHADER: {slot.replace('.glsl','').upper()}")
+        elif tab == 1:
+            if inst.sampler.slot(slot):
+                inst.sampler.trigger()
             else:
-                inst.osd.show(f"SLOT {n}: EMPTY")
-            return
+                inst.osd.show(f"SLOT {slot}: EMPTY")
+        elif tab == 2:
+            inst.load_preset_slot(slot)
 
-        # ── LIVE mode: 4-9 recall presets — there's no "clip" to trigger
-        # while the camera is the source, so plain 4-9 does what hold-0+4-9
-        # does elsewhere instead of falling through to the clip-slot path
-        # below (which would kill the camera feed to play a stored clip).
-        if inst.mode == "LIVE" and name in ("4","5","6","7","8","9"):
-            inst.load_preset_slot(int(name))
-            return
+    def _push_staged(self, _disp):
+        """Push all staged (pending) grid selections to the live output."""
+        inst = self.inst
+        pushed = False
+        for tab in range(3):   # SHADER, SAMPLER, LIVE
+            slot = _disp._grid_pending[tab]
+            if slot is not None:
+                self._load_slot(tab, slot, inst)
+                _disp._grid_pending[tab] = None
+                pushed = True
+        if not pushed:
+            inst.osd.show("NOTHING STAGED")
 
-        # ── clip slots 4-9 (SAMPLER) ───────────────────────────────────────
-        if name in ("4","5","6","7","8","9"):
-            n = int(name)
-            if s.slot(n):
-                s.trigger()
-                self._inout_stage = 0
-            else:
-                inst.osd.show(f"SLOT {n}: EMPTY")
-            return
+    def _dispatch_perform(self, name):
+        """Handle keys on the params sub-screen (second screen of each tab).
+
+        ENTER  push staged selections
+        +      increase selected param
+        BKSP   decrease selected param
+        1-9    select param by grid position (7=top-left … 3=bottom-right)
+        Tab key (NUM/slash/asterisk/minus/dot)  exit back to grid (handled
+               in _dispatch before this method is reached)
+        """
+        inst  = self.inst
+        _disp = getattr(inst, "display", None)
 
         if name == "ENTER":
-            inst.cycle_mode()
-        elif name == "+":
-            if inst.mode == "SHADER":
-                # Stack FX on top of the generative shader without replacing it.
-                sh.apply_fx_overlay(+1)
-                inst.osd.show(f"FX: {inst.cfg.current_fx.replace('.glsl','').upper()}")
-            else:
-                sh.cycle(+1, kind="fx")
-        elif name == "-":
-            if inst.mode == "SHADER":
-                sh.apply_fx_overlay(-1)
-                inst.osd.show(f"FX: {inst.cfg.current_fx.replace('.glsl','').upper()}")
-            else:
-                sh.cycle(-1, kind="fx")
-        elif name == "/":
-            if inst.mode == "SHADER":
-                inst.shader_blend_toggle()
-            else:
-                inst.overlay_toggle()
-        elif name == "*":
-            if inst.mode == "SHADER":
-                inst.shader_blend_cycle()
-            else:
-                inst.overlay_cycle_mode(+1)
-        elif name == "BKSP":
-            layers = self._avail_layers()
-            cur = self._param_layer if self._param_layer in layers else layers[0]
-            self._param_layer = layers[(layers.index(cur) + 1) % len(layers)]
-            self._param_idx = 0
-            inst.osd.show(f"PARAMS: {_PARAM_LAYERS[self._param_layer]}")
-        elif name == "1":
-            if self._param_layer == 4:          # TRAIL: temporal echo controls
-                slots = self._trail_slots()
-                self._param_idx = (self._param_idx + 1) % len(slots)
-                inst.osd.show(f"TRAIL: {_TRAIL_LABELS[slots[self._param_idx]]}")
-            elif self._param_layer == 3:        # BLEND: compositing controls
-                slots = self._blend_slots()
-                self._param_idx = (self._param_idx + 1) % len(slots)
-                inst.osd.show(f"BLEND: {_BLEND_LABELS[slots[self._param_idx]]}")
-            elif self._param_layer == 2:        # COLOUR: hue / sat / trl opc / trl dec
-                slots = self._colour_slots()
-                self._param_idx = (self._param_idx + 1) % len(slots)
-                slot = slots[self._param_idx]
-                inst.osd.show(f"COLOUR: {_COLOUR_LABELS[slot]}")
-            elif self._param_layer == 1:        # FX: active FX's own params (dynamic)
-                lbls    = inst.shader.fx_param_labels()
-                fx_keys = sorted(lbls.keys(), key=lambda k: int(k[1:]))
-                self._param_idx = (self._param_idx + 1) % max(1, len(fx_keys))
-                key = fx_keys[self._param_idx] if fx_keys else "f1"
-                inst.osd.show(f"FX: {lbls.get(key, key.upper()).upper()}")
-            else:                               # SHDR: generative params (dynamic)
-                keys = self._get_shdr_keys()
-                self._param_idx = (self._param_idx + 1) % max(1, len(keys))
-                key = keys[self._param_idx] if keys else "p1"
-                lbl = inst.shader.param_labels().get(key, key.upper())
-                inst.osd.show(f"PARAM: {lbl.upper()}")
-        elif name == "2":
-            self._step_param(-PARAM_STEP)
-        elif name == "3":
+            if _disp and _disp._staged:
+                self._push_staged(_disp)
+            return
+
+        if name == "+":
             self._step_param(+PARAM_STEP)
+        elif name == "BKSP":
+            self._step_param(-PARAM_STEP)
+        elif name in ("1","2","3","4","5","6","7","8","9"):
+            n   = int(name)
+            # Map numpad key to grid position so keys match the visual layout
+            pos = _GRID_KEY_TO_POS.get(n, n - 1)
+            self._select_param_by_number(pos + 1)
         elif name == "0":
-            if inst.mode == "SHADER":
-                # No real clip to mark in/out on — repurpose as next-shader.
-                sh.cycle(+1, kind="generative")
-                inst.osd.show(f"SHADER: {inst.cfg.current_shader.replace('.glsl', '').upper()}")
-            else:
-                # 1st press: set in, 2nd press: set out, 3rd press: clear
-                stage = getattr(self, "_inout_stage", 0)
-                if stage == 0:
-                    s.set_in()
-                    inst.osd.show("IN POINT")
-                    self._inout_stage = 1
-                elif stage == 1:
-                    if s.set_out():
-                        inst.osd.show("OUT POINT")
-                        self._inout_stage = 2
-                    else:
-                        inst.osd.show("OUT MUST BE AFTER IN")
-                else:
-                    s.clear_points()
-                    inst.osd.show("CLEARED IN/OUT")
-                    self._inout_stage = 0
+            if _disp:
+                staged = _disp.toggle_staged()
+                if not staged:
+                    _disp._grid_pending = [None, None, None, None, None]
+                inst.osd.show("STAGED" if staged else "LIVE")
         elif name == "000":
-            inst.trail_toggle()
-        elif name == ".":
             inst.trail_toggle()
         elif name == "REC":
             inst.record_toggle()
 
+    def _select_param_by_number(self, n):
+        """Select param n (1-based) within the current layer, show OSD."""
+        inst = self.inst
+        if self._param_layer == 1:   # FX params
+            lbls    = inst.shader.fx_param_labels()
+            fx_keys = sorted(lbls.keys(), key=lambda k: int(k[1:]))
+            if not fx_keys:
+                return
+            self._param_idx = min(n - 1, len(fx_keys) - 1)
+            key = fx_keys[self._param_idx]
+            inst.osd.show(f"FX: {lbls.get(key, key.upper()).upper()}")
+        elif self._param_layer == 2:   # COLOUR
+            slots = self._colour_slots()
+            self._param_idx = min(n - 1, len(slots) - 1)
+            inst.osd.show(f"COLOUR: {_COLOUR_LABELS[slots[self._param_idx]]}")
+        elif self._param_layer == 3:   # BLEND
+            slots = self._blend_slots()
+            self._param_idx = min(n - 1, len(slots) - 1)
+            inst.osd.show(f"BLEND: {_BLEND_LABELS[slots[self._param_idx]]}")
+        elif self._param_layer == 4:   # TRAIL
+            slots = self._trail_slots()
+            self._param_idx = min(n - 1, len(slots) - 1)
+            inst.osd.show(f"TRAIL: {_TRAIL_LABELS[slots[self._param_idx]]}")
+        elif self._param_layer == 5:   # SPEED
+            slots = self._speed_slots()
+            self._param_idx = min(n - 1, len(slots) - 1)
+            slot = slots[self._param_idx]
+            if slot == "speed":
+                spd = getattr(inst.sampler, "speed", 1.0)
+                inst.osd.show(f"SPEED: {spd:.2f}x")
+            else:
+                inst.osd.show("DIR: REVERSE")
+        else:                          # SHDR generative params
+            keys = self._get_shdr_keys()
+            if not keys:
+                return
+            self._param_idx = min(n - 1, len(keys) - 1)
+            key = keys[self._param_idx]
+            lbl = inst.shader.param_labels().get(key, key.upper())
+            inst.osd.show(f"PARAM: {lbl.upper()}")
+
     def _avail_layers(self):
-        """Param layers BKSP can reach in the current mode. SHDR (generative)
-        is only meaningful in SHADER mode."""
+        """Param layers valid for the current mode."""
         if self.inst.mode == "SHADER":
-            return [0, 1, 2, 3, 4]   # SHDR, FX, COLOUR, BLEND, TRAIL
-        return [1, 2, 3, 4]          # FX, COLOUR, BLEND, TRAIL
+            return [0, 1, 2, 3, 4, 5]
+        return [1, 2, 3, 4, 5]
 
     def _get_shdr_keys(self):
         """Sorted param keys for the current generative shader (e.g. p1..p8)."""
@@ -484,6 +556,9 @@ class KeyboardController:
 
     def _trail_slots(self):
         return ("on", "type", "mode", "delay", "echos", "opacity")
+
+    def _speed_slots(self):
+        return ("speed", "dir")
 
     def sync_param_layer(self):
         """Keep the selected layer valid for the current mode (called on mode
@@ -584,7 +659,7 @@ class KeyboardController:
                 inst.osd.show(f"BLEND SRC: {cfg.shader_blend_source}")
                 if cfg.shader_blend and inst.mode == "SHADER":
                     inst._start_blend_source()
-        else:                             # ── TRAIL: temporal echo controls
+        elif self._param_layer == 4:      # ── TRAIL: temporal echo controls
             slots = self._trail_slots()
             slot  = slots[self._param_idx % len(slots)]
             d     = 1 if delta > 0 else -1
@@ -633,3 +708,14 @@ class KeyboardController:
                 inst.osd.show(f"TRL OPC: {new:.2f}")
                 if cfg.trail_on:
                     inst.sampler.refresh_trail()
+        else:                             # ── SPEED: sampler playback speed / direction
+            slots = self._speed_slots()
+            slot  = slots[self._param_idx % len(slots)]
+            if slot == "speed":
+                step = SPEED_STEP * (1 if delta > 0 else -1)
+                inst.sampler.nudge_speed(step)
+                spd = inst.sampler.speed
+                inst.osd.show(f"SPEED: {spd:.2f}x")
+            elif slot == "dir":
+                inst.sampler.reverse()
+                inst.osd.show("REVERSE")

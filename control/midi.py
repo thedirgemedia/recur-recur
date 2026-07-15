@@ -358,16 +358,20 @@ class MidiController:
         elif target == "shader_next" and val > 63:
             if inst.mode == "SHADER":
                 inst.shader.apply_fx_overlay(+1)
-                inst.osd.show(f"FX: {cfg.current_fx.replace('.glsl', '').upper()}")
             else:
                 inst.shader.cycle(+1, kind="fx")
+            chain = getattr(cfg, "fx_chain", [])
+            chain_str = " > ".join(f.replace(".glsl","").upper() for f in chain) if chain else "—"
+            inst.osd.show(f"FX: {chain_str}")
 
         elif target == "shader_prev" and val > 63:
             if inst.mode == "SHADER":
                 inst.shader.apply_fx_overlay(-1)
-                inst.osd.show(f"FX: {cfg.current_fx.replace('.glsl', '').upper()}")
             else:
                 inst.shader.cycle(-1, kind="fx")
+            chain = getattr(cfg, "fx_chain", [])
+            chain_str = " > ".join(f.replace(".glsl","").upper() for f in chain) if chain else "—"
+            inst.osd.show(f"FX: {chain_str}")
 
     def _handle_note_on(self, note: int, vel: int):
         inst = self.inst

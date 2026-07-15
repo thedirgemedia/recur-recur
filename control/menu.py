@@ -111,7 +111,10 @@ class Menu:
 
     # ───────────────────────────────────────────────────────── input
     def handle(self, name):
-        """Route a logical key while the menu is active."""
+        """Route a logical key while the menu is active.
+
+        Navigation: + = scroll up,  BKSP = scroll down (or delete/eject action).
+        """
         try:
             # Any key other than BKSP cancels an armed BROWSER delete.
             if name != "BKSP":
@@ -145,6 +148,11 @@ class Menu:
                     self._usb_enter()          # list removable drives
                 return
 
+            # + = scroll up
+            if name == "+":
+                self._move(-1)
+                return
+
             if name in ("8", "2"):
                 self._move(-1 if name == "8" else +1)
             elif name in ("4", "6"):
@@ -153,19 +161,24 @@ class Menu:
                 self._action_primary()
             elif name == "ENTER":
                 self._action_enter()
-            elif name == "BKSP" and PAGES[self.page] == "MIDI":
-                self._midi_clear()
-            elif name == "BKSP" and PAGES[self.page] == "IMPORT":
-                self._usb_eject()
-            elif name == "BKSP" and PAGES[self.page] in ("BROWSER", "PRESETS"):
-                if self._confirm_delete:
-                    self._confirm_delete = False
-                    if PAGES[self.page] == "BROWSER":
-                        self._browser_delete()
+            elif name == "BKSP":
+                page = PAGES[self.page]
+                if page == "MIDI":
+                    self._midi_clear()
+                elif page == "IMPORT":
+                    self._usb_eject()
+                elif page in ("BROWSER", "PRESETS"):
+                    # First BKSP arms delete, second executes it.
+                    if self._confirm_delete:
+                        self._confirm_delete = False
+                        if page == "BROWSER":
+                            self._browser_delete()
+                        else:
+                            self._preset_delete()
                     else:
-                        self._preset_delete()
+                        self._confirm_delete = True
                 else:
-                    self._confirm_delete = True
+                    self._move(+1)   # SETTINGS: scroll down
         except Exception as e:
             log.warning("menu handle %r: %s", name, e)
 
@@ -635,8 +648,16 @@ class Menu:
             select=lambda: inst.shader_blend_toggle()))
 
         # shaders (params live on Bksp SHDR/FX layers; trail on Bksp TRAIL layer)
+        def _fx_label():
+            chain = getattr(cfg, "fx_chain", [])
+            if not chain:
+                return "—"
+            slot  = getattr(cfg, "fx_edit_slot", 0)
+            names = [f.replace(".glsl","").upper() for f in chain]
+            tag   = f"[{slot+1}/{len(chain)}] " if len(chain) > 1 else ""
+            return tag + (names[slot] if slot < len(names) else names[0])
         items.append(_Item(
-            "FX", lambda: cfg.current_fx or "—",
+            "FX", _fx_label,
             adjust=lambda d: inst.shader.cycle(d, kind="fx"),
             select=lambda: inst.shader.cycle(+1, kind="fx")))
         items.append(_Item(
@@ -679,7 +700,7 @@ class Menu:
         C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT = palette
         page = PAGES[self.page]
 
-        # title bar — dark bg with cyan text, green border (matches web SPI panel)
+        # title bar — dark bg with bright green text, green border
         _hdr_bg = tuple(c // 8 for c in C_ACCENT)   # very dark tint of accent
         draw.rectangle([0, 0, W, 40], fill=_hdr_bg)
         draw.line([0, 40, W, 40], fill=C_ACCENT, width=1)
@@ -798,8 +819,8 @@ class Menu:
                 lbl, val_str, override = rows_midi[i]
                 if i == self.sel:
                     draw.rectangle([4, y, W - 4, y + line_h - 2], fill=C_HL)
-                lc  = C_VALUE if i == self.sel else C_LABEL
-                vc  = C_VALUE if i == self.sel else (C_ACCENT if override else C_DIM)
+                lc  = C_BG if i == self.sel else C_LABEL
+                vc  = C_BG if i == self.sel else (C_ACCENT if override else C_DIM)
                 mid = y + line_h // 2
                 draw.text((10,     mid), lbl[:18],    font=font_sm, fill=lc, anchor="lm")
                 if i == self.sel and self._midi_editing:
@@ -833,15 +854,81 @@ class Menu:
                           font=font_sm, fill=C_HL, anchor="mm")
 
         else:  # SETTINGS
-            draw.text((10, 50), f"ip  {_local_ip()}", font=font_sm, fill=C_DIM)
-            items = self._settings()
-            rows = [(it.label, it.value()) for it in items]
-            self._render_kv(draw, font_sm, W, H, palette, rows)
+            draw.text((10, 44), f"ip  {_local_ip()}", font=font_sm, fill=C_DIM)
+
+            items     = self._settings()
+            n_sliders = max(0, len(items) - 3)   # last 3 are action buttons
+            sliders   = items[:n_sliders]
+            buttons   = items[n_sliders:]
+
+            # ── slider grid (3×3) ──────────────────────────────────────────
+            GM  = 4
+            GG  = 4
+            GY0 = 66
+            GY1 = 258
+            gh  = GY1 - GY0
+            cw  = (W - 2 * GM - 2 * GG) // 3
+            ch  = (gh - 2 * GG) // 3
+
+            for pos in range(len(sliders)):
+                row  = pos // 3
+                col_ = pos % 3
+                x0 = GM  + col_ * (cw + GG)
+                y0 = GY0 + row  * (ch + GG)
+                x1 = x0 + cw
+                y1 = y0 + ch
+
+                it       = sliders[pos]
+                selected = (pos == self.sel)
+
+                if selected:
+                    bg_c   = tuple(max(0, c // 5) for c in C_HL)
+                    border = C_HL
+                    vc     = C_HL
+                    tc     = C_VALUE
+                else:
+                    bg_c   = (0x00, 0x0a, 0x00)
+                    border = C_ACCENT
+                    vc     = C_VALUE
+                    tc     = C_LABEL
+
+                draw.rectangle([x0, y0, x1, y1], fill=bg_c)
+                draw.rectangle([x0, y0, x1, y1], outline=border, width=2)
+                cx = (x0 + x1) // 2
+                cy = (y0 + y1) // 2
+                draw.text((cx, cy - 7), str(it.value())[:10], font=font_sm,
+                          fill=vc, anchor="mm")
+                draw.text((cx, cy + 8), it.label[:10], font=font_sm,
+                          fill=tc, anchor="mm")
+
+            # ── action buttons at bottom ───────────────────────────────────
+            if buttons:
+                BY  = GY1 + 4
+                BH  = H - 22 - BY - 4
+                bw  = (W - 2 * GM - (len(buttons) - 1) * GG) // len(buttons)
+                for bi, it in enumerate(buttons):
+                    bx0 = GM + bi * (bw + GG)
+                    bx1 = bx0 + bw
+                    btn_sel = (n_sliders + bi == self.sel)
+                    if btn_sel:
+                        bg_c   = C_HL
+                        border = C_HL
+                        tc     = C_BG
+                    else:
+                        bg_c   = C_BG
+                        border = C_ACCENT
+                        tc     = C_LABEL
+                    draw.rectangle([bx0, BY, bx1, BY + BH], fill=bg_c)
+                    draw.rectangle([bx0, BY, bx1, BY + BH], outline=border, width=2)
+                    cx = (bx0 + bx1) // 2
+                    cy = BY + BH // 2
+                    draw.text((cx, cy), it.label[:12], font=font_sm,
+                              fill=tc, anchor="mm")
 
         # footer hint
         draw.line([0, H - 22, W, H - 22], fill=C_DIM, width=1)
         draw.text((W // 2, H - 11),
-                  "8/2 scroll   4/6 adjust   5 ok   ENTER action   7/9 page",
+                  "+/BKSP scroll   4/6 adjust   5 ok   ENTER action   7/9 page",
                   font=font_sm, fill=C_DIM, anchor="mm")
 
     def _render_list(self, draw, font, W, H, palette, rows, y0=48):
@@ -855,7 +942,7 @@ class Menu:
             label, marked = rows[i]
             if i == self.sel:
                 draw.rectangle([4, y, W - 4, y + line_h - 2], fill=C_HL)
-            col = C_VALUE if i == self.sel else (C_ACCENT if marked else C_LABEL)
+            col = C_BG if i == self.sel else (C_ACCENT if marked else C_LABEL)
             prefix = "▶ " if marked else "  "
             mid = y + line_h // 2
             draw.text((10, mid), f"{prefix}{str(label)[:40]}", font=font, fill=col, anchor="lm")
@@ -871,8 +958,8 @@ class Menu:
             label, value = rows[i]
             if i == self.sel:
                 draw.rectangle([4, y, W - 4, y + line_h - 2], fill=C_HL)
-            lc = C_VALUE if i == self.sel else C_LABEL
-            vc = C_VALUE if i == self.sel else C_ACCENT
+            lc = C_BG if i == self.sel else C_LABEL
+            vc = C_BG if i == self.sel else C_ACCENT
             mid = y + line_h // 2        # vertical centre of the row
             draw.text((10,      mid), str(label)[:18], font=font, fill=lc, anchor="lm")
             draw.text((W - 12,  mid), str(value)[:22], font=font, fill=vc, anchor="rm")

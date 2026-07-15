@@ -320,7 +320,9 @@ class ShaderEngine:
         if shader is None:
             self.current = None
             self.cfg.current_shader = None
-            self._cmd_clear()
+            # Re-apply fx chain if any (persists across mode transitions);
+            # otherwise clear all shaders from mpv.
+            self._apply_now()
             log.info("shader cleared")
             return
         if not os.path.isabs(shader):
@@ -334,45 +336,120 @@ class ShaderEngine:
         self._apply_now()
         log.info("shader -> %s", os.path.basename(shader))
 
-    def push_fx(self, fx):
-        self.cfg.current_fx = fx
-        self.load(fx)
+    def push_fx(self, fx, slot=None):
+        """Set an FX in the given chain slot (default: fx_edit_slot). Applies
+        the chain to the current output without loading as a gen shader."""
+        cfg = self.cfg
+        if slot is None:
+            slot = cfg.fx_edit_slot
+        _def = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        while len(cfg.fx_chain) <= slot:
+            cfg.fx_chain.append(None)
+        while len(cfg.fx_params_chain) <= slot:
+            cfg.fx_params_chain.append(dict(_def))
+        cfg.fx_chain[slot] = fx
+        cfg.shader_fx_stack = True
+        cfg._sync_fx_compat()
+        self._fallback_label_path = None
+        self._read_fx_defaults(fx)
+        self._apply_now()
+
+    def fx_chain_toggle(self, fx_name):
+        """Toggle an FX in the chain (web-style). If already present: remove it.
+        If not present: add to end (max 4 slots, oldest removed). Also sets
+        shader_fx_stack=True when chain is non-empty."""
+        cfg = self.cfg
+        MAX_CHAIN = 4
+        _def = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        try:
+            pos = cfg.fx_chain.index(fx_name)
+            # Already in chain — remove it
+            cfg.fx_chain.pop(pos)
+            if pos < len(cfg.fx_params_chain):
+                cfg.fx_params_chain.pop(pos)
+            cfg.fx_edit_slot = max(0, min(cfg.fx_edit_slot, len(cfg.fx_chain) - 1))
+        except ValueError:
+            # Not in chain — add to end
+            if len(cfg.fx_chain) >= MAX_CHAIN:
+                cfg.fx_chain.pop(0)
+                if cfg.fx_params_chain:
+                    cfg.fx_params_chain.pop(0)
+            cfg.fx_chain.append(fx_name)
+            while len(cfg.fx_params_chain) < len(cfg.fx_chain):
+                cfg.fx_params_chain.append(dict(_def))
+            cfg.fx_edit_slot = len(cfg.fx_chain) - 1
+        cfg.shader_fx_stack = bool(cfg.fx_chain)
+        cfg._sync_fx_compat()
+        self._fallback_label_path = None
+        if cfg.fx_chain:
+            self._read_fx_defaults(cfg.fx_chain[cfg.fx_edit_slot])
+        self._apply_now()
+        chain_str = " > ".join(f.replace(".glsl", "") for f in cfg.fx_chain) if cfg.fx_chain else "—"
+        log.info("fx chain: [%s]", chain_str)
 
     def cycle(self, direction=1, kind=None):
-        """Cycle to next/previous shader (optionally restricted to a kind)."""
+        """Cycle to next/previous shader. For kind='fx' cycles the current chain
+        slot; for kind='generative' cycles the loaded gen shader."""
         lst = self.list_shaders(kind)
         if not lst:
-            self.load(None); return
+            if kind != "fx":
+                self.load(None)
+            return
+        if kind == "fx":
+            cfg  = self.cfg
+            cur  = cfg.current_fx
+            i    = lst.index(cur) if cur in lst else -1
+            i    = (i + direction) % len(lst)
+            new_fx = lst[i]
+            slot   = cfg.fx_edit_slot
+            _def   = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+            if slot < len(cfg.fx_chain):
+                cfg.fx_chain[slot] = new_fx
+            else:
+                cfg.fx_chain.append(new_fx)
+                cfg.fx_params_chain.append(dict(_def))
+            cfg.shader_fx_stack = True
+            cfg._sync_fx_compat()
+            self._fallback_label_path = None
+            self._read_fx_defaults(new_fx)
+            self._apply_now()
+            return
         cur = self.cfg.current_shader
         if cur in lst:
             i = (lst.index(cur) + direction) % len(lst)
         else:
             i = 0
         self.load(lst[i])
-        if kind == "fx":
-            self.cfg.current_fx = lst[i]
 
     def apply_fx_overlay(self, direction=1):
-        """Cycle the FX list and stack the result on top of the current
-        generative shader.  Does NOT change self.current — the generative
-        shader stays active and its params remain tunable via knobs.
-
-        Called by +/- in SHADER mode instead of cycle() so the generative
-        layer is never displaced.
-        """
+        """Cycle the FX in the current chain slot on top of the generative shader.
+        Does NOT change self.current. Called by +/- in SHADER mode."""
         lst = self.list_shaders(kind="fx")
         if not lst:
             return
-        cur = self.cfg.current_fx
-        if cur in lst:
-            i = (lst.index(cur) + direction) % len(lst)
+        cfg  = self.cfg
+        _def = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        if not cfg.fx_chain:
+            # No chain yet — start with first or last FX
+            i = 0 if direction > 0 else len(lst) - 1
+            cfg.fx_chain.append(lst[i])
+            cfg.fx_params_chain.append(dict(_def))
+            cfg.fx_edit_slot = 0
         else:
-            i = 0
-        self.cfg.current_fx    = lst[i]
-        self.cfg.shader_fx_stack = True
-        self._read_fx_defaults(lst[i])   # seed f1–f4 from the new FX's defaults
+            slot   = max(0, min(cfg.fx_edit_slot, len(cfg.fx_chain) - 1))
+            cur    = cfg.fx_chain[slot]
+            i      = lst.index(cur) if cur in lst else -1
+            i      = (i + direction) % len(lst)
+            cfg.fx_chain[slot] = lst[i]
+            while len(cfg.fx_params_chain) < len(cfg.fx_chain):
+                cfg.fx_params_chain.append(dict(_def))
+        cfg.shader_fx_stack = True
+        cfg._sync_fx_compat()
+        self._fallback_label_path = None
+        self._read_fx_defaults(cfg.current_fx)
         self._apply_now()
-        log.info("fx overlay -> %s (on %s)", lst[i],
+        log.info("fx overlay -> %s [slot %d] (on %s)", cfg.current_fx,
+                 cfg.fx_edit_slot,
                  os.path.basename(self.current) if self.current else "—")
 
     # ------------------------------------------------------------- params
@@ -409,24 +486,30 @@ class ShaderEngine:
 
     def _commit_pending(self):
         """Apply whatever changed (shader params and/or colour) since the
-        last commit. Colour must still apply even with no base shader
-        active (it's a global pass), so it's refreshed independently of
-        _apply_now_locked, which is a no-op when self.current is None."""
+        last commit. Also handles fx-chain-only (SAMPLER/LIVE) when there
+        is no gen shader but there are FX in the chain."""
         with self._lock:
-            if self.current:
+            if self.current or self.cfg.fx_chain:
                 self._apply_now_locked()
             else:
                 self._refresh_color()
                 self._push_shaders()
 
     def set_fx_param(self, key, value):
-        """Adjust an FX param (f1–f4). Schedules a debounced recompile if an FX
-        is active in the chain."""
+        """Adjust an FX param (f1–f4) in the current edit slot. Debounced."""
         value = clamp01(value)
-        if self.cfg.fx_params.get(key) == value:
+        cfg  = self.cfg
+        slot = max(0, min(cfg.fx_edit_slot, len(cfg.fx_params_chain) - 1)) \
+               if cfg.fx_params_chain else 0
+        # Ensure chain slot exists
+        if slot >= len(cfg.fx_params_chain):
+            cfg.fx_params_chain.append({"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5})
+        params = cfg.fx_params_chain[slot]
+        if params.get(key) == value:
             return
-        self.cfg.fx_params[key] = value
-        if not self.cfg.current_fx:
+        params[key] = value
+        cfg._sync_fx_compat()   # keep fx_params alias in sync
+        if not cfg.current_fx:
             return
         self._pending.set()
         if self._debounce_thread is None or not self._debounce_thread.is_alive():
@@ -435,8 +518,12 @@ class ShaderEngine:
             self._debounce_thread.start()
 
     def _snapshot(self):
+        chain_params = tuple(
+            tuple(p.get(k, 0.5) for k in ("f1", "f2", "f3", "f4", "f5"))
+            for p in self.cfg.fx_params_chain
+        )
         return (tuple(self.cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
-                tuple(self.cfg.fx_params.get(k, 0.5) for k in sorted(self.cfg.fx_params, key=lambda k: int(k[1:]))),
+                chain_params,
                 getattr(self.cfg, 'color_hue', 0.0),
                 getattr(self.cfg, 'color_sat', 1.0))
 
@@ -555,12 +642,74 @@ class ShaderEngine:
                 pass
 
     def _read_fx_defaults(self, fx):
-        """Seed cfg.fx_params from an FX shader's authored defaults (used when
-        the FX changes without going through load(), e.g. stacked in SHADER)."""
+        """Seed the current edit slot's params from an FX shader's authored defaults."""
         if not fx:
             return
-        path = fx if os.path.isabs(fx) else os.path.join(self.cfg.shaders_dir, fx)
-        self._read_param_defaults(path, self.cfg.fx_params, "f")
+        cfg  = self.cfg
+        path = fx if os.path.isabs(fx) else os.path.join(cfg.shaders_dir, fx)
+        slot = max(0, min(cfg.fx_edit_slot, len(cfg.fx_params_chain) - 1)) \
+               if cfg.fx_params_chain else 0
+        if slot >= len(cfg.fx_params_chain):
+            cfg.fx_params_chain.append({"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5})
+        self._read_param_defaults(path, cfg.fx_params_chain[slot], "f")
+        cfg._sync_fx_compat()
+
+    # ------------------------------------------------------------- fx chain helpers
+
+    def _write_fx_shaders(self, chain, square_mode=False):
+        """Write tmp shader files for each entry in chain. Returns list of paths.
+        square_mode: if True, adjusts the FIRST shader to map back to native size."""
+        cfg  = self.cfg
+        w    = getattr(cfg, 'width',  1280)
+        h    = getattr(cfg, 'height', 720)
+        side = int(math.ceil(math.hypot(w, h))) if square_mode else None
+        tmps = []
+        for i, fx_name in enumerate(chain):
+            if not fx_name:
+                continue
+            fx_path = fx_name if os.path.isabs(fx_name) \
+                               else os.path.join(cfg.shaders_dir, fx_name)
+            slot_params = (cfg.fx_params_chain[i]
+                           if i < len(cfg.fx_params_chain) else cfg.fx_params)
+            try:
+                with open(fx_path) as f:
+                    fx_src = _subst(f.read(), slot_params, "f")
+            except OSError as e:
+                log.warning("can't read FX shader %s: %s", fx_path, e)
+                continue
+            # Square mode applies only to the first shader (it maps back to native)
+            if i == 0 and square_mode and side:
+                native_aspect = w / h
+                fx_src = fx_src.replace("#define SQUARE_SRC 0",
+                                         "#define SQUARE_SRC 1", 1)
+                fx_src = re.sub(r"#define NATIVE_ASPECT [\d.]+",
+                                 f"#define NATIVE_ASPECT {native_aspect:.6f}",
+                                 fx_src, count=1)
+                fx_src = re.sub(r"#define SQ_SCALE_X [\d.]+",
+                                 f"#define SQ_SCALE_X {w / side:.6f}",
+                                 fx_src, count=1)
+                fx_src = re.sub(r"#define SQ_SCALE_Y [\d.]+",
+                                 f"#define SQ_SCALE_Y {h / side:.6f}",
+                                 fx_src, count=1)
+                fx_src = fx_src.replace(
+                    "//!BIND HOOKED\n",
+                    f"//!BIND HOOKED\n//!WIDTH {w}\n//!HEIGHT {h}\n", 1)
+            self._tmp_counter += 1
+            fx_tmp = os.path.join(TMP_SHADER_DIR,
+                                  f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
+            try:
+                with open(fx_tmp, "w") as f:
+                    f.write(fx_src)
+                tmps.append(fx_tmp)
+            except OSError as e:
+                log.warning("can't write FX tmp shader: %s", e)
+        return tmps
+
+    def _apply_fx_chain_only(self):
+        """Apply fx_chain to the video with no gen shader (SAMPLER/LIVE mode)."""
+        chain    = [fx for fx in self.cfg.fx_chain if fx]
+        new_active = self._write_fx_shaders(chain)
+        self._finalize_shaders(new_active)
 
     def _apply_now(self):
         """Substitute PARAM_N values, write to a new unique tmp path, and
@@ -575,8 +724,15 @@ class ShaderEngine:
             self._apply_now_locked()
 
     def _apply_now_locked(self):
+        # ── no gen shader: apply fx chain to video (SAMPLER/LIVE mode) ────────
         if not self.current:
+            if self.cfg.fx_chain:
+                self._apply_fx_chain_only()
+            else:
+                self._refresh_color()
+                self._push_shaders()
             return
+
         try:
             with open(self.current) as f:
                 src = f.read()
@@ -585,9 +741,6 @@ class ShaderEngine:
             return
 
         is_generative = self._is_generative(os.path.basename(self.current))
-
-        # self.current is the generative (SHADER mode) or the FX shader
-        # (SAMPLER/LIVE) — substitute the matching param set.
         out = _subst(src, self.cfg.params if is_generative else self.cfg.fx_params,
                      "p" if is_generative else "f")
 
@@ -595,12 +748,10 @@ class ShaderEngine:
         gen_tmp = os.path.join(TMP_SHADER_DIR,
                                f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
         new_active = []
+        active_fx  = [fx for fx in self.cfg.fx_chain if fx]
 
         if getattr(self.cfg, "shader_blend", False) and is_generative:
-            # ── generative + blend [+ optional FX] ────────────────────────
-            # Pass 1: generative shader saves its output as gen_out.
-            # Pass 2: blend shader reads gen_out + MAIN (video) and composites.
-            # Pass 3 (optional): FX shader runs on top of the blended result.
+            # ── generative + blend [+ fx chain] ───────────────────────────
             marker = "//!BIND HOOKED\n"
             pos = out.rfind(marker)
             if pos != -1:
@@ -632,48 +783,23 @@ class ShaderEngine:
                 return
             new_active.append(blend_tmp)
 
-            # FX stacked on top of the blend composite (pass 3)
-            if getattr(self.cfg, "shader_fx_stack", False) and self.cfg.current_fx:
-                fx_name = self.cfg.current_fx
-                fx_path = fx_name if os.path.isabs(fx_name) \
-                                   else os.path.join(self.cfg.shaders_dir, fx_name)
-                try:
-                    with open(fx_path) as f:
-                        fx_src = _subst(f.read(), self.cfg.fx_params, "f")
-                except OSError as e:
-                    log.warning("can't read FX shader %s: %s", fx_path, e)
-                else:
-                    self._tmp_counter += 1
-                    fx_tmp = os.path.join(TMP_SHADER_DIR,
-                                          f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
-                    try:
-                        with open(fx_tmp, "w") as f:
-                            f.write(fx_src)
-                        new_active.append(fx_tmp)
-                        log.debug("shaders -> %s + blend(%s) + fx(%s)",
-                                  os.path.basename(gen_tmp), mode_name,
-                                  os.path.basename(fx_path))
-                    except OSError as e:
-                        log.warning("can't write FX tmp shader: %s", e)
+            if getattr(self.cfg, "shader_fx_stack", False) and active_fx:
+                fx_tmps = self._write_fx_shaders(active_fx)
+                new_active.extend(fx_tmps)
+                log.debug("shaders -> %s + blend(%s) + %d fx",
+                          os.path.basename(gen_tmp), mode_name, len(fx_tmps))
             else:
                 log.debug("shaders -> %s + blend(%s)",
                           os.path.basename(gen_tmp), mode_name)
 
         elif is_generative and getattr(self.cfg, "shader_fx_stack", False) \
-                and self.cfg.current_fx:
-            # ── generative + FX stacked ────────────────────────────────────
-            # Rotating FX (mirror/rotate_zoom/kaleido_warp) need margin to
-            # sample from or they show black where the rotated sample falls
-            # outside the frame. A width*width square only adds margin on
-            # the vertical axis (the horizontal axis is already at its
-            # native max) so it still clips during rotation — the square
-            # has to be sized to the frame's diagonal to guarantee no
-            # corner ever clips at any rotation angle. Render the
-            # generative pass into that diagonal*diagonal square buffer,
-            # then have the FX pass map both axes back down to the
-            # native frame when it samples.
-            fx_name = self.cfg.current_fx
-            square_mode = fx_name in getattr(self.cfg, "rotating_fx", set())
+                and active_fx:
+            # ── generative + fx chain (no blend) ──────────────────────────
+            # Rotating FX need the gen to render into a diagonal-sized square
+            # so corner samples don't fall outside the frame. Only the FIRST
+            # rotating fx triggers this; subsequent FX run at native size.
+            first_fx    = active_fx[0]
+            square_mode = first_fx in getattr(self.cfg, "rotating_fx", set())
 
             if square_mode:
                 w, h = self.cfg.width, self.cfg.height
@@ -684,7 +810,6 @@ class ShaderEngine:
                                    f"//!BIND HOOKED\n//!WIDTH {side}\n"
                                    f"//!HEIGHT {side}\n", 1)
 
-            # Write generative with live param substitution.
             try:
                 with open(gen_tmp, "w") as f:
                     f.write(out)
@@ -693,53 +818,17 @@ class ShaderEngine:
                 return
             new_active.append(gen_tmp)
 
-            # Stack the FX with its own live params (cfg.fx_params), so the
-            # generative (cfg.params) and the FX are tuned independently.
-            fx_path = fx_name if os.path.isabs(fx_name) \
-                               else os.path.join(self.cfg.shaders_dir, fx_name)
-            try:
-                with open(fx_path) as f:
-                    fx_src = _subst(f.read(), self.cfg.fx_params, "f")
-            except OSError as e:
-                log.warning("can't read FX shader %s: %s", fx_path, e)
+            fx_tmps = self._write_fx_shaders(active_fx, square_mode=square_mode)
+            if not fx_tmps:
                 self._finalize_shaders(new_active, is_generative)
                 return
-
-            if square_mode:
-                native_aspect = w / h
-                fx_src = fx_src.replace("#define SQUARE_SRC 0",
-                                         "#define SQUARE_SRC 1", 1)
-                fx_src = re.sub(r"#define NATIVE_ASPECT [\d.]+",
-                                 f"#define NATIVE_ASPECT {native_aspect:.6f}",
-                                 fx_src, count=1)
-                fx_src = re.sub(r"#define SQ_SCALE_X [\d.]+",
-                                 f"#define SQ_SCALE_X {w / side:.6f}",
-                                 fx_src, count=1)
-                fx_src = re.sub(r"#define SQ_SCALE_Y [\d.]+",
-                                 f"#define SQ_SCALE_Y {h / side:.6f}",
-                                 fx_src, count=1)
-                fx_src = fx_src.replace(
-                    "//!BIND HOOKED\n",
-                    f"//!BIND HOOKED\n//!WIDTH {w}\n"
-                    f"//!HEIGHT {h}\n", 1)
-
-            self._tmp_counter += 1
-            fx_tmp = os.path.join(TMP_SHADER_DIR,
-                                  f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
-            try:
-                with open(fx_tmp, "w") as f:
-                    f.write(fx_src)
-            except OSError as e:
-                log.warning("can't write FX tmp shader: %s", e)
-                self._finalize_shaders(new_active, is_generative)
-                return
-            new_active.append(fx_tmp)
-            log.debug("shaders -> %s + fx(%s)%s", os.path.basename(gen_tmp),
-                      os.path.basename(fx_path),
+            new_active.extend(fx_tmps)
+            log.debug("shaders -> %s + %d fx%s",
+                      os.path.basename(gen_tmp), len(fx_tmps),
                       " [square]" if square_mode else "")
 
         else:
-            # ── single shader ──────────────────────────────────────────────
+            # ── single shader (gen only, or legacy non-generative) ─────────
             try:
                 with open(gen_tmp, "w") as f:
                     f.write(out)

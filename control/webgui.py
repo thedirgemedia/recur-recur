@@ -173,10 +173,13 @@ class WebGUI:
             "shader":             cfg.current_shader,
             "gen_shaders":        gen_shaders,
             "fx":                 cfg.current_fx,
+            "fx_chain":           list(getattr(cfg, "fx_chain", [])),
+            "fx_edit_slot":       getattr(cfg, "fx_edit_slot", 0),
             "fx_shaders":         fx_shaders,
             "shader_fx_stack":    getattr(cfg, "shader_fx_stack", False),
             "params":             dict(cfg.params),
             "fx_params":          dict(cfg.fx_params),
+            "fx_params_chain":    [dict(p) for p in getattr(cfg, "fx_params_chain", [])],
             "param_labels":       param_labels,
             "fx_labels":          fx_labels,
             "shader_blend":       getattr(cfg, "shader_blend",        False),
@@ -221,13 +224,14 @@ class WebGUI:
             fx = msg.get("shader")
             if not fx:
                 return
-            if inst.mode == "SHADER":
-                cfg.current_fx       = fx
-                cfg.shader_fx_stack  = True
-                sh._read_fx_defaults(fx)
-                sh._apply_now()
-            else:
-                sh.push_fx(fx)
+            sh.fx_chain_toggle(fx)
+
+        elif action == "set-fx-slot":
+            slot = msg.get("slot")
+            if slot is not None and 0 <= int(slot) < len(cfg.fx_chain):
+                cfg.fx_edit_slot = int(slot)
+                cfg._sync_fx_compat()
+                sh._fallback_label_path = None
 
         elif action == "cycle-fx":
             if inst.mode == "SHADER":

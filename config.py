@@ -20,7 +20,7 @@ class Config:
     def __init__(self, args=None):
         # output: 'hdmi' or 'composite'
         self.output      = getattr(args, "output", "hdmi")
-        self.start_mode  = getattr(args, "mode", "SAMPLER")
+        self.start_mode  = getattr(args, "mode", "SHADER")
         self.clips_dir   = _abs(getattr(args, "clips_dir",   "clips/"))
         self.shaders_dir = _abs(getattr(args, "shaders_dir", "shaders/"))
         self.presets_dir = _abs("presets/")
@@ -64,15 +64,23 @@ class Config:
         # Generative-shader params, live-tweakable.  Shaders declare as many
         # PARAM_N defines as they need (up to 8); extra slots default to 0.5.
         self.params = {f"p{n}": 0.5 for n in range(1, 11)}
-        # FX-shader params, kept separate so the FX (which can run stacked on a
-        # generative shader) is tunable independently of the generative's p1–p4.
-        self.fx_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        # FX chain: up to 3 FX shader names stacked in sequence.
+        # fx_params_chain[i] holds the independent params for chain slot i.
+        # fx_edit_slot selects which chain slot the params screen edits.
+        # FX chain: up to 4 FX shaders applied in sequence. Empty list = no FX.
+        # fx_params_chain[i] holds the independent params for chain slot i.
+        # fx_edit_slot selects which chain slot the params screen edits.
+        self.fx_chain        = []
+        self.fx_params_chain = []
+        self.fx_edit_slot    = 0
+        # Backward-compat aliases: always kept in sync via _sync_fx_compat().
+        self.fx_params  = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        self.current_fx = None
 
         # currently selected files / mode
-        self.current_mode   = "SAMPLER"
+        self.current_mode   = "SHADER"
         self.current_clip   = None
         self.current_shader = None
-        self.current_fx     = "glitch.glsl"
 
         # passthrough produces no visible effect — exclude it from FX cycling
         # so every + / - press lands on something visually interesting
@@ -194,6 +202,22 @@ class Config:
         'midi_target_cc',
     ]
 
+    def _sync_fx_compat(self):
+        """Keep backward-compat aliases in sync with fx_chain / fx_params_chain."""
+        n = len(self.fx_chain)
+        _default_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        if n == 0:
+            self.fx_edit_slot = 0
+            self.current_fx   = None
+            self.fx_params    = self.fx_params_chain[0] if self.fx_params_chain else _default_params
+            return
+        self.fx_edit_slot = max(0, min(self.fx_edit_slot, n - 1))
+        # Ensure fx_params_chain always has at least as many slots as fx_chain
+        while len(self.fx_params_chain) < n:
+            self.fx_params_chain.append(dict(_default_params))
+        self.current_fx = self.fx_chain[self.fx_edit_slot]
+        self.fx_params  = self.fx_params_chain[self.fx_edit_slot]
+
     def load_prefs(self):
         try:
             with open(self.PREFS_PATH) as f:
@@ -208,8 +232,17 @@ class Config:
                 setattr(self, key, data[key])
         if 'params' in data:
             self.params.update(data['params'])
-        if 'fx_params' in data:
-            self.fx_params.update(data['fx_params'])
+        if 'fx_chain' in data and isinstance(data['fx_chain'], list):
+            self.fx_chain = data['fx_chain']
+        if 'fx_params_chain' in data and isinstance(data['fx_params_chain'], list):
+            self.fx_params_chain = data['fx_params_chain']
+        elif 'fx_params' in data:
+            # Legacy single-slot prefs: promote to chain slot 0
+            if self.fx_chain:
+                while len(self.fx_params_chain) < len(self.fx_chain):
+                    self.fx_params_chain.append({"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5})
+                self.fx_params_chain[0].update(data['fx_params'])
+        self._sync_fx_compat()
         if 'clip_slots' in data:
             self.clip_slots = {int(k): v for k, v in data['clip_slots'].items()}
         if 'shader_slots' in data:
@@ -222,8 +255,10 @@ class Config:
 
     def save_prefs(self, sampler_mode=None):
         data = {key: getattr(self, key, None) for key in self._PREFS_ATTRS}
-        data['params']       = dict(self.params)
-        data['fx_params']    = dict(self.fx_params)
+        data['params']          = dict(self.params)
+        data['fx_params']       = dict(self.fx_params)
+        data['fx_chain']        = list(self.fx_chain)
+        data['fx_params_chain'] = [dict(p) for p in self.fx_params_chain]
         data['clip_slots']    = {str(k): v for k, v in self.clip_slots.items()}
         data['shader_slots']  = {str(k): v for k, v in self.shader_slots.items()}
         data['preset_slots']  = {str(k): v for k, v in self.preset_slots.items()}
@@ -263,12 +298,22 @@ class Config:
             return {}
         if "shader" in data:
             self.current_shader = data["shader"]
-        if "fx" in data:
-            self.current_fx = data["fx"]
         if "params" in data:
             self.params.update(data["params"])
-        if "fx_params" in data:
-            self.fx_params.update(data["fx_params"])
+        # FX chain — prefer new list format, fall back to legacy single-fx key
+        if "fx_chain" in data and isinstance(data["fx_chain"], list):
+            self.fx_chain = list(data["fx_chain"])
+            if "fx_params_chain" in data and isinstance(data["fx_params_chain"], list):
+                self.fx_params_chain = [dict(p) for p in data["fx_params_chain"]]
+            self.fx_edit_slot = 0
+        elif "fx" in data and data["fx"]:
+            self.fx_chain        = [data["fx"]]
+            _def = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+            self.fx_params_chain = [dict(_def)]
+            if "fx_params" in data:
+                self.fx_params_chain[0].update(data["fx_params"])
+            self.fx_edit_slot = 0
+        self._sync_fx_compat()
         for key in self._PRESET_EXTRA:
             if key in data and key not in ("fx_params",):
                 setattr(self, key, data[key])
@@ -281,9 +326,11 @@ class Config:
             "version": 2,
             "mode":      self.current_mode,
             "shader":    self.current_shader,
-            "fx":        self.current_fx,
+            "fx":        self.current_fx,          # legacy compat: slot 0 or None
+            "fx_chain":  list(self.fx_chain),
             "params":    dict(self.params),
-            "fx_params": dict(self.fx_params),
+            "fx_params": dict(self.fx_params),     # legacy compat: current edit slot
+            "fx_params_chain": [dict(p) for p in self.fx_params_chain],
         }
         for key in self._PRESET_EXTRA:
             if key not in ("fx_params",):
