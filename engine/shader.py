@@ -56,6 +56,7 @@ def _subst(text, vals, prefix):
 # Blend modes for shader+clip compositing (SHADER mode). Integers are
 # substituted into the blend shader; the names match cfg.SHADER_BLEND_MODES.
 BLEND_MODE_MAP = {
+    "normal":      0,   # per-FX-layer only: pure pass-through (see FX_LAYER_BLEND_SRC)
     "difference":  1,
     "addition":    2,
     "multiply":    3,
@@ -197,6 +198,126 @@ vec4 hook() {
                    bmode(vid.b, gen.b));
 #endif
     return vec4(mix(vid, bl, BLEND_AMT), 1.0);
+#endif
+}
+"""
+
+# Per-FX-chain-layer composite: blends one chain layer's effect against
+# whatever was below it in the stack (the previous layer, the generative
+# shader, or the raw video/camera). Same //!SAVE-and-composite technique as
+# BLEND_SHADER_SRC above, reused per layer (via a shared bind name,
+# fx_layer_out — each composite pass consumes the effect pass immediately
+# before it, so reusing one name across layers is safe) so every FX in the
+# chain can carry its own blend mode + amount. Mode 0 ("normal") is a pure
+# pass-through of the effect layer — the default, so a freshly-added layer
+# looks exactly like a plain FX shader until the user picks another mode.
+FX_LAYER_BLEND_SRC = """\
+//!DESC fx layer blend — composite one FX chain layer with the layer below it
+//!HOOK MAIN
+//!BIND HOOKED
+//!BIND fx_layer_out
+
+#define BLEND_MODE __BLEND_MODE__
+#define BLEND_AMT  __BLEND_AMT__
+
+// per-channel blend: b = base (layer below), s = blend layer (this FX's effect)
+float bmode(float b, float s) {
+#if   BLEND_MODE == 0
+    return s;                                                         // normal (pass-through)
+#elif BLEND_MODE == 1
+    return abs(b - s);                                               // difference
+#elif BLEND_MODE == 2
+    return min(b + s, 1.0);                                          // addition
+#elif BLEND_MODE == 3
+    return b * s;                                                    // multiply
+#elif BLEND_MODE == 4
+    return 1.0 - (1.0 - b) * (1.0 - s);                             // screen
+#elif BLEND_MODE == 6
+    return b < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);          // overlay
+#elif BLEND_MODE == 7
+    return s < 0.5 ? 2.0*b*s : 1.0 - 2.0*(1.0-b)*(1.0-s);          // hardlight
+#elif BLEND_MODE == 8
+    return (s <= 0.5)
+        ? b - (1.0 - 2.0*s) * b * (1.0 - b)                        // softlight
+        : b + (2.0*s - 1.0) *
+          ((b <= 0.25 ? ((16.0*b - 12.0)*b + 4.0)*b : sqrt(b)) - b);
+#elif BLEND_MODE == 9
+    return s >= 1.0 ? 1.0 : min(1.0, b / (1.0 - s));               // dodge
+#elif BLEND_MODE == 10
+    return s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0 - b) / s);         // burn
+#elif BLEND_MODE == 11
+    return max(b, s);                                                // lighten
+#elif BLEND_MODE == 12
+    return min(b, s);                                                // darken
+#elif BLEND_MODE == 13
+    return b + s - 2.0*b*s;                                         // exclusion
+#elif BLEND_MODE == 15
+    return max(b - s, 0.0);                                          // subtract
+#elif BLEND_MODE == 16
+    return s <= 0.0 ? 1.0 : min(b / s, 1.0);                        // divide
+#elif BLEND_MODE == 17
+    return clamp(abs(1.0 - b - s), 0.0, 1.0);                       // negation
+#elif BLEND_MODE == 18
+    return s >= 1.0 ? 1.0 : min(b*b / (1.0 - s), 1.0);             // reflect
+#elif BLEND_MODE == 19
+    return b >= 1.0 ? 1.0 : min(s*s / (1.0 - b), 1.0);             // glow
+#elif BLEND_MODE == 20
+    return 1.0 - abs(b - s);                                         // phoenix
+#elif BLEND_MODE == 21
+    return s < 0.5                                                   // vividlight
+        ? (s <= 0.0 ? 0.0 : 1.0 - min(1.0, (1.0-b)/(2.0*s)))
+        : (s >= 1.0 ? 1.0 : min(1.0, b/(2.0*(1.0-s))));
+#elif BLEND_MODE == 22
+    return clamp(b + 2.0*s - 1.0, 0.0, 1.0);                        // linearlight
+#elif BLEND_MODE == 23
+    return b + s >= 1.0 ? 1.0 : 0.0;                                // hardmix
+#else
+    return mix(b, s, 0.5);                                           // mix
+#endif
+}
+
+vec3 rgb2hsv(vec3 c) {
+    float cmax = max(c.r, max(c.g, c.b));
+    float cmin = min(c.r, min(c.g, c.b));
+    float d = cmax - cmin;
+    float h = 0.0;
+    if (d > 0.0001) {
+        if      (cmax == c.r) h = mod((c.g - c.b) / d, 6.0) / 6.0;
+        else if (cmax == c.g) h = ((c.b - c.r) / d + 2.0) / 6.0;
+        else                  h = ((c.r - c.g) / d + 4.0) / 6.0;
+    }
+    return vec3(h, cmax > 0.0001 ? d / cmax : 0.0, cmax);
+}
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec4 hook() {
+    vec4 eff = fx_layer_out_texOff(vec2(0.0));
+#if BLEND_MODE == 14
+    // Displace: warp the layer below by this effect's R/G channels.
+    vec2 disp = (eff.rg - 0.5) * 2.0 * BLEND_AMT * 48.0;
+    return vec4(HOOKED_texOff(disp).rgb, 1.0);
+#else
+    vec3 below = HOOKED_texOff(vec2(0.0)).rgb;
+#if BLEND_MODE == 24 || BLEND_MODE == 25 || BLEND_MODE == 26
+    vec3 bh = rgb2hsv(below);
+    vec3 eh = rgb2hsv(eff.rgb);
+#if   BLEND_MODE == 24
+    vec3 bl = hsv2rgb(vec3(eh.x, bh.y, bh.z));                      // hue from effect
+#elif BLEND_MODE == 25
+    vec3 bl = hsv2rgb(vec3(bh.x, bh.y, eh.z));                      // luminosity from effect
+#else
+    vec3 bl = hsv2rgb(vec3(eh.x, eh.y, bh.z));                      // color (HS) from effect
+#endif
+#else
+    vec3 bl = vec3(bmode(below.r, eff.r),
+                   bmode(below.g, eff.g),
+                   bmode(below.b, eff.b));
+#endif
+    return vec4(mix(below, bl, BLEND_AMT), 1.0);
 #endif
 }
 """
@@ -367,6 +488,8 @@ class ShaderEngine:
             cfg.fx_chain.pop(pos)
             if pos < len(cfg.fx_params_chain):
                 cfg.fx_params_chain.pop(pos)
+            if pos < len(cfg.fx_blend_chain):
+                cfg.fx_blend_chain.pop(pos)
             cfg.fx_edit_slot = max(0, min(cfg.fx_edit_slot, len(cfg.fx_chain) - 1))
         except ValueError:
             # Not in chain — add to end
@@ -374,6 +497,8 @@ class ShaderEngine:
                 cfg.fx_chain.pop(0)
                 if cfg.fx_params_chain:
                     cfg.fx_params_chain.pop(0)
+                if cfg.fx_blend_chain:
+                    cfg.fx_blend_chain.pop(0)
             cfg.fx_chain.append(fx_name)
             while len(cfg.fx_params_chain) < len(cfg.fx_chain):
                 cfg.fx_params_chain.append(dict(_def))
@@ -517,13 +642,48 @@ class ShaderEngine:
                 target=self._debounce_loop, daemon=True, name="shader-debounce")
             self._debounce_thread.start()
 
+    def cycle_fx_blend_mode(self, direction=1):
+        """Cycle the current FX chain edit slot's blend mode (how that layer
+        composites with whatever is below it). Applies immediately."""
+        cfg   = self.cfg
+        modes = list(cfg.FX_LAYER_BLEND_MODES)
+        cur   = cfg.fx_blend.get("mode", "normal")
+        i     = modes.index(cur) if cur in modes else 0
+        cfg.fx_blend["mode"] = modes[(i + direction) % len(modes)]
+        self._apply_now()
+
+    def set_fx_blend_amount(self, amount):
+        """Set the current FX chain edit slot's blend amount (0-1). Debounced
+        like set_fx_param."""
+        cfg = self.cfg
+        amount = clamp01(amount)
+        if cfg.fx_blend.get("amt", 1.0) == amount:
+            return
+        cfg.fx_blend["amt"] = amount
+        self._pending.set()
+        if self._debounce_thread is None or not self._debounce_thread.is_alive():
+            self._debounce_thread = threading.Thread(
+                target=self._debounce_loop, daemon=True, name="shader-debounce")
+            self._debounce_thread.start()
+
+    def fx_row_keys(self):
+        """Ordered list of selectable rows for the FX params screen: this
+        layer's own f-params, then its blend mode and amount."""
+        fkeys = sorted(self.fx_param_labels().keys(), key=lambda k: int(k[1:]))
+        return fkeys + ["__blend_mode__", "__blend_amt__"]
+
     def _snapshot(self):
         chain_params = tuple(
             tuple(p.get(k, 0.5) for k in ("f1", "f2", "f3", "f4", "f5"))
             for p in self.cfg.fx_params_chain
         )
+        chain_blend = tuple(
+            (b.get("mode", "normal"), round(b.get("amt", 1.0), 4))
+            for b in self.cfg.fx_blend_chain
+        )
         return (tuple(self.cfg.params.get(f"p{n}", 0.5) for n in range(1, 11)),
                 chain_params,
+                chain_blend,
                 getattr(self.cfg, 'color_hue', 0.0),
                 getattr(self.cfg, 'color_sat', 1.0))
 
@@ -656,9 +816,21 @@ class ShaderEngine:
 
     # ------------------------------------------------------------- fx chain helpers
 
-    def _write_fx_shaders(self, chain, square_mode=False):
+    def _write_fx_shaders(self, chain, square_mode=False, bottom_has_source=True):
         """Write tmp shader files for each entry in chain. Returns list of paths.
-        square_mode: if True, adjusts the FIRST shader to map back to native size."""
+
+        Each layer normally becomes TWO passes: its own effect (saved aside
+        as fx_layer_out without touching the picture yet) followed by a
+        composite pass that blends that effect against whatever was below it
+        (the previous layer, the generative, or the raw video/camera) using
+        the layer's own blend mode/amount (cfg.fx_blend_chain[i]). The
+        bottom-most layer (i==0) skips the composite pass — applying its
+        effect directly, exactly like before — when bottom_has_source is
+        False: with no real clip/camera loaded yet there's nothing
+        meaningful underneath to blend with.
+
+        square_mode: if True, adjusts the FIRST shader to map back to native size.
+        """
         cfg  = self.cfg
         w    = getattr(cfg, 'width',  1280)
         h    = getattr(cfg, 'height', 720)
@@ -694,6 +866,16 @@ class ShaderEngine:
                 fx_src = fx_src.replace(
                     "//!BIND HOOKED\n",
                     f"//!BIND HOOKED\n//!WIDTH {w}\n//!HEIGHT {h}\n", 1)
+
+            do_blend = bottom_has_source if i == 0 else True
+
+            if do_blend:
+                marker = "//!BIND HOOKED\n"
+                pos = fx_src.rfind(marker)
+                if pos != -1:
+                    fx_src = fx_src[:pos] + fx_src[pos:].replace(
+                        marker, marker + "//!SAVE fx_layer_out\n", 1)
+
             self._tmp_counter += 1
             fx_tmp = os.path.join(TMP_SHADER_DIR,
                                   f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
@@ -703,12 +885,32 @@ class ShaderEngine:
                 tmps.append(fx_tmp)
             except OSError as e:
                 log.warning("can't write FX tmp shader: %s", e)
+                continue
+
+            if do_blend:
+                blend = (cfg.fx_blend_chain[i] if i < len(cfg.fx_blend_chain)
+                         else {"mode": "normal", "amt": 1.0})
+                mode_int = BLEND_MODE_MAP.get(blend.get("mode", "normal"), 0)
+                amt      = blend.get("amt", 1.0)
+                comp_src = (FX_LAYER_BLEND_SRC
+                            .replace("__BLEND_MODE__", str(mode_int))
+                            .replace("__BLEND_AMT__",  f"{amt:.4f}"))
+                self._tmp_counter += 1
+                comp_tmp = os.path.join(TMP_SHADER_DIR,
+                                        f"{TMP_SHADER_PREFIX}{self._tmp_counter:06d}.glsl")
+                try:
+                    with open(comp_tmp, "w") as f:
+                        f.write(comp_src)
+                    tmps.append(comp_tmp)
+                except OSError as e:
+                    log.warning("can't write FX composite shader: %s", e)
         return tmps
 
     def _apply_fx_chain_only(self):
         """Apply fx_chain to the video with no gen shader (SAMPLER/LIVE mode)."""
-        chain    = [fx for fx in self.cfg.fx_chain if fx]
-        new_active = self._write_fx_shaders(chain)
+        chain = [fx for fx in self.cfg.fx_chain if fx]
+        bottom_has_source = getattr(self.sampler, "_active_source", None) in ("clip", "camera")
+        new_active = self._write_fx_shaders(chain, bottom_has_source=bottom_has_source)
         self._finalize_shaders(new_active)
 
     def _apply_now(self):

@@ -430,10 +430,13 @@ class DisplayController:
                         getattr(cfg, "trail_on",      False),
                         getattr(_kb, "_param_idx",   0),
                         getattr(_kb, "_param_layer", 0),
+                        getattr(_kb, "_editing_param", False),
                         getattr(cfg, "current_shader", None),
                         getattr(cfg, "current_fx",     None),
                         tuple(getattr(cfg, "fx_chain", [])),
                         getattr(cfg, "fx_edit_slot",   0),
+                        tuple((b.get("mode",""), round(b.get("amt",1.0),3))
+                              for b in getattr(cfg, "fx_blend_chain", [])),
                         round(getattr(cfg, "color_hue", 0.0), 4),
                         round(getattr(cfg, "color_sat", 1.0), 3),
                         getattr(_rec, "status", ""),
@@ -749,18 +752,27 @@ class DisplayController:
     # ── Shared params screen (sliders above, 3×3 selector grid below) ──────────
 
     def _render_params_screen(self, d, font_sm, tab_col, name,
-                               all_keys, get_lbl, get_val, fmt_val, sel_idx):
+                               all_keys, get_lbl, get_val, fmt_val, sel_idx,
+                               editing=False):
+        """Scrollable params list: as many rows as fit are shown at once,
+        windowed around sel_idx so lists longer than the visible area (e.g.
+        an FX layer's own params + its BLEND/BLD AMT rows) stay reachable via
+        +/Bksp scrolling. `editing` highlights the header/selection in amber
+        to show Enter has "entered" the highlighted row for value-stepping."""
         # Header
         sec_y = TAB_H + 4
         d.text((10, sec_y), name[:20], font=font_sm, fill=tab_col)
         if all_keys and 0 <= sel_idx < len(all_keys):
             k = all_keys[sel_idx]
-            d.text((FB_W - 8, sec_y),
-                   f"{get_lbl(k)[:8]}: {fmt_val(k, get_val(k))}",
-                   font=font_sm, fill=C_ON, anchor="rm")
+            hdr_col = C_STAGED if editing else C_ON
+            hdr_txt = f"{get_lbl(k)[:8]}: {fmt_val(k, get_val(k))}"
+            if editing:
+                hdr_txt = "EDIT " + hdr_txt
+            d.text((FB_W - 8, sec_y), hdr_txt,
+                   font=font_sm, fill=hdr_col, anchor="rm")
         d.line([0, TAB_H + 20, FB_W, TAB_H + 20], fill=C_DIVIDER, width=1)
 
-        # ── Slim horizontal sliders (all params) ──────────────────────────
+        # ── Slim horizontal sliders (windowed around the selection) ────────
         SY0     = TAB_H + 24          # = 66
         BAR_X   = 85
         BAR_W   = 295
@@ -768,15 +780,17 @@ class DisplayController:
         bar_gap = 15
         # leave 94px for the grid + 4px gap above it
         GY0     = FB_H - 26 - 94     # = 200
-        max_s   = min(len(all_keys), (GY0 - 4 - SY0) // bar_gap)
+        visible = max(1, min(len(all_keys), (GY0 - 4 - SY0) // bar_gap))
+        top     = max(0, min(sel_idx - visible // 2, max(0, len(all_keys) - visible)))
 
-        for i in range(max_s):
+        sel_c = C_STAGED if editing else C_SEL
+        for row, i in enumerate(range(top, min(top + visible, len(all_keys)))):
             k        = all_keys[i]
             v        = get_val(k)
-            by       = SY0 + i * bar_gap
+            by       = SY0 + row * bar_gap
             selected = (i == sel_idx)
-            lc = C_ON      if selected else C_LABEL
-            bc = C_SEL     if selected else C_BAR_FILL
+            lc = (C_STAGED if editing else C_ON) if selected else C_LABEL
+            bc = sel_c     if selected else C_BAR_FILL
 
             d.text((10, by + BAR_H // 2), get_lbl(k)[:8],
                    font=font_sm, fill=lc, anchor="lm")
@@ -788,7 +802,7 @@ class DisplayController:
             d.text((BAR_X + BAR_W + 6, by + BAR_H // 2),
                    fmt_val(k, v), font=font_sm, fill=lc, anchor="lm")
 
-        # ── 3×3 selector grid (compact buttons) ───────────────────────────
+        # ── 3×3 selector grid (same window as the sliders above) ──────────
         GM  = 4
         GG  = 3
         GY1 = FB_H - 26              # = 294
@@ -804,13 +818,15 @@ class DisplayController:
             x1 = x0 + cw
             y1 = y0 + ch
 
-            if pos < len(all_keys):
-                lbl      = get_lbl(all_keys[pos])
-                selected = (pos == sel_idx)
+            i = top + pos
+            if i < len(all_keys):
+                lbl      = get_lbl(all_keys[i])
+                selected = (i == sel_idx)
                 if selected:
-                    bg_c   = tuple(max(0, c // 5) for c in C_ON)
-                    border = C_ON
-                    tc     = C_ON
+                    hi_c   = C_STAGED if editing else C_ON
+                    bg_c   = tuple(max(0, c // 5) for c in hi_c)
+                    border = hi_c
+                    tc     = hi_c
                 else:
                     bg_c   = (0x00, 0x06, 0x00)
                     border = tab_col
@@ -844,9 +860,11 @@ class DisplayController:
                 return str(max(1, round(v * 500)))
             return f"{v:.2f}"
 
-        name = (cfg.current_shader or "—").replace(".glsl", "").upper()
+        name    = (cfg.current_shader or "—").replace(".glsl", "").upper()
+        editing = getattr(getattr(inst, "kb", None), "_editing_param", False)
         self._render_params_screen(d, font_sm, TAB_COL["SHADER"], name,
-                                   all_keys, get_lbl, get_val, fmt_val, sel_idx)
+                                   all_keys, get_lbl, get_val, fmt_val, sel_idx,
+                                   editing=editing)
 
     # ── SAMPLER tab ───────────────────────────────────────────────────────────
 
@@ -952,27 +970,42 @@ class DisplayController:
     def _render_fx_params_tab(self, d, font_lg, font_md, font_sm, inst, cfg):
         flabels  = inst.shader.fx_param_labels()
         has_fx   = bool(getattr(cfg, "current_fx", None))
-        all_keys = sorted(flabels.keys(), key=lambda k: int(k[1:])) if has_fx else []
+        all_keys = inst.shader.fx_row_keys() if has_fx else []
         sel_idx  = getattr(getattr(inst, "kb", None), "_param_idx", 0)
         tab_col  = TAB_COL["FX"]
         fx_chain = getattr(cfg, "fx_chain", [])
         fx_col   = tab_col if getattr(cfg, "shader_fx_stack", False) and fx_chain else C_LABEL
+        blend_modes = list(getattr(cfg, "FX_LAYER_BLEND_MODES", ("normal",)))
 
         def get_lbl(k):
+            if k == "__blend_mode__":
+                return "BLEND"
+            if k == "__blend_amt__":
+                return "BLD AMT"
             return flabels.get(k, k.upper()).upper()
 
         def get_val(k):
+            if k == "__blend_mode__":
+                cur = cfg.fx_blend.get("mode", "normal")
+                i   = blend_modes.index(cur) if cur in blend_modes else 0
+                return i / max(1, len(blend_modes) - 1)
+            if k == "__blend_amt__":
+                return cfg.fx_blend.get("amt", 1.0)
             return cfg.fx_params.get(k, 0.5)
 
         def fmt_val(k, v):
+            if k == "__blend_mode__":
+                return cfg.fx_blend.get("mode", "normal").upper()[:9]
             return f"{v:.2f}"
 
         slot = getattr(cfg, "fx_edit_slot", 0)
         n    = len(fx_chain)
         slot_tag = f" [{slot+1}/{n}]" if n > 1 else ""
-        name = ((cfg.current_fx or "—").replace(".glsl", "").upper()) + slot_tag
+        name    = ((cfg.current_fx or "—").replace(".glsl", "").upper()) + slot_tag
+        editing = getattr(getattr(inst, "kb", None), "_editing_param", False)
         self._render_params_screen(d, font_sm, fx_col, name,
-                                   all_keys, get_lbl, get_val, fmt_val, sel_idx)
+                                   all_keys, get_lbl, get_val, fmt_val, sel_idx,
+                                   editing=editing)
 
     # ── SETTINGS tab ──────────────────────────────────────────────────────────
 

@@ -72,9 +72,16 @@ class Config:
         # fx_edit_slot selects which chain slot the params screen edits.
         self.fx_chain        = []
         self.fx_params_chain = []
+        # fx_blend_chain[i] holds {"mode": ..., "amt": ...} for chain slot i —
+        # how that layer's effect composites with whatever is below it in the
+        # stack (previous layer / generative / raw video). "normal" is a pure
+        # pass-through so newly-added layers look like plain FX until the
+        # user picks a different blend mode. See engine/shader.py FX_LAYER_BLEND_SRC.
+        self.fx_blend_chain  = []
         self.fx_edit_slot    = 0
         # Backward-compat aliases: always kept in sync via _sync_fx_compat().
         self.fx_params  = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        self.fx_blend   = {"mode": "normal", "amt": 1.0}
         self.current_fx = None
 
         # currently selected files / mode
@@ -120,6 +127,10 @@ class Config:
                                     "reflect", "glow", "phoenix",
                                     "vividlight", "linearlight", "hardmix",
                                     "hue", "luminosity", "color")
+        # Blend modes available per-FX-chain-layer (Parameter editing → FX).
+        # Same palette as SHADER_BLEND_MODES plus "normal" (pure pass-through,
+        # the default for every layer — see engine/shader.py FX_LAYER_BLEND_SRC).
+        self.FX_LAYER_BLEND_MODES = ("normal",) + self.SHADER_BLEND_MODES
         # Source for shader blend: "clip" uses the current sampler clip,
         # "live" uses the CSI/USB camera feed
         self.shader_blend_source  = "clip"
@@ -203,20 +214,27 @@ class Config:
     ]
 
     def _sync_fx_compat(self):
-        """Keep backward-compat aliases in sync with fx_chain / fx_params_chain."""
+        """Keep backward-compat aliases in sync with fx_chain / fx_params_chain
+        / fx_blend_chain."""
         n = len(self.fx_chain)
         _default_params = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        _default_blend  = {"mode": "normal", "amt": 1.0}
         if n == 0:
             self.fx_edit_slot = 0
             self.current_fx   = None
             self.fx_params    = self.fx_params_chain[0] if self.fx_params_chain else _default_params
+            self.fx_blend     = self.fx_blend_chain[0] if self.fx_blend_chain else dict(_default_blend)
             return
         self.fx_edit_slot = max(0, min(self.fx_edit_slot, n - 1))
-        # Ensure fx_params_chain always has at least as many slots as fx_chain
+        # Ensure fx_params_chain / fx_blend_chain always have at least as
+        # many slots as fx_chain
         while len(self.fx_params_chain) < n:
             self.fx_params_chain.append(dict(_default_params))
+        while len(self.fx_blend_chain) < n:
+            self.fx_blend_chain.append(dict(_default_blend))
         self.current_fx = self.fx_chain[self.fx_edit_slot]
         self.fx_params  = self.fx_params_chain[self.fx_edit_slot]
+        self.fx_blend   = self.fx_blend_chain[self.fx_edit_slot]
 
     def load_prefs(self):
         try:
@@ -236,7 +254,9 @@ class Config:
             self.fx_chain = data['fx_chain']
         if 'fx_params_chain' in data and isinstance(data['fx_params_chain'], list):
             self.fx_params_chain = data['fx_params_chain']
-        elif 'fx_params' in data:
+        if 'fx_blend_chain' in data and isinstance(data['fx_blend_chain'], list):
+            self.fx_blend_chain = data['fx_blend_chain']
+        if 'fx_params' in data:
             # Legacy single-slot prefs: promote to chain slot 0
             if self.fx_chain:
                 while len(self.fx_params_chain) < len(self.fx_chain):
@@ -259,6 +279,7 @@ class Config:
         data['fx_params']       = dict(self.fx_params)
         data['fx_chain']        = list(self.fx_chain)
         data['fx_params_chain'] = [dict(p) for p in self.fx_params_chain]
+        data['fx_blend_chain']  = [dict(b) for b in self.fx_blend_chain]
         data['clip_slots']    = {str(k): v for k, v in self.clip_slots.items()}
         data['shader_slots']  = {str(k): v for k, v in self.shader_slots.items()}
         data['preset_slots']  = {str(k): v for k, v in self.preset_slots.items()}
@@ -305,11 +326,14 @@ class Config:
             self.fx_chain = list(data["fx_chain"])
             if "fx_params_chain" in data and isinstance(data["fx_params_chain"], list):
                 self.fx_params_chain = [dict(p) for p in data["fx_params_chain"]]
+            if "fx_blend_chain" in data and isinstance(data["fx_blend_chain"], list):
+                self.fx_blend_chain = [dict(b) for b in data["fx_blend_chain"]]
             self.fx_edit_slot = 0
         elif "fx" in data and data["fx"]:
             self.fx_chain        = [data["fx"]]
             _def = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
             self.fx_params_chain = [dict(_def)]
+            self.fx_blend_chain  = [{"mode": "normal", "amt": 1.0}]
             if "fx_params" in data:
                 self.fx_params_chain[0].update(data["fx_params"])
             self.fx_edit_slot = 0
@@ -331,6 +355,7 @@ class Config:
             "params":    dict(self.params),
             "fx_params": dict(self.fx_params),     # legacy compat: current edit slot
             "fx_params_chain": [dict(p) for p in self.fx_params_chain],
+            "fx_blend_chain":  [dict(b) for b in self.fx_blend_chain],
         }
         for key in self._PRESET_EXTRA:
             if key not in ("fx_params",):

@@ -1,6 +1,6 @@
 # recur-recur — Operator Manual
 
-*Accurate as of 2026-06-23. Generated from the actual code paths — where the
+*Accurate as of 2026-07-15. Generated from the actual code paths — where the
 code and older docs disagreed, this manual follows the code.*
 
 ---
@@ -82,131 +82,192 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 └──────┴──────┴──────┴──────┘
 ```
 
-### Keys active in every mode
+The SPI display is organised as five **tabs** — SHADER, SAMPLER, LIVE, FX,
+SETTINGS — and the top-row keys are permanently bound to them, in *every*
+context (even while a menu page is open):
+
+| Key | Tab |
+|---|---|
+| **Num** | SHADER |
+| **/** | SAMPLER |
+| **\*** | LIVE |
+| **-** | FX |
+| **.** | SETTINGS |
+
+Pressing the key for the tab you're **already on** cycles that tab's
+sub-screens (a 3×3 slot **grid** first, then a **params** screen for tabs
+that have one). Pressing a *different* tab's key jumps straight to that
+tab's grid and closes any open menu page.
+
+> **Note:** these keys only change what the SPI display is showing — they do
+> **not** switch the instrument's SAMPLER/SHADER/LIVE mode. Mode is switched
+> by the GPIO mode button, MIDI (CC 80/82/83 or notes 120/122/123), or the
+> SETTINGS menu's `MODE` row (see *Menu system*). See *Known issues* — there
+> is currently no numpad key bound to mode switching.
+
+### The 3×3 grid (first screen of SHADER / SAMPLER / LIVE / FX / SETTINGS)
+
+Grid cells sit at keys **7 8 9 / 4 5 6 / 1 2 3**, matching their on-screen
+position (7 = top-left … 3 = bottom-right):
 
 | Key | Action |
 |---|---|
-| **Num** | Toggle the menu (while the menu is open, no key reaches the video) |
-| **Enter** | Cycle instrument mode (SAMPLER → SHADER → LIVE → …; LIVE skipped if disabled in SETTINGS) |
-| **000** or **.** | Toggle the temporal trail (echo time delay) |
-| **Bksp** | Cycle param layer for this mode: SHADER mode = SHDR → FX → COLOUR → BLEND → TRAIL; SAMPLER/LIVE = FX → COLOUR → BLEND → TRAIL. Top-bar chip shows `SHDR` / `FX` / `COLOUR` / `BLEND` / `TRAIL` |
-| **1** | Cycle the selected parameter (see *Parameter editing*) |
-| **2** / **3** | Selected parameter − / + |
-| **0** | In/out points: 1st press = IN, 2nd = OUT, 3rd = clear |
-| **Hold 0, tap .** | Record live camera to clip file (LIVE mode only; hold numpad 0 while tapping `.`; press again to stop and save) |
+| **1–9** | select that grid cell (see per-tab behaviour below) |
+| **+** | next page (SHADER / FX grids only — they paginate 9 shaders at a time) |
+| **Bksp** | previous page (SHADER / FX grids only) |
+| **0** | toggle **STAGED** mode — footer pill shows amber `STAGED` (picks wait for **Enter**) vs. green `LIVE` (picks apply immediately). Turning STAGED back off discards anything pending |
+| **Enter** | push all staged picks to the live output |
+| **000** | toggle the temporal trail (works from any screen) |
 
-### SAMPLER and LIVE modes
+Per-tab grid behaviour — **SHADER and FX use tap/hold**, distinguished by how
+long the key is held (see *Numpad layout* → *Tap vs. hold*); the other three
+grids are tap-only and unchanged:
+- **SHADER** — **tap** loads the shader (or unloads it if you tap the
+  currently-loaded one again — there's only ever one active generative).
+  **Hold** opens its params screen, loading it first if it wasn't already
+  active.
+- **SAMPLER** — the 6 clip slots (keys 4–9; assigned in the BROWSER menu
+  page). Tap triggers the clip; tapping the currently-playing clip's key
+  again drills into a **SPEED** params screen (playback speed + reverse)
+  instead of retriggering it.
+- **LIVE** — the 6 preset slots (keys 4–9; assigned in the PRESETS menu
+  page). Always loads immediately — presets are never staged.
+- **FX** — lists FX shaders and doubles as the multi-FX chain editor (see
+  *Parameter editing* → FX below). **Tap** toggles the FX in/out of the chain
+  (up to 4 at once) — adding one also jumps straight to its params screen so
+  you can tune it immediately. **Hold** opens an already-chained FX's params
+  screen *without* touching chain membership — the only way to inspect a
+  different chain member's params without adding or removing anything.
+- **SETTINGS** — six cells (BROWSER / SHADERS / PRESETS / SETTINGS / MIDI /
+  IMPORT) that jump straight into the matching menu page (see *Menu system*).
 
-| Key | Action |
-|---|---|
-| **4–9** | Trigger the clip assigned to that slot (assign in BROWSER menu) |
-| **+** / **−** | Next / previous FX shader applied over the video |
-| **/** | Toggle V-overlay (self-blend echo) |
-| **\*** | Cycle overlay blend mode — many modes available: difference, addition, multiply, screen, negate, subtract, divide, lighten, darken, hardlight, softlight, dodge, burn, phoenix, negation, and more |
+### Tap vs. hold (SHADER and FX grids only)
 
-### SHADER mode
+Release a grid key within ~0.4s and it's a **tap**; keep it held past that
+and it fires as a **hold** instead — the tap action never also fires
+afterwards. Holding always activates the item first if it wasn't already
+(load the shader / add the FX to the chain) and jumps to its params screen;
+it bypasses STAGED mode entirely, since holding to configure something is a
+workshop action, not a performance change. SAMPLER/LIVE/SETTINGS grids don't
+use hold at all — pressing those keys always dispatches immediately,
+regardless of how long you hold them.
 
-| Key | Action |
-|---|---|
-| **4–9** | Load the generative shader assigned to that slot (assign in SHADERS menu) |
-| **Hold /** + **4–9** | Load + trigger the clip at that slot (assign in BROWSER menu), without leaving SHADER mode — change the blended video while the generative stays running |
-| **+** / **−** | Cycle FX shader *stacked on top of* the generative (generative stays loaded) |
-| **/** | Toggle shader blend (composite generative with clip or camera) |
-| **\*** | Cycle shader blend mode — full set: mix, screen, addition, multiply, overlay, hardlight, softlight, dodge, burn, lighten, darken, difference, exclusion, **displace**, subtract, divide, negation, reflect, glow, phoenix, vividlight, linearlight, hardmix, **hue**, **luminosity**, **color** |
+### Record
 
-> Note the pattern: **/** always *toggles* an effect, **\*** always *cycles its
-> mode* — in both mode families.
+Recording is not triggered from the numpad at all — see *Workflows* → *Record*
+and the GPIO table for the one recorder that is actually wired up (BCM 13,
+HDMI output → `.mkv`).
 
 ---
 
 ## Parameter editing
 
-**Bksp** cycles the parameter layers available in the current mode. The active
-layer shows in the SPI top bar (`SHDR` / `FX` / `COLOUR` / `BLEND` chip) and as
-the bars below the header. Key **1** cycles the selection within a layer;
-**2/3** step (or cycle, for the BLEND mode/source slots); knobs and MIDI feed
-the same params.
+Each tab that has tunable parameters shows a second **params** screen — reach
+it via hold (SHADER/FX), by drilling into SPEED (SAMPLER), or by pressing
+that tab's own key again while its grid is showing. Params screens are
+**scrollable lists** (not capped at 9 rows) with two interaction modes:
 
-- **SHADER mode:** SHDR → FX → COLOUR → BLEND → TRAIL
-- **SAMPLER / LIVE mode:** FX → COLOUR → BLEND → TRAIL  (no generative shader → SHDR skipped)
+| Key | Outside edit mode | Inside edit mode |
+|---|---|---|
+| **+** | scroll selection down the list | increase the selected parameter |
+| **Bksp** | scroll selection up the list | decrease the selected parameter |
+| **1–9** | jump to a parameter by its on-screen grid position | *(no effect)* |
+| **Enter** | enter edit mode on the highlighted parameter | exit edit mode |
+| **0** | toggle STAGED / LIVE | toggle STAGED / LIVE |
+| **000** | toggle the temporal trail | toggle the temporal trail |
 
-### Layer SHDR — generative shader params *(SHADER mode only)*
+The header and the selected row turn amber while in edit mode, so it's
+visually obvious whether +/Bksp will move the selection or change a value.
 
-p1–p3 = the generative shader's primary parameters (labels from its source).
-Loading a generative resets them to its authored defaults. p4 (palette) lives
-in the COLOUR layer (see below) so it is always accessible without cycling away
-from the generative.
+### SHADER params — the loaded generative shader's own p1–pN
 
-### Layer FX — the active FX shader's own params
+Labels are read from the shader source. Loading a generative resets its
+params to the authored defaults; knobs and MIDI (CC1–4 family) feed the same
+values. Scrolling means shaders with more than 9 params (currently only
+**starfield**, 15) are now fully reachable — see *Shaders reference*.
 
-Shows the four parameters of the **currently selected FX** (feedback, bitcrush,
-glitch, grain, vhs …), with labels read from the shader source — e.g. glitch =
-`SLICE INTENSITY / UPDATE RATE / CHANNEL CORRUPT / BLOCK DENSITY`. Kept separate
-from the generative's p1–p4, so the FX is tunable even when stacked on a
-generative in SHADER mode. Cycling the FX (`+`/`-`) reloads its defaults.
-Persists in `prefs.json` (`fx_params`).
+### SAMPLER params — FX chain params, speed, and status
 
-### Layer COLOUR — palette and colour adjustments (all modes)
+The SAMPLER tab's params screen shows the clip name, PLAY/OVL/TRL/REC status,
+the active FX chain, and the f1–f4 bars of the FX chain slot currently
+selected for editing (same data as the FX tab, read-only summary — not
+scrollable/editable from here), plus the clip timeline (playhead / IN / OUT
+ticks) at the bottom. Tapping the playing clip's key again on the grid
+screen instead opens a dedicated **SPEED** screen (nudge ±0.1, range
+0.1–4.0, plus a reverse toggle).
 
-All colour controls in one place. Key **1** cycles slots; **2/3** step:
+### FX params — the selected FX chain slot's own f1–f4, plus its blend mode/amount
 
-| Param | Range | Meaning | Visible |
-|---|---|---|---|
-| `PAL` | 0–1 | IQ cosine palette selector for the generative | SHADER mode only |
-| `HUE` | 0–360° | global hue rotation (0 = no shift); wraps. GLSL colour pass | always |
-| `SAT` | 0–2 | global saturation (0 = greyscale, 1 = normal, 2 = vivid) | always |
-| `TRL OPC` | 0–1 | trail blend opacity — how far MODE-type brightening blends are pulled back toward the original (prevents wash-out) | always |
-| `TRL DEC` | 0.80–0.99 | trail persistence in MODE type (0.80 short ghost → 0.99 long tail) | always |
+Up to 4 FX shaders can be chained simultaneously (see the FX tab above).
+Each chain slot keeps independent params *and* its own blend mode/amount —
+how that layer's effect composites with whatever is below it in the stack
+(the previous layer, the generative, or the raw video/camera). The params
+list is: this shader's own f1–f4/f5, then two extra rows:
 
-`PAL` is the generative shader's p4 parameter — it selects the IQ cosine
-palette for plasma, waves, tunnel, voronoi and similar shaders, or acts as a
-hue rotation for flowing_colours, hypnotic_rings, squarewaves, zoom_clouds.
-Note: starfield's P4 is emitter-1 star count — tune starfield palettes via P6/P13
-on the SHDR layer directly. `PAL` only appears in SHADER mode. HUE/SAT apply to the final picture in every mode via a
-GLSL pass (no cost at neutral hue 0°, sat 1.0). All four values persist in
-`prefs.json`.
-
-### Layer BLEND — compositing controls
-
-The full editing surface for the active blend (what `*` quick-cycles). **2/3**
-cycles the mode or steps the amount:
-
-| Mode | Slots |
+| Row | Meaning |
 |---|---|
-| **SHADER** | `MODE` (shader↔video blend, 26 modes incl. displace, hue, luminosity, color), `BLD AMT`, `SRC` (clip/live) |
-| **SAMPLER / LIVE** | `OVL MODE` (21 self-blend modes), `OVL OPC` |
+| `BLEND` | this layer's blend mode against the layer below — the same rich palette as shader-blend (mix, screen, multiply, overlay, …, displace, hue, luminosity, color) plus `NORMAL`, a pure pass-through |
+| `BLD AMT` | that blend's strength, 0–1 |
 
-In SHADER mode the `SRC` slot selects what the generative is composited
-against: `clip` (the looping sampler clip) or `live` (the camera input).
-Blend defaults to `clip`; enabling blend while the camera is not already
-running will not auto-switch to live.
+**`NORMAL` is the default for every layer**, so a freshly-added FX looks
+exactly like a plain effect (no compositing) until you pick a different
+blend mode. The params screen shows whichever slot is currently selected,
+tagged `[slot/total]` when more than one FX is chained. Cycling to a
+different FX in a slot reloads its f-params to their authored defaults but
+leaves that slot's blend mode/amount untouched (the blend belongs to the
+*position* in the stack, not to whichever shader currently occupies it).
+Persists in `prefs.json` / presets as `fx_params_chain` / `fx_blend_chain`.
 
-### Layer TRAIL — temporal echo controls (all modes)
+The very bottom of the stack (FX chain slot 0) only actually blends when
+there's a real clip or camera signal under it — if the sampler hasn't loaded
+anything yet (still on the blank keep-alive source), that layer's blend is
+forced to plain pass-through instead of mixing with a meaningless blank
+frame. In SHADER mode there's always something valid underneath (the
+generative's own output), so this only matters in SAMPLER/LIVE.
 
-All trail parameters in one place. Key **1** cycles slots; **2/3** step:
+### Not currently reachable from the numpad
 
-| Slot | Meaning |
-|---|---|
-| `TRL ON` | trail on/off toggle |
-| `TYPE` | blend type: `MODE` (lagfun ghost) or `OPACITY` (weighted echo mix) |
-| `MODE` | luma blend formula for MODE type (screen, difference, multiply…) |
-| `DELAY` | time to the furthest echo (0.25–8 s) |
-| `ECHOS` | number of delayed echoes in OPACITY type (1–5) |
-| `OPACITY` | trail blend opacity for MODE type (same as `TRL OPC` on COLOUR layer) |
+Global hue/saturation, the shader↔video and overlay blend
+**mode/amount/source** details, and the trail's **type/mode/delay/echo-count**
+are all still fully implemented in `engine/shader.py` / `main.py` and are
+still loaded/saved with presets and `prefs.json` — but no numpad key, grid
+cell, or SPI screen currently exposes them (the old Bksp-cycled
+COLOUR/BLEND/TRAIL layers were dropped when the tab/grid interface replaced
+the old scheme). See *Known issues*. Some of these remain reachable via MIDI
+CC (`blend_amt`, `ovl_opacity`, `trl_decay` are user-assignable targets) or
+via the SETTINGS menu's on/off toggles and FX/GEN cycle rows.
+
+Note: a generative shader's own **palette param (p4)** is *not* in this list
+— it's an ordinary shader parameter, so if the shader's source defines a
+`PARAM_4`, it shows up on the SHADER params screen exactly like p1–p3 (see
+below). It's unrelated to the FX chain's per-layer `BLEND` row above.
 
 ---
 
 ## SPI display
 
-**Top bar (status view):**
-- Row 1: mode name (colour-coded), `TRAIL` chip (green when on),
-  `REC` chip (red while recording, amber while saving), param-layer chip
-  (`SHDR` / `FX` / `COLOUR` / `BLEND` / `TRAIL`), current clip name.
-- Row 2, four columns: generative shader | FX shader | active blend mode | sampler play mode.
-- Below: the four parameter bars of the active layer (selected bar is orange);
-  the SHDR layer adds a `BLD AMT` bar when shader-blending.
-- SAMPLER mode only: clip timeline at the bottom — white tick = playhead,
-  green tick = IN point, amber tick = OUT point, tinted region = active loop.
+**Tab bar** (top 42 px) — always visible: SHADER / SAMPLER / LIVE / FX /
+SETTINGS, the active tab highlighted with a bright top accent bar. When the
+active tab has more than one sub-screen, small dots under its name show which
+one you're on.
+
+**Grid screens** — a 3×3 button grid (see *Numpad layout*): green outline +
+fill for the active/loaded item, amber outline + tint for a staged (pending)
+pick, dim outline for an empty slot.
+
+**Params screens** — horizontal sliders (one per parameter, selected one
+highlighted) above a compact 3×3 selector grid mirroring the same layout;
+both scroll together, windowed around the selection, for lists longer than
+fit on screen. The header and selected row turn amber while in edit mode
+(see *Parameter editing*).
+
+**Footer** (bottom 22 px, every screen) — a pill on the left reading `LIVE`
+(green) or `STAGED` (amber, with an `ENTER → PUSH` hint on the right); the
+mode name is shown on the right when live.
+
+**Menu overlay** — when a menu page (BROWSER/SHADERS/PRESETS/SETTINGS/MIDI/
+IMPORT) is open it replaces the whole screen (tab bar and footer included)
+until you back out of it — see *Menu system*.
 
 There is **no touch input** — all control is numpad / MIDI / GPIO.
 
@@ -214,16 +275,29 @@ There is **no touch input** — all control is numpad / MIDI / GPIO.
 
 ## Menu system
 
-Press **Num** to open/close. Four pages, cycled with **7** (prev) and **9**
-(next; **/** also pages forward).
+Menu pages are reached through the **SETTINGS tab** (key **.**): its grid
+screen has six cells — BROWSER, SHADERS, PRESETS, SETTINGS, MIDI, IMPORT —
+and pressing one jumps straight into that page. (Repeatedly pressing **.**
+also cycles SETTINGS' own sub-screens, which includes the BROWSER and MIDI
+pages directly, without going through the grid.) To back out of a page,
+press **.** again — if you got there via the grid, this closes it back to
+the SETTINGS grid; pressing any *other* tab key also closes the page and
+jumps to that tab.
 
 | Key | Action in menu |
 |---|---|
 | **8 / 2** | selection up / down |
-| **4 / 6** | adjust value (SETTINGS, MIDI pages) |
-| **5** | primary action: load (BROWSER/SHADERS), activate (SETTINGS), edit CC (MIDI) |
-| **Enter** | BROWSER/SHADERS: start slot-assign; elsewhere same as 5 |
-| **Num** | exit menu |
+| **4 / 6** | adjust value (SETTINGS, MIDI, PRESETS pages) |
+| **5** | primary action: load (BROWSER/SHADERS/PRESETS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT) |
+| **Enter** | BROWSER/SHADERS/PRESETS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
+| **7 / 9** | previous / next page (wraps) |
+| **+** | scroll up (alternative to 8) |
+| **Bksp** | scroll down (SETTINGS); reset CC (MIDI); eject (IMPORT); arm/confirm delete (BROWSER, PRESETS) |
+
+While a menu page is open, every setting you change (overlay/blend toggles,
+FX/GEN cycling, params, MIDI CC bindings) applies to the live output
+immediately — only a BROWSER/SHADERS *pick* is deferred until you leave the
+page, so browsing never yanks the current clip or shader out from under you.
 
 ### BROWSER page
 Lists clips from internal `clips/` (plus any video files on drives already
@@ -232,7 +306,7 @@ To pull files off a USB stick, use the **IMPORT page** — drives are mounted on
 demand there and copied into internal storage. `▶` marks the currently playing
 clip. The right column shows the assigned slot key (4–9) for clips that have
 one; for clips from a mounted removable drive it shows a short drive label.
-- **5** — load + trigger the highlighted clip immediately.
+- **5** — stage the highlighted clip; it loads to the live output when you leave the page.
 - **Enter, then a key 4–9** — assign the highlighted clip to that performance
   slot (any other key cancels). A clip can hold only one slot; assigning moves it.
 - **Bksp, then Bksp again** — delete the highlighted clip file. The first press
@@ -241,24 +315,43 @@ one; for clips from a mounted removable drive it shows a short drive label.
   removed from disk and cleared from any slot it held.
 
 ### SHADERS page
-Same as BROWSER but for generative shaders, feeding the SHADER-mode 4–9 keys.
+Lists generative shaders and lets you assign one to a performance slot
+(4–9), same interaction as BROWSER. **Note:** unlike clip and preset slots,
+the SHADER tab's own grid does not currently read this assignment — it just
+paginates every generative shader alphabetically, 9 per page — so slot
+assignments made here are saved but have no effect on what a numpad key
+loads. Use **5** to stage/load a shader here instead if you want a
+deterministic pick.
+
+### PRESETS page
+Lists saved presets (`presets/*.json` — shader + FX + params snapshots).
+- **5** — load the highlighted preset onto the live output immediately (not staged).
+- **6** — save the current live state as a new preset (auto-named `P01.json`, `P02.json`, …).
+- **Enter, then a key 4–9** — assign the highlighted preset to that key (loaded from the LIVE tab's grid).
+- **Bksp, then Bksp again** — delete the highlighted preset file (same arm/confirm pattern as BROWSER).
 
 ### SETTINGS page
 
-The SETTINGS page header shows the Pi's current IP address (useful for SSH when the display is the only UI available).
+The SETTINGS page header shows the Pi's current IP address (useful for SSH when the display is the only UI available). Rows are laid out as a slider grid with three action buttons underneath.
 
 | Row | Description |
 |---|---|
-| MODE | instrument mode (4/6 or 5 cycles) |
-| LIVE MODE | ON/OFF — OFF removes LIVE from the Enter-key cycle |
+| MODE | instrument mode — SAMPLER/SHADER/LIVE (4/6 or 5 cycles) |
+| LIVE MODE | ON/OFF — OFF removes LIVE from the mode cycle |
 | PLAY | sampler playback mode (see *Playback modes*) |
 | CAM RES | camera capture: 320×180 / 640×360 / 1280×720 (applies on next LIVE entry) |
-| OVERLAY | V-overlay on/off toggle (mode and opacity live on Bksp BLEND layer) |
-| BLEND | shader blend on/off toggle (mode, amount, source live on Bksp BLEND layer) |
-| FX / GEN | cycle the active FX / generative shader |
+| VID SCALE | video scaling mode for mismatched aspect ratios |
+| OVERLAY | V-overlay on/off toggle |
+| BLEND | shader blend on/off toggle |
+| FX | cycle the FX chain's currently-edited slot to the next/previous FX shader |
+| GEN | cycle the active generative shader |
 | SAVE PREFS | write current state to `prefs.json` now |
 | RESTART | restart the application |
 | SYSTEM | quit the application (a Pi poweroff would need root; the service can't escalate) |
+
+Note: this page has on/off toggles for OVERLAY and BLEND, and cycle actions
+for FX/GEN, but no rows for their mode/amount/source/palette/hue/sat details
+— see *Parameter editing* → "Not currently reachable from the numpad".
 
 ### MIDI page
 Per-target CC overrides. Defaults shown in brackets `[64]`; user overrides
@@ -286,95 +379,118 @@ shows `RUN install-usb-import.sh`.
 
 ## Workflows
 
-### Loop a section of a clip
-1. SAMPLER mode, trigger the clip (4–9) or load it from BROWSER.
-2. Press **0** at the loop start → green IN tick.
-3. Press **0** again at the loop end → amber OUT tick. The clip now loops IN→OUT.
-4. Press **0** a third time to clear both points.
-
 ### Build a performance set
-1. **Num** → BROWSER. Highlight a clip, **Enter**, then press the slot key (4–9).
-2. Repeat for up to six clips; **9** to the SHADERS page and assign generative
-   shaders to slots the same way.
-3. **Num** to exit. 4–9 now fire clips in SAMPLER/LIVE and shaders in SHADER mode.
-4. SETTINGS → SAVE PREFS to keep the assignments across restarts.
+1. Press **.** (SETTINGS tab) → tap the **BROWSER** cell. Highlight a clip,
+   press **Enter**, then press the slot key (4–9) to assign it.
+2. Repeat for up to six clips; press **9** to page forward to **PRESETS** and
+   assign saved look snapshots to slots the same way — these two (clips,
+   presets) are true slot assignments. (SHADERS also lets you assign a
+   generative shader to a slot, but nothing currently reads that assignment
+   back — see the SHADERS page note above; use its own **5** to stage/load
+   a shader by hand instead.)
+3. Press **.** to back out to the SETTINGS grid, or another tab key to leave
+   the menu entirely. The SAMPLER tab's grid now fires clips at keys 4–9 and
+   the LIVE tab's grid fires presets at keys 4–9.
+4. SETTINGS page → **SAVE PREFS** to keep the assignments across restarts.
 
 ### Auto-playing set (playlist)
 1. Assign clips to slots (above).
-2. SETTINGS → PLAY → `playlist`. Clips now chain automatically in slot order
-   (4→5→…→9→4), advancing at each clip's end or OUT point.
+2. SETTINGS page → **PLAY** row → `playlist`. Clips now chain automatically
+   in slot order (4→5→…→9→4), advancing at each clip's end or OUT point.
 
-### FX over video
-1. SAMPLER or LIVE mode. **+ / −** cycles FX shaders (vhs, glitch, bitcrush…).
-2. Key **1** to select p1–p4, **2/3** to tweak — labels on the SPI display
-   match the effect (e.g. `CHROMA SHIFT` for vhs).
+### Chain multiple FX over the video
+1. Press **-** (FX tab). Tap an FX cell to add it to the chain (up to 4 at
+   once) — its cell gets a `[n]` badge showing its position, and you land
+   straight on its params screen to start tuning it. Tap it again (from the
+   grid) to remove it from the chain.
+2. To check or adjust a *different* chain member without disturbing the
+   others, **hold** its key instead of tapping — that opens its params
+   without adding/removing anything.
+3. On an FX's params screen: scroll with **+ / Bksp**, jump to a row with
+   **1–9**, press **Enter** to edit the highlighted row, then **+ / Bksp** to
+   step its value, **Enter** again to stop editing. The last two rows —
+   `BLEND` and `BLD AMT` — set how this layer composites with whatever's
+   below it (default `NORMAL` = plain pass-through, no compositing).
+4. The chain applies in SAMPLER, LIVE, *and* on top of a loaded generative
+   shader in SHADER mode — it isn't mode-specific.
 
-### Generative + FX stack
-1. Enter SHADER mode (**Enter**). Load a generative shader (4–9 or SHADERS menu).
-2. **+ / −** stacks an FX shader on top; p1–p3 keep tuning the *generative* layer.
-3. Re-entering SHADER mode clears the stack (generative alone).
+### Layer FX with blend modes (Photoshop-style stacking)
+1. Chain 2+ FX as above. Each one defaults to `NORMAL` blend (just its own
+   effect, no interaction with the layers below).
+2. Hold a chained FX's key to open its params, scroll to `BLEND`, press
+   **Enter**, then **+ / Bksp** to pick a mode (screen, multiply, overlay,
+   difference, displace, hue/luminosity/color, …). Scroll to `BLD AMT` to
+   dial the strength back from full (1.0) toward invisible (0.0).
+3. Chain-slot 0 (the bottom of the FX stack) only blends when there's a real
+   clip or camera loaded beneath it — otherwise it's forced to plain
+   pass-through so it never mixes with the blank keep-alive picture.
 
-### Blend a generative shader with video
-1. In SHADER mode press **/** — blend on. The shader composites with the clip
-   (default) or the live camera (BLEND layer → `SRC` → `live`).
-2. **\*** cycles the blend formula; `BLD AMT` (BLEND layer) sets the mix.
-3. FX shaders can be stacked on top of a blend with **+ / −** — the pipeline
-   is generative → blend → FX, all three live simultaneously.
+### Load a generative shader
+1. Press **Num** (SHADER tab). Tap a shader cell to load it live (or stage
+   it first with **0**, then **Enter** to push) — tap the loaded one again
+   to unload it.
+2. **Hold** a shader's key to jump straight to its params screen (loading it
+   first if it wasn't already active). Scroll with **+ / Bksp**, jump with
+   **1–9**, **Enter** to edit a row, **+ / Bksp** to step its value.
+3. Chain FX on top of it via the FX tab (above) — the pipeline is
+   generative → (blend, if on) → FX chain → colour.
 
-### Record live camera to a clip
-1. Enter LIVE mode (camera must be running).
-2. **Hold numpad 0, tap `.`** — `REC` appears in the display top bar (red chip).
-3. **Hold numpad 0, tap `.` again** — recording stops. The display shows `SAV`
-   (amber) while ffmpeg remuxes in the background; chip clears when done.
-4. The saved file appears in `clips/` as `rec_YYYYMMDD_HHMMSS.mp4` and is
-   immediately available in the BROWSER for use in SAMPLER mode.
+### Record
+
+Two independent recorders exist in the codebase, with two different outputs:
+
+- **HDMI output → `.mkv`** (`engine/mixer.py`, kmsgrab-based): wired to the
+  **REC** GPIO button (BCM 13 — see *GPIO*), which is live today.
+- **Live camera → clip `.mp4`** (`engine/recorder.py`, `inst.record_toggle()`,
+  the mpv-stream-record + ffmpeg-remux path the SAMPLER/LIVE tab's `REC`/`SAV`
+  status chip is built to show): currently has **no live trigger** — the
+  keyboard, GPIO, MIDI, and menu layers never call `record_toggle()`. See
+  *Known issues*.
 
 ### Echo trail
-1. Press **.** (or **000**) in any mode to toggle the trail on/off.
-2. **Bksp** to the **TRAIL** layer to access all trail controls. Key **1** cycles slots, **2/3** adjust:
-   - **TRL ON** — same toggle as the `.` key.
-   - **TYPE** — selects how the echo is rendered:
-     - **MODE** — one continuous ghost blended on the luma plane using lagfun decay. `TRAIL MODE` picks the blend formula; `TRL DEC` (COLOUR layer) sets persistence. Brightening modes (`screen`, `addition`, `multiply`, `overlay`) are tamed toward the original (`TRL OPC`) so they don't wash out.
-     - **OPACITY** — a weighted average of the live frame plus 1–5 progressively-delayed echoes. Echoes fall behind motion (no pre-echo); static areas stay sharp. Never washes out.
-   - **MODE** — luma blend formula (MODE type only): `screen` brightens, `difference` shows motion, `subtract` darkens, `phoenix` shows similarity. Full set: screen, difference, multiply, overlay, addition, subtract, lighten, darken, phoenix, negation, divide.
-   - **DELAY** — time to the furthest echo (0.25–8 s).
-   - **ECHOS** — number of echoes in OPACITY type (1–5, shown as hex `1`–`5`).
-   - **OPACITY** — blend strength for MODE type (same as `TRL OPC` on COLOUR layer).
-3. `TRL DEC` on the **COLOUR** layer controls lagfun fade persistence in MODE type (0.80–0.99; 0.80 = short ghost, 0.99 = long tail).
-4. The OPACITY-type echo weights are `trail_step_weights` in `prefs.json` (default `[1.0, 0.9, 0.8, 0.7, 0.6, 0.5]`, live first); raise echo weights for a stronger trail.
+Press **000** (works from any screen) to toggle the trail on/off — this is
+currently the *only* trail control reachable from the numpad. The trail's
+type/mode/delay/echo-count and the global hue/saturation and blend
+mode/amount/source details are still fully implemented (and still saved in
+`prefs.json` and presets) but have no live control surface right now besides
+MIDI CC (`blend_amt`, `ovl_opacity`, `trl_decay`) — see *Known issues*.
 
 ### Map a MIDI controller
 1. Plug in — connects automatically within 3 s.
 2. Defaults work for most controllers (mod wheel = p1, etc. — see *MIDI reference*).
-3. To rebind: **Num** → MIDI page → highlight target → **5** → type the CC
-   number → **Enter**. User overrides win over built-ins.
+3. To rebind: **.** (SETTINGS tab) → **MIDI** cell → highlight target → **5**
+   → type the CC number → **Enter**. User overrides win over built-ins.
 
 ### Keep your setup
 Everything important (slots, effect states, modes, MIDI overrides, params) is
-written to `prefs.json` on clean shutdown, or on demand with SETTINGS → SAVE
-PREFS. Prefer SAVE PREFS after big changes — a power-cut skips the auto-save.
+written to `prefs.json` on clean shutdown, or on demand with SETTINGS page →
+**SAVE PREFS**. Prefer SAVE PREFS after big changes — a power-cut skips the
+auto-save.
 
 ---
 
 ## Effects reference
 
-### Trail — echo time delay (`000` / `.`)
-Works in all three modes. Two types selectable via SETTINGS → TRAIL TYPE:
+### Trail — echo time delay (`000`)
+Works in all three modes; **000** is currently the only numpad control for it
+(on/off only — see *Known issues*). Two underlying types exist in
+`prefs.json`/presets (`trail_blend_type`), though neither the numpad nor the
+SETTINGS menu currently expose a way to switch between them live:
 
 **MODE** — `split → tpad(delay) → lagfun(decay) → blend` on the luma plane
 only (chroma passed through — no colour shifts). One continuous fading ghost.
 Blend modes: screen, difference, multiply, overlay, addition, subtract, lighten,
-darken, phoenix, negation, divide. Decay 0.80–0.99 via `TRL DEC`; delay via
-`trail_delay_s` in `prefs.json`.
+darken, phoenix, negation, divide. Decay (`trail_decay`, 0.80–0.99) and blend
+mode (`trail_mode`) live in `prefs.json`/presets only right now.
 
 **OPACITY** — `split → N×tpad(step×1…N) → mix=inputs=N+1:weights=…`.
 A weighted average of the live frame plus N progressively-delayed past echoes
-(N = `trail_echo_count`, 1–5; set on the Bksp TRAIL layer), spaced
-`delay/N` apart (tail ≈1.7× the delay window). `mix` normalises by the weight
-sum, so brightness is preserved and identical static regions stay sharp —
-only moving content ghosts (no wash-out, no pre-echo).
-Layer weights tunable as `trail_step_weights` in `prefs.json` (live first,
-then N echoes); TRAIL MODE and `TRL DEC` have no effect in this type.
+(N = `trail_echo_count`, 1–5), spaced `delay/N` apart (tail ≈1.7× the delay
+window). `mix` normalises by the weight sum, so brightness is preserved and
+identical static regions stay sharp — only moving content ghosts (no
+wash-out, no pre-echo). Layer weights tunable as `trail_step_weights` in
+`prefs.json` (live first, then N echoes); `trail_mode`/`trail_decay` have no
+effect in this type.
 
 **In SHADER mode the trail is unavailable.** The lavfi trail runs in the vf
 chain *before* the generative shader, which renders over it, so it never shows.
@@ -384,7 +500,7 @@ textures between frames (verified with controlled render tests), so it cannot
 be done on this hardware. Toggling the trail in SHADER mode shows
 `TRAIL N/A IN SHADER` and does nothing. The trail is a SAMPLER / LIVE feature.
 
-### V-overlay — self-blend (`/` in SAMPLER/LIVE)
+### V-overlay — self-blend (SAMPLER/LIVE)
 `split → blend` of the current frame with itself on the luma plane (chroma
 passes through clean). A stylising blend — e.g. `screen` brightens, `multiply`
 darkens — with **no time delay** (temporal echoes are the trail's job now).
@@ -392,9 +508,11 @@ darkens — with **no time delay** (temporal echoes are the trail's job now).
 screen, negate, subtract, divide, lighten, darken, hardlight, softlight, dodge,
 burn, phoenix, negation, vividlight, linearlight, pinlight, hardmix,
 grainmerge, grainextract (`difference` self-blends to black).
-Blocked in SHADER mode (the shader pipeline owns the picture).
+Blocked in SHADER mode (the shader pipeline owns the picture). Toggle via the
+SETTINGS menu's OVERLAY row or MIDI (`overlay_toggle`/`overlay_cycle`) — see
+*Known issues*.
 
-### Shader blend (`/` in SHADER)
+### Shader blend (SHADER mode)
 Two-pass GLSL composite: the generative output is saved (`//!SAVE gen_out`)
 and a second hook composites it with the video, scaled by `BLD AMT`.
 
@@ -411,7 +529,10 @@ hue/saturation; `color` — takes the shader's hue and saturation, video's value
 the video like textured glass (`BLD AMT` scales the warp, ±~95 px).
 
 The punchy ones (hardlight, overlay, vividlight, dodge/burn, displace) read far
-stronger than the gentle screen/multiply.
+stronger than the gentle screen/multiply. Toggle via the SETTINGS menu's
+BLEND row or MIDI (`shader_blend_toggle`/`shader_blend_cycle`); the blend
+mode/amount/source are not currently reachable from the numpad — see
+*Known issues*.
 
 ---
 
@@ -425,6 +546,11 @@ stronger than the gentle screen/multiply.
 | **random** | loads a random clip from the clips directory at each clip's end |
 | **fixed** | identical to `loop` (kept for r_e_c_u_r compatibility) |
 | **randstart** | at each clip end, seeks to a random point in the first 80% and continues |
+
+`engine/sampler.py`'s `set_in()`/`set_out()` back the IN/OUT points referenced
+above and in the clip timeline, but nothing in the current numpad, menu, MIDI,
+or GPIO control paths calls them — see *Known issues*. Until that's wired up,
+IN/OUT stay at the clip's full length.
 
 ---
 
@@ -461,11 +587,13 @@ no corner clips to black at any rotation angle.
 
 ### Generative shaders (SHADER mode)
 
-P4 (palette) is edited in the **COLOUR layer** (`PAL` slot) for shaders that
-use the IQ cosine palette system (plasma, waves, tunnel, voronoi, starfield
-emitters). Shaders with their own per-channel colouring (flowing_colours,
-hypnotic_rings, squarewaves, zoom_clouds, kaleidoscope) use P4 as a hue
-rotation instead — still accessible via `PAL` in the COLOUR layer.
+P4 (palette) selects the IQ cosine palette for shaders that use that system
+(plasma, waves, tunnel, voronoi, starfield emitters). Shaders with their own
+per-channel colouring (flowing_colours, hypnotic_rings, squarewaves,
+zoom_clouds, kaleidoscope) use P4 as a hue rotation instead. It's edited the
+same way as p1–p3: on the SHADER tab's params screen (labels/params are
+parsed straight from the shader source, so anything with a `PARAM_4` define
+just shows up there — there's no separate `PAL` slot any more).
 
 | Shader | P1 | P2 | P3 | P4 |
 |---|---|---|---|---|
@@ -480,7 +608,11 @@ rotation instead — still accessible via `PAL` in the COLOUR layer.
 | **zoom_clouds** | speed | detail | warp | hue |
 
 **starfield** has two independent warp-speed emitters, each with full per-emitter
-controls (15 params total — edited on the SHDR layer with key **1** to scroll):
+controls (15 params total). The SHADER params screen scrolls (see *Parameter
+editing*), so all 15 are reachable: **1–9** still jumps straight to p1–p9,
+and **+ / Bksp** scroll on to p10–p15 (emitter 2's Y position, star count,
+trail, palette, opacity, and the global zoom). Knobs and MIDI still only
+reach p1–p4 either way.
 
 | Param | Emitter 1 | Emitter 2 |
 |---|---|---|
@@ -493,9 +625,9 @@ controls (15 params total — edited on the SHDR layer with key **1** to scroll)
 | opacity | P7 | P14 |
 | (global) zoom | P15 | — |
 
-Note: starfield's per-emitter palette (P6/P13) is independent — the `PAL`
-slot in the COLOUR layer maps to P4 (emitter 1 star count), not palette.
-Use the SHDR layer directly to tune starfield palettes.
+Note: starfield's per-emitter palettes (P6, P13) are independent of each
+other and of every other shader's p4 — there is no shared palette concept
+any more (see the p4 note above).
 
 **Adding your own shaders:** drop a `.glsl` file into `shaders/` and restart.
 The app classifies it automatically by reading its `//!DESC` line — include
@@ -540,7 +672,7 @@ work unconfigured:
 | 65 | cycle overlay mode (value > 63 = forward, ≤ 63 = back) |
 | 66 | toggle shader blend |
 | 67 | cycle shader blend mode |
-| 68 / 69 | FX next / prev (stacks in SHADER mode) |
+| 68 / 69 | FX next / prev — cycles the currently-edited FX chain slot (same chain used in SAMPLER/LIVE and stacked on a generative in SHADER mode) |
 | 80 / 82 / 83 | mode SAMPLER / SHADER / LIVE |
 | 81 | toggle trail |
 
@@ -582,8 +714,51 @@ clip slot `note % 10` (only 4–9 are real slots).
   restart. USB/removable drives are re-scanned when the BROWSER page is opened.
 - **CAM RES** applies on the next entry into LIVE mode.
 - **`fixed` play mode is an alias of `loop`** — no distinct behaviour.
-- **Speed/reverse API exists but is unbound** — `set_speed`/`reverse` in the
-  sampler have no key, MIDI, or GPIO binding.
 - **Recording is untested end-to-end** — the kmsgrab pipeline and service
   capability are in place but haven't been verified with a real capture yet;
   check `/tmp/ffmpeg-rec.err` on first use.
+
+### Gaps introduced by the tab/grid interface (`recur-newgui`)
+
+The numpad's interaction model was rewritten from a single always-live
+perform surface into the tab/grid/params system this manual now describes.
+A few things the old scheme (and its docstrings/comments) still describe
+were not carried over to the new one — they remain fully implemented
+elsewhere (engine code, `prefs.json`/preset fields, MIDI) but currently have
+no live control path from the numpad:
+
+- **No numpad key switches the instrument's SAMPLER/SHADER/LIVE mode.** The
+  top-row keys only pick which *display tab* is showing. Mode changes only
+  via the GPIO mode button (BCM 5), MIDI (CC 80/82/83, notes 120/122/123),
+  the SETTINGS menu's `MODE` row, or loading a preset that specifies one.
+- **COLOUR / BLEND / TRAIL "layers" are unreachable.** `KeyboardController`
+  still has all the stepping logic for hue, saturation, trail
+  opacity/decay/delay/echo-count/type/mode, and shader/overlay blend
+  mode/amount/source (`control/keyboard.py` `_step_param`, layers 2–4), but
+  nothing ever selects those layers any more (no key sets `_param_layer` to
+  2, 3, or 4) and no SPI screen renders them. Only the plain on/off toggles
+  (SETTINGS menu's OVERLAY/BLEND rows, `000` for trail) and a few MIDI CC
+  targets (`blend_amt`, `ovl_opacity`, `trl_decay`) still work.
+- **IN/OUT clip points can't be set.** `SamplerEngine.set_in()`/`set_out()`
+  are fully implemented and the clip timeline still draws them, but no key,
+  menu action, MIDI CC, or GPIO button calls them.
+- **Camera→clip recording (`inst.record_toggle()`) has no trigger.** The
+  SAMPLER/LIVE tab's `REC`/`SAV` status chip is built to show it, but the
+  keyboard/GPIO/MIDI/menu layers never call it — don't confuse it with the
+  GPIO REC button (BCM 13), which drives the separate HDMI kmsgrab recorder.
+- **The old hold-0-tap-`.` / hold-`/`-plus-slot combos are gone** — those
+  specific bindings (from the pre-`recur-newgui` scheme) no longer exist.
+  Hold-to-configure now exists again, but only on the SHADER and FX grids
+  (see *Numpad layout* → *Tap vs. hold*); it's a from-scratch mechanism
+  (`control/keyboard.py` `_on_key_down`/`_on_key_up`/`_fire_hold`, a
+  `threading.Timer` per keypress), not a revival of the old combos.
+- **`cfg.shader_slots` (SHADERS menu page slot assignment) is vestigial.**
+  The SHADER tab's grid doesn't consult it — it just paginates every
+  generative shader alphabetically, 9 per page. Only clip slots
+  (`clip_slots`, SAMPLER tab) and preset slots (`preset_slots`, LIVE tab)
+  are true persistent per-key assignments today.
+- **OSD toast messages are silent.** `control/osd.py`'s `show()` only logs
+  at debug level — the many `inst.osd.show(...)` calls throughout the
+  codebase (staged-pick confirmations, param names, etc.) produce no visible
+  feedback; all status now has to come from the persistent tab/grid/params
+  screens.

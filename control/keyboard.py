@@ -15,58 +15,44 @@ Layout (17-cell, 19-key with double-tall Enter):
    │  0   │ 000  │  .   │      │
    └──────┴──────┴──────┴──────┘
 
-PERFORM mode (SAMPLER):
-  Num     switch to MENU mode
-  4-9     trigger the clip assigned to that slot (assigned in BROWSER menu)
-  /       toggle V overlay
-  *       cycle overlay blend mode
-  -       previous FX shader
-  +       next FX shader
-  Enter   cycle instrument mode (SAMPLER -> SHADER -> LIVE)
-  Bksp    cycle param layer: FX -> COLOUR -> BLEND -> TRAIL -> FX (see below)
-  1       cycle the selected slot within the current param layer
-  2       selected slot -= step
-  3       selected slot += step
-  0       set IN point (1st press) / OUT point (2nd press) / clear (3rd press)
-  000     toggle temporal trail  (dedicated key — may be dead on some units)
-  .       toggle temporal trail  (use this if 000 key is unresponsive)
-  hold 0 + .     record toggle
-  hold 0 + 4-9   load the preset assigned to that slot (PRESETS menu)
+Top row (Num / / / * / - / .) always selects a display tab: SHADER, SAMPLER,
+LIVE, FX, SETTINGS — in every context, even over an open menu page. Pressing
+the key of the tab you're already on cycles that tab's sub-screens (a 3x3
+slot GRID, then a PARAMS screen for tabs that have one).
 
-PERFORM mode (LIVE):
-  Same as SAMPLER except 4-9 — there's no clip to trigger while the camera
-  is the source, so plain 4-9 loads the preset assigned to that slot
-  (PRESETS menu), same as hold-0+4-9 does in the other modes.
+Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
+  SHADER grid — tap: load/unload the one active generative shader (tap the
+                loaded one again to unload). Hold: open its params screen,
+                loading it first if it wasn't already active.
+  FX grid     — tap: toggle the FX in/out of the chain (up to 4 at once);
+                adding one also jumps straight to its params screen. Hold:
+                open an already-chained FX's params screen without touching
+                chain membership (needed to view a different chain member's
+                params without adding/removing anything).
+  SAMPLER/LIVE/SETTINGS grids — unchanged: tap triggers a clip/preset or
+                opens a menu page; pressing the already-playing clip's key
+                opens a SPEED params screen instead.
+  0           — toggle STAGED (amber, picks wait for Enter) vs LIVE (green,
+                picks apply immediately)
+  Enter       — push staged picks
+  +/Bksp      — page the SHADER/FX grid (9 items per page)
+  000         — toggle the temporal trail (any screen)
 
-PERFORM mode (SHADER):
-  4-9     load the generative shader assigned to that slot (SHADERS menu)
-  -       previous FX shader (stacked on top of generative)
-  +       next FX shader (stacked on top of generative)
-  /       toggle shader blend (generative ↔ generative+clip)
-  *       cycle shader blend mode
-  0       next generative shader (no real clip to mark in/out on here)
-  Bksp    cycle param layer: SHDR -> FX -> COLOUR -> BLEND -> TRAIL -> SHDR
-  1       cycle the selected slot within the current param layer
-  2       selected slot -= step
-  3       selected slot += step
-  hold 0 + .     record toggle
-  hold 0 + 4-9   load the preset assigned to that slot (PRESETS menu)
-  hold / + 4-9   load + trigger the clip assigned to that slot (BROWSER),
-                 without leaving SHADER mode — useful for changing the video
-                 source while blend is active
+Params screens (reached via hold, or by pressing an already-open tab's key
+again):
+  +/Bksp      — scroll the highlighted parameter up/down the list (not in
+                edit mode)
+  1-9         — jump to a parameter by its on-screen grid position
+  Enter       — toggle edit mode on the highlighted parameter
+  +/Bksp (in edit mode) — step that parameter's value down/up
+  Enter (in edit mode)  — exit edit mode, back to scrolling the list
+  On the FX params screen, the layer's own f-params are followed by two
+  extra rows: BLEND (its blend mode against whatever is below it in the
+  stack) and BLD AMT (that blend's strength).
 
-Param layers (Bksp cycles through whichever are available in the current
-mode — SHDR only exists in SHADER mode; see _PARAM_LAYERS below):
-  SHDR    the active generative shader's own params (SHADER mode only)
-  FX      the active FX shader's own params f1-f4
-  COLOUR  hue / saturation / trail decay
-  BLEND   compositing: shader<->video blend amount+mode+source (SHADER) or
-          overlay blend mode+opacity (SAMPLER/LIVE)
-  TRAIL   temporal echo: on/off, blend type, blend mode, delay, opacity
-
-MENU mode: Num Lock toggles the navigable menu on the SPI display; while it
-is active every key routes to `self.inst.menu.handle()` and none reach the
-perform handlers (see control/menu.py for the bindings).
+MENU mode: reached via the SETTINGS tab; while a menu page is open every key
+routes to `self.inst.menu.handle()` and none reach the perform handlers
+(see control/menu.py for the bindings).
 
 Note: the dedicated '000' key sends KEY_KP000 (or KEY_KP00) and is mapped
 directly. The triple-KP0 coalescing below is a fallback for numpads that
@@ -118,19 +104,28 @@ TRIPLE_ZERO_WINDOW = 0.15   # seconds
 PARAM_STEP = 0.05
 SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 
+# How long a grid key must be held before it's treated as a hold rather than
+# a tap (SHADER/FX grids only — see _HOLD_TABS).
+HOLD_THRESHOLD = 0.4   # seconds
+_HOLD_TABS = (0, 3)    # SHADER, FX — the only grids with tap/hold semantics
+
 # Numpad key → grid position (top-left=0 … bottom-right=8), matching display layout:
 #   7 8 9   →   0 1 2
 #   4 5 6   →   3 4 5
 #   1 2 3   →   6 7 8
 _GRID_KEY_TO_POS = {7: 0, 8: 1, 9: 2, 4: 3, 5: 4, 6: 5, 1: 6, 2: 7, 3: 8}
 
-# Param layers (indices). BKSP cycles the ones available in the current mode:
-#   0 SHDR    generative shader params p1–p3              (SHADER mode only)
-#   1 FX      the active FX shader's own params f1–f4
+# Param "layers" (indices) a params screen can show. Reached directly by tab/
+# grid navigation now (see module docstring) rather than by cycling a key:
+#   0 SHDR    generative shader params p1–p9               (SHADER tab)
+#   1 FX      the edited FX chain slot's own f-params + its blend mode/amount (FX tab)
 #   2 COLOUR  palette (p4, SHADER only) + hue / sat / trail opacity / trail decay
+#             — currently unreachable, no key/grid selects this layer (see MANUAL.md)
 #   3 BLEND   compositing — shader↔video blend (SHADER) or overlay (SAMPLER/LIVE)
+#             — currently unreachable, no key/grid selects this layer (see MANUAL.md)
 #   4 TRAIL   temporal echo — on/off, blend type, mode, delay, opacity
-#   5 SPEED   sampler playback speed + direction
+#             — currently unreachable, no key/grid selects this layer (see MANUAL.md)
+#   5 SPEED   sampler playback speed + direction (SAMPLER tab, drill into the playing clip)
 _PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL", "SPEED")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
 _COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_opc": "TRL OPC", "trl_decay": "TRL DEC"}
@@ -146,8 +141,12 @@ class KeyboardController:
         self._thread= None
         self.dev    = None
 
-        self._param_layer = 0
-        self._param_idx   = 0
+        self._param_layer   = 0
+        self._param_idx     = 0
+        self._editing_param = False   # True while Enter has "entered" the highlighted param
+
+        # Hold-vs-tap detection for the SHADER/FX grids (see _on_key_down).
+        self._hold_timers = {}   # key name -> pending threading.Timer
 
     # ------------------------------------------------------------- lifecycle
     def start(self):
@@ -208,11 +207,12 @@ class KeyboardController:
                     if name is None:
                         continue
 
-                    # Key-down only.
-                    if key.keystate != key.key_down:
-                        continue
-
-                    self._dispatch(name)
+                    if key.keystate == key.key_down:
+                        self._on_key_down(name)
+                    elif key.keystate == key.key_up:
+                        self._on_key_up(name)
+                    # key.key_hold (OS auto-repeat while held) is ignored —
+                    # hold detection uses our own timer, not repeat events.
 
             except OSError as e:
                 log.warning("numpad disconnected (%s) — will reconnect", e)
@@ -223,10 +223,51 @@ class KeyboardController:
                 self.dev = None
                 time.sleep(1)   # brief pause before scanning for reconnect
 
+    # --------------------------------------------------------- hold vs tap
+    def _on_key_down(self, name):
+        """Grid-cell keys (1-9) on the SHADER/FX grids get a hold timer so a
+        long-press can be distinguished from a tap (see module docstring).
+        Every other key/context dispatches immediately, unchanged."""
+        inst  = self.inst
+        _disp = getattr(inst, "display", None)
+        uses_hold = (name in ("1", "2", "3", "4", "5", "6", "7", "8", "9")
+                     and not inst.menu.active
+                     and _disp is not None
+                     and _disp.is_grid_screen()
+                     and _disp._active_tab in _HOLD_TABS)
+        if uses_hold:
+            timer = threading.Timer(HOLD_THRESHOLD, self._fire_hold, args=(name,))
+            timer.daemon = True
+            self._hold_timers[name] = timer
+            timer.start()
+        else:
+            self._dispatch(name)
+
+    def _on_key_up(self, name):
+        """If a hold timer is still pending for this key, the key was
+        released before the threshold — treat it as a tap. If no timer is
+        pending, either this key never used hold tracking (already
+        dispatched on key-down) or the hold already fired — nothing to do."""
+        timer = self._hold_timers.pop(name, None)
+        if timer is not None:
+            timer.cancel()
+            self._dispatch(name)
+
+    def _fire_hold(self, name):
+        self._hold_timers.pop(name, None)
+        _disp = getattr(self.inst, "display", None)
+        if _disp is not None:
+            self._grid_hold(name, _disp)
+
     # ------------------------------------------------------------- dispatch
     def _dispatch(self, name):
         # Top-row keys always select display tabs.
         _disp = getattr(self.inst, "display", None)
+        if name in ("NUM", "/", "*", "-", "."):
+            # Any tab-bar keypress leaves behind a fresh (non-editing) params
+            # screen so you never land back on a stale edit-mode from a
+            # different context.
+            self._editing_param = False
         if name == "NUM":
             if _disp:
                 _disp.set_tab(0)   # SHADER
@@ -289,21 +330,18 @@ class KeyboardController:
 
     # --------------------------------------------------------- grid selection
     def _grid_select(self, key, _disp):
-        """Handle a 1-9 keypress on a grid first-screen.
+        """Handle a tap (1-9) on a grid first-screen.
 
         Keys map to slot numbers directly (key "7" → slot 7, displayed top-left).
-
-        Behaviour:
-          • Pressing the key of the CURRENTLY ACTIVE item → drill into params screen.
-          • LIVE mode: load immediately (no staging for presets).
-          • STAGED mode: stage the slot (show amber) — ENTER pushes to output.
-          • LIVE mode: load immediately.
+        SHADER/FX grids use tap-to-toggle semantics (see module docstring);
+        SAMPLER/LIVE/SETTINGS grids keep their original load/trigger/open
+        behaviour, unaffected by hold detection.
         """
         slot = int(key)
         inst = self.inst
         tab  = _disp._active_tab
 
-        if tab == 0:   # SHADER_GRID: load generative shader from current page
+        if tab == 0:   # SHADER_GRID: tap loads/unloads the one active generative shader
             from control.display import _GRID_SLOTS as _GS
             try:
                 pos = _GS.index(slot)
@@ -313,10 +351,17 @@ class KeyboardController:
             idx     = _disp._shader_grid_offset + pos
             if idx >= len(sh_list):
                 return
-            sname = sh_list[idx]
-            if sname == (inst.cfg.current_shader or "") or sname == (_disp._grid_pending[0] or ""):
-                _disp.go_to_params_screen()
-                inst.osd.show("PARAMS")
+            sname   = sh_list[idx]
+            cur     = inst.cfg.current_shader or ""
+            pending = _disp._grid_pending[0]
+            if sname == cur or sname == pending:
+                # Tap the active/staged shader again -> unload / un-stage it
+                if pending == sname:
+                    _disp._grid_pending[0] = None
+                    inst.osd.show("UNSTAGED")
+                else:
+                    inst.shader.load(None)
+                    inst.osd.show("SHADER: —")
                 return
             if _disp._staged:
                 _disp._grid_pending[0] = sname
@@ -326,37 +371,30 @@ class KeyboardController:
                 inst.osd.show(f"SHADER: {sname.replace('.glsl','').upper()}")
             return
 
-        if tab == 3:   # FX_GRID: toggle FX in the chain
+        if tab == 3:   # FX_GRID: tap toggles chain membership
             from control.display import _GRID_SLOTS as _GS
             try:
                 pos = _GS.index(slot)
             except ValueError:
                 return
             fx_list = inst.shader.list_shaders(kind="fx")
-            offset  = _disp._fx_grid_offset
-            idx     = offset + pos
-            if idx < len(fx_list):
-                name_fx  = fx_list[idx]
-                fx_chain = inst.cfg.fx_chain
-                if name_fx in fx_chain:
-                    chain_pos = fx_chain.index(name_fx)
-                    if inst.cfg.fx_edit_slot == chain_pos:
-                        # Second press on the selected chain slot → drill into params
-                        self._param_layer = 1
-                        self._param_idx   = 0
-                        _disp.go_to_params_screen()
-                        inst.osd.show("FX PARAMS")
-                        return
-                    # Different slot already in chain → select it for editing
-                    inst.cfg.fx_edit_slot = chain_pos
-                    inst.cfg._sync_fx_compat()
-                    inst.osd.show(f"FX [{chain_pos+1}]: {name_fx.replace('.glsl','').upper()}")
-                else:
-                    # Not in chain → add (toggle)
-                    inst.shader.fx_chain_toggle(name_fx)
-                    chain_str = " > ".join(f.replace(".glsl","").upper()
-                                           for f in inst.cfg.fx_chain) if inst.cfg.fx_chain else "—"
-                    inst.osd.show(f"FX: {chain_str}")
+            idx     = _disp._fx_grid_offset + pos
+            if idx >= len(fx_list):
+                return
+            name_fx      = fx_list[idx]
+            was_in_chain = name_fx in inst.cfg.fx_chain
+            inst.shader.fx_chain_toggle(name_fx)
+            chain_str = " > ".join(f.replace(".glsl","").upper()
+                                   for f in inst.cfg.fx_chain) if inst.cfg.fx_chain else "—"
+            if not was_in_chain:
+                # Just added -> jump straight to its params so it can be tuned.
+                self._param_layer   = 1
+                self._param_idx     = 0
+                self._editing_param = False
+                _disp.go_to_params_screen()
+                inst.osd.show(f"FX ADDED: {chain_str}")
+            else:
+                inst.osd.show(f"FX: {chain_str}")
             return
 
         if tab == 4:   # SETTINGS_GRID: open menu page
@@ -381,8 +419,9 @@ class KeyboardController:
         # SAMPLER: pressing the already-active clip slot drills into speed params.
         active_slot = self._active_slot_for_tab(tab, inst)
         if active_slot == slot and tab == 1:
-            self._param_layer = 5   # SPEED layer
-            self._param_idx   = 0
+            self._param_layer   = 5   # SPEED layer
+            self._param_idx     = 0
+            self._editing_param = False
             _disp.go_to_params_screen()
             spd = getattr(inst.sampler, "speed", 1.0)
             inst.osd.show(f"SPEED: {spd:.2f}x")
@@ -402,6 +441,58 @@ class KeyboardController:
 
         # LIVE mode: load immediately.
         self._load_slot(tab, slot, inst)
+
+    def _grid_hold(self, key, _disp):
+        """Handle a hold (long-press) on a SHADER/FX grid cell: jump straight
+        to that item's params screen, activating it first if it wasn't
+        already (see module docstring). Bypasses STAGED mode — holding to
+        configure something is a workshop action, not a performance change."""
+        slot = int(key)
+        inst = self.inst
+        tab  = _disp._active_tab
+
+        if tab == 0:   # SHADER_GRID
+            from control.display import _GRID_SLOTS as _GS
+            try:
+                pos = _GS.index(slot)
+            except ValueError:
+                return
+            sh_list = inst.shader.list_shaders(kind="generative")
+            idx     = _disp._shader_grid_offset + pos
+            if idx >= len(sh_list):
+                return
+            sname = sh_list[idx]
+            if sname != (inst.cfg.current_shader or ""):
+                inst.shader.load(sname)
+            self._param_layer   = 0
+            self._param_idx     = 0
+            self._editing_param = False
+            _disp.go_to_params_screen()
+            inst.osd.show(f"PARAMS: {sname.replace('.glsl','').upper()}")
+            return
+
+        if tab == 3:   # FX_GRID
+            from control.display import _GRID_SLOTS as _GS
+            try:
+                pos = _GS.index(slot)
+            except ValueError:
+                return
+            fx_list = inst.shader.list_shaders(kind="fx")
+            idx     = _disp._fx_grid_offset + pos
+            if idx >= len(fx_list):
+                return
+            name_fx  = fx_list[idx]
+            fx_chain = inst.cfg.fx_chain
+            if name_fx in fx_chain:
+                inst.cfg.fx_edit_slot = fx_chain.index(name_fx)
+                inst.cfg._sync_fx_compat()
+            else:
+                inst.shader.fx_chain_toggle(name_fx)   # adds it, selects it
+            self._param_layer   = 1
+            self._param_idx     = 0
+            self._editing_param = False
+            _disp.go_to_params_screen()
+            inst.osd.show(f"PARAMS: {name_fx.replace('.glsl','').upper()}")
 
     def _active_slot_for_tab(self, tab, inst):
         """Return the slot number of the currently loaded item, or None."""
@@ -458,10 +549,9 @@ class KeyboardController:
     def _dispatch_perform(self, name):
         """Handle keys on the params sub-screen (second screen of each tab).
 
-        ENTER  push staged selections
-        +      increase selected param
-        BKSP   decrease selected param
-        1-9    select param by grid position (7=top-left … 3=bottom-right)
+        ENTER toggles edit mode on the highlighted parameter. Outside edit
+        mode, +/Bksp scroll the list and 1-9 jump to a row by grid position;
+        inside edit mode, +/Bksp step that parameter's value instead.
         Tab key (NUM/slash/asterisk/minus/dot)  exit back to grid (handled
                in _dispatch before this method is reached)
         """
@@ -469,14 +559,22 @@ class KeyboardController:
         _disp = getattr(inst, "display", None)
 
         if name == "ENTER":
-            if _disp and _disp._staged:
-                self._push_staged(_disp)
+            self._editing_param = not self._editing_param
+            return
+
+        if self._editing_param:
+            if name == "+":
+                self._step_param(+PARAM_STEP)
+            elif name == "BKSP":
+                self._step_param(-PARAM_STEP)
+            elif name == "000":
+                inst.trail_toggle()
             return
 
         if name == "+":
-            self._step_param(+PARAM_STEP)
+            self._scroll_param(+1)
         elif name == "BKSP":
-            self._step_param(-PARAM_STEP)
+            self._scroll_param(-1)
         elif name in ("1","2","3","4","5","6","7","8","9"):
             n   = int(name)
             # Map numpad key to grid position so keys match the visual layout
@@ -493,17 +591,42 @@ class KeyboardController:
         elif name == "REC":
             inst.record_toggle()
 
+    def _current_row_keys(self):
+        """Ordered row keys for whatever the active params layer shows —
+        single source of truth shared with control/display.py rendering."""
+        if self._param_layer == 1:
+            return self.inst.shader.fx_row_keys()
+        if self._param_layer == 2:
+            return list(self._colour_slots())
+        if self._param_layer == 3:
+            return list(self._blend_slots())
+        if self._param_layer == 4:
+            return list(self._trail_slots())
+        if self._param_layer == 5:
+            return list(self._speed_slots())
+        return self._get_shdr_keys()
+
+    def _scroll_param(self, direction):
+        """+/Bksp outside edit mode: move the selection up/down the list."""
+        keys = self._current_row_keys()
+        if not keys:
+            return
+        self._param_idx = max(0, min(len(keys) - 1, self._param_idx + direction))
+
     def _select_param_by_number(self, n):
         """Select param n (1-based) within the current layer, show OSD."""
         inst = self.inst
-        if self._param_layer == 1:   # FX params
-            lbls    = inst.shader.fx_param_labels()
-            fx_keys = sorted(lbls.keys(), key=lambda k: int(k[1:]))
-            if not fx_keys:
+        if self._param_layer == 1:   # FX params (+ this layer's blend mode/amount)
+            row_keys = inst.shader.fx_row_keys()
+            if not row_keys:
                 return
-            self._param_idx = min(n - 1, len(fx_keys) - 1)
-            key = fx_keys[self._param_idx]
-            inst.osd.show(f"FX: {lbls.get(key, key.upper()).upper()}")
+            self._param_idx = min(n - 1, len(row_keys) - 1)
+            key = row_keys[self._param_idx]
+            lbls = inst.shader.fx_param_labels()
+            label = ("BLEND" if key == "__blend_mode__" else
+                     "BLD AMT" if key == "__blend_amt__" else
+                     lbls.get(key, key.upper()).upper())
+            inst.osd.show(f"FX: {label}")
         elif self._param_layer == 2:   # COLOUR
             slots = self._colour_slots()
             self._param_idx = min(n - 1, len(slots) - 1)
@@ -590,9 +713,23 @@ class KeyboardController:
                 inst.osd.show(f"{ul}: {max(1, round(new * 500))}")
             else:
                 inst.osd.show(f"{ul}: {new:.2f}")
-        elif self._param_layer == 1:      # ── FX: the active FX's own params
-            fx_keys = sorted(inst.shader.fx_param_labels().keys(), key=lambda k: int(k[1:]))
-            key = fx_keys[self._param_idx % max(1, len(fx_keys))] if fx_keys else "f1"
+        elif self._param_layer == 1:      # ── FX: own params + this layer's blend mode/amount
+            row_keys = inst.shader.fx_row_keys()
+            if not row_keys:
+                return
+            key = row_keys[self._param_idx % len(row_keys)]
+            if key == "__blend_mode__":
+                inst.shader.cycle_fx_blend_mode(1 if delta > 0 else -1)
+                inst.osd.show(f"BLEND: {cfg.fx_blend.get('mode','normal').upper()}")
+                return
+            if key == "__blend_amt__":
+                cur = cfg.fx_blend.get("amt", 1.0)
+                new = clamp01(cur + delta)
+                if new == cur:
+                    return
+                inst.shader.set_fx_blend_amount(new)
+                inst.osd.show(f"BLD AMT: {new:.2f}")
+                return
             cur = cfg.fx_params.get(key, 0.5)
             new = clamp01(cur + delta)
             if new == cur:
