@@ -59,7 +59,7 @@ MODE_COLOURS = {
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 TAB_H  = 42                  # height of the tab bar in pixels
-TABS   = ("SHADER", "SAMPLER", "LIVE", "FX", "SETTINGS")
+TABS   = ("SHADER", "FX", "SAMPLER", "LIVE", "SETTINGS")
 TAB_W  = FB_W // 5           # 96 px each (5 tabs)
 
 TAB_COL = {
@@ -78,9 +78,9 @@ C_STAGED = (0xff, 0x88, 0x00)         # amber — staged mode indicator
 # Names that match a menu.PAGES entry activate the full-screen menu renderer.
 _TAB_SCREENS = {
     0: ("SHADER_GRID",   "SHADER"),
-    1: ("SAMPLER_GRID",  "SAMPLER"),
-    2: ("LIVE_GRID",     "LIVE"),
-    3: ("FX_GRID",       "FX"),
+    1: ("FX_GRID",       "FX"),
+    2: ("SAMPLER_GRID",  "SAMPLER"),
+    3: ("LIVE_GRID",     "LIVE"),
     4: ("SETTINGS_GRID", "BROWSER", "MIDI"),
 }
 
@@ -280,7 +280,7 @@ class DisplayController:
         self._stop       = threading.Event()
         self._thread     = None
         # Tab state — keyboard.py sets these via set_tab() / toggle_staged()
-        self._active_tab  = 0          # 0=SHADER 1=SAMPLER 2=LIVE 3=SETTINGS
+        self._active_tab  = 0          # 0=SHADER 1=FX 2=SAMPLER 3=LIVE 4=SETTINGS
         self._tab_screen  = [0, 0, 0, 0, 0]  # current sub-screen index per tab
         self._staged      = False      # False=live (immediate), True=staged (ENTER to push)
         self._grid_pending   = [None, None, None, None, None]  # staged slot per tab

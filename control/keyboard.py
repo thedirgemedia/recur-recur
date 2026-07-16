@@ -15,10 +15,18 @@ Layout (17-cell, 19-key with double-tall Enter):
    │  0   │ 000  │  .   │      │
    └──────┴──────┴──────┴──────┘
 
-Top row (Num / / / * / - / .) always selects a display tab: SHADER, SAMPLER,
-LIVE, FX, SETTINGS — in every context, even over an open menu page. Pressing
-the key of the tab you're already on cycles that tab's sub-screens (a 3x3
-slot GRID, then a PARAMS screen for tabs that have one).
+Top row NUM / / / * / - always selects a display tab: SHADER, FX, SAMPLER,
+LIVE — in every context, even over an open menu page. Pressing the key of the
+tab you're already on cycles that tab's sub-screens (a 3x3 slot GRID, then a
+PARAMS screen for tabs that have one).
+
+The . key is the odd one out — one press, meaning set by how deep you are
+(see _dot_press). At the top level (a grid screen, no menu) it's the
+SETTINGS tab key, exactly like the other four are for their tab. Anywhere
+deeper it goes UP one level instead: cancels an in-progress menu sub-action,
+else closes an open menu page, else exits param edit mode, else drops a
+params screen back to its grid. It is checked before the menu.active branch
+in _dispatch, so it works over an open menu page too.
 
 Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
   SHADER grid — tap: load/unload the one active generative shader (tap the
@@ -51,7 +59,8 @@ again):
 
 MENU mode: reached via the SETTINGS tab; while a menu page is open every key
 routes to `self.inst.menu.handle()` and none reach the perform handlers
-(see control/menu.py for the bindings).
+(see control/menu.py for the bindings) — except the tab keys and '.', which
+keyboard.py intercepts everywhere, menu included (see above).
 
 Note: the dedicated '000' key sends KEY_KP000 (or KEY_KP00) and is mapped
 directly. The triple-KP0 coalescing below is a fallback for numpads that
@@ -106,7 +115,7 @@ SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 # How long a grid key must be held before it's treated as a hold rather than
 # a tap (SHADER/FX grids only — see _HOLD_TABS).
 HOLD_THRESHOLD = 0.4   # seconds
-_HOLD_TABS = (0, 3)    # SHADER, FX — the only grids with tap/hold semantics
+_HOLD_TABS = (0, 1)    # SHADER, FX — the only grids with tap/hold semantics
 
 # Numpad key → grid position (top-left=0 … bottom-right=8), matching display layout:
 #   7 8 9   →   0 1 2
@@ -258,11 +267,57 @@ class KeyboardController:
         if _disp is not None:
             self._grid_hold(name, _disp)
 
+    def _dot_press(self):
+        """'.' — a single press whose meaning depends on how deep you are.
+        Step back one level if there is one, otherwise open SETTINGS:
+          menu sub-action (assign/edit/confirm/USB browse) -> cancel it
+          menu page open                                   -> close the menu
+          params screen in edit mode                       -> exit edit mode
+          params screen                                     -> back to the grid
+          grid screen (top level)                           -> open/cycle SETTINGS
+        """
+        inst  = self.inst
+        menu  = inst.menu
+        _disp = getattr(inst, "display", None)
+
+        if menu.active:
+            if menu._midi_editing or menu._assigning or menu._confirm_delete:
+                menu._cancel_edits()
+                return
+            from control.menu import PAGES
+            if menu.page == PAGES.index("IMPORT") and menu._usb_dev:
+                menu._usb_eject()
+                return
+            menu.toggle()   # closes the menu, applying any staged pick
+            if _disp:
+                _disp.go_to_grid_screen()
+            return
+
+        if self._editing_param:
+            self._editing_param = False
+            return
+
+        if _disp and not _disp.is_grid_screen():
+            _disp.go_to_grid_screen()
+            return
+
+        # Already at the top level — nothing to back out of, so this is the
+        # SETTINGS tab key (and cycles its sub-screens when already there).
+        self._editing_param = False
+        if _disp:
+            _disp.set_tab(4)
+
     # ------------------------------------------------------------- dispatch
     def _dispatch(self, name):
-        # Top-row keys always select display tabs.
+        # Top-row keys always select display tabs. '.' is context-dependent
+        # (back out a level, else open SETTINGS — see _dot_press) and is
+        # checked here, ahead of the menu.active branch below, so it stays
+        # reachable while a menu page is open.
         _disp = getattr(self.inst, "display", None)
-        if name in ("NUM", "/", "*", "-", "."):
+        if name == ".":
+            self._dot_press()
+            return
+        if name in ("NUM", "/", "*", "-"):
             # Any tab-bar keypress leaves behind a fresh (non-editing) params
             # screen so you never land back on a stale edit-mode from a
             # different context.
@@ -273,19 +328,15 @@ class KeyboardController:
             return
         if name == "/":
             if _disp:
-                _disp.set_tab(1)   # SAMPLER
+                _disp.set_tab(1)   # FX
             return
         if name == "*":
             if _disp:
-                _disp.set_tab(2)   # LIVE
+                _disp.set_tab(2)   # SAMPLER
             return
         if name == "-":
             if _disp:
-                _disp.set_tab(3)   # FX
-            return
-        if name == ".":
-            if _disp:
-                _disp.set_tab(4)   # SETTINGS
+                _disp.set_tab(3)   # LIVE
             return
 
         if self.inst.menu.active:
@@ -299,13 +350,13 @@ class KeyboardController:
                 self._grid_select(name, _disp)
                 return
             if name == "+":
-                if tab == 3:
+                if tab == 1:
                     _disp.fx_grid_page(+1)
                 elif tab == 0:
                     _disp.shader_grid_page(+1)
                 return
             if name == "BKSP":
-                if tab == 3:
+                if tab == 1:
                     _disp.fx_grid_page(-1)
                 elif tab == 0:
                     _disp.shader_grid_page(-1)
@@ -340,7 +391,7 @@ class KeyboardController:
         inst = self.inst
         tab  = _disp._active_tab
 
-        if tab in (0, 3):   # SHADER_GRID / FX_GRID: tap ONLY toggles stack
+        if tab in (0, 1):   # SHADER_GRID / FX_GRID: tap ONLY toggles stack
                             # membership — never changes screens. Opening
                             # params is hold's job (see _grid_hold), even for
                             # a newly-added item. Both grids are now real
@@ -382,7 +433,7 @@ class KeyboardController:
 
         # SAMPLER: pressing the already-active clip slot drills into speed params.
         active_slot = self._active_slot_for_tab(tab, inst)
-        if active_slot == slot and tab == 1:
+        if active_slot == slot and tab == 2:
             self._param_layer   = 5   # SPEED layer
             self._param_idx     = 0
             self._editing_param = False
@@ -392,7 +443,7 @@ class KeyboardController:
             return
 
         # LIVE tab: always load immediately (no staging for presets).
-        if tab == 2:
+        if tab == 3:
             inst.load_preset_slot(slot)
             return
 
@@ -431,7 +482,7 @@ class KeyboardController:
         inst = self.inst
         tab  = _disp._active_tab
 
-        if tab not in (0, 3):
+        if tab not in (0, 1):
             return
         if tab == 0:
             kind, offset_attr, toggle_fn = "generative", "_shader_grid_offset", inst.shader.shader_chain_toggle
@@ -463,7 +514,7 @@ class KeyboardController:
         if tab == 0:
             cur = cfg.current_shader
             return next((k for k, v in cfg.shader_slots.items() if v == cur), None)
-        if tab == 1:
+        if tab == 2:
             cur = cfg.current_clip
             return next((k for k, v in cfg.clip_slots.items() if v == cur), None)
         return None
@@ -473,7 +524,7 @@ class KeyboardController:
         if tab == 0:
             n = cfg.shader_slots.get(slot) or ""
             return n.replace(".glsl", "").upper() or f"SLOT {slot}"
-        if tab == 1:
+        if tab == 2:
             import os
             p = cfg.clip_slots.get(slot) or ""
             return os.path.splitext(os.path.basename(p))[0].upper() if p else f"SLOT {slot}"
@@ -488,19 +539,19 @@ class KeyboardController:
             # slot is the shader filename stored by the paged grid
             inst.shader.load(slot)
             inst.osd.show(f"SHADER: {slot.replace('.glsl','').upper()}")
-        elif tab == 1:
+        elif tab == 2:
             if inst.sampler.slot(slot):
                 inst.sampler.trigger()
             else:
                 inst.osd.show(f"SLOT {slot}: EMPTY")
-        elif tab == 2:
+        elif tab == 3:
             inst.load_preset_slot(slot)
 
     def _push_staged(self, _disp):
         """Push all staged (pending) grid selections to the live output."""
         inst = self.inst
         pushed = False
-        for tab in range(3):   # SHADER, SAMPLER, LIVE
+        for tab in (0, 2, 3):   # SHADER, SAMPLER, LIVE
             slot = _disp._grid_pending[tab]
             if slot is not None:
                 self._load_slot(tab, slot, inst)

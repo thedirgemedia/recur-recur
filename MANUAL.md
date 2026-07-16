@@ -1,6 +1,6 @@
 # recur-recur — Operator Manual
 
-*Accurate as of 2026-07-15. Generated from the actual code paths — where the
+*Accurate as of 2026-07-16. Generated from the actual code paths — where the
 code and older docs disagreed, this manual follows the code.*
 
 ---
@@ -82,22 +82,30 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 └──────┴──────┴──────┴──────┘
 ```
 
-The SPI display is organised as five **tabs** — SHADER, SAMPLER, LIVE, FX,
+The SPI display is organised as five **tabs** — SHADER, FX, SAMPLER, LIVE,
 SETTINGS — and the top-row keys are permanently bound to them, in *every*
 context (even while a menu page is open):
 
 | Key | Tab |
 |---|---|
 | **Num** | SHADER |
-| **/** | SAMPLER |
-| **\*** | LIVE |
-| **-** | FX |
-| **.** | SETTINGS |
+| **/** | FX |
+| **\*** | SAMPLER |
+| **-** | LIVE |
+| **.** | SETTINGS — *or* back out one level, depending on where you are (see below) |
 
-Pressing the key for the tab you're **already on** cycles that tab's
+Pressing Num/\//\*/- for the tab you're **already on** cycles that tab's
 sub-screens (a 3×3 slot **grid** first, then a **params** screen for tabs
 that have one). Pressing a *different* tab's key jumps straight to that
 tab's grid and closes any open menu page.
+
+**.** is the odd one out — a single press whose meaning depends on how deep
+you currently are. At the **top level** (a grid screen, no menu open) it's
+the SETTINGS tab key, exactly like the other four are for their tab.
+**Anywhere deeper it goes up one level** instead: it cancels an in-progress
+menu sub-action (assign / CC-edit / confirm-delete / USB browse) if one's
+active, else closes an open menu page, else exits param edit mode, else
+drops a params screen back to its grid.
 
 > **Note:** these keys only change what the SPI display is showing — they do
 > **not** switch the instrument's SAMPLER/SHADER/LIVE mode. Mode is switched
@@ -105,7 +113,7 @@ tab's grid and closes any open menu page.
 > SETTINGS menu's `MODE` row (see *Menu system*). See *Known issues* — there
 > is currently no numpad key bound to mode switching.
 
-### The 3×3 grid (first screen of SHADER / SAMPLER / LIVE / FX / SETTINGS)
+### The 3×3 grid (first screen of SHADER / FX / SAMPLER / LIVE / SETTINGS)
 
 Grid cells sit at keys **7 8 9 / 4 5 6 / 1 2 3**, matching their on-screen
 position (7 = top-left … 3 = bottom-right):
@@ -129,18 +137,18 @@ grids are tap-only and unchanged:
   being bounced into params. **Hold** opens that shader's params screen,
   adding it to the stack first if it wasn't already there (without removing
   anything else already stacked).
-- **SAMPLER** — the 6 clip slots (keys 4–9; assigned in the BROWSER menu
-  page). Tap triggers the clip; tapping the currently-playing clip's key
-  again drills into a **SPEED** params screen (playback speed + reverse)
-  instead of retriggering it.
-- **LIVE** — the 6 preset slots (keys 4–9; assigned in the PRESETS menu
-  page). Always loads immediately — presets are never staged.
 - **FX** — lists FX shaders and doubles as the multi-FX chain editor (see
   *Parameter editing* → FX below). **Tap** toggles the FX in/out of the chain
   (up to 4 at once) — adding or removing never changes the screen, so you can
   build up a chain with repeated taps without being bounced into params.
   **Hold** opens that FX's params screen, adding it to the chain first if it
   wasn't already there (without removing anything else already chained).
+- **SAMPLER** — the 6 clip slots (keys 4–9; assigned in the BROWSER menu
+  page). Tap triggers the clip; tapping the currently-playing clip's key
+  again drills into a **SPEED** params screen (playback speed + reverse)
+  instead of retriggering it.
+- **LIVE** — the 6 preset slots (keys 4–9; assigned in the PRESETS menu
+  page). Always loads immediately — presets are never staged.
 - **SETTINGS** — six cells (BROWSER / SHADERS / PRESETS / SETTINGS / MIDI /
   IMPORT) that jump straight into the matching menu page (see *Menu system*).
 
@@ -155,7 +163,7 @@ wasn't already (adds the shader / FX to its stack) and jumps to its params
 screen; holding to configure something is a workshop action, not a
 performance change. SAMPLER/LIVE/SETTINGS grids don't use hold at all —
 pressing those keys always dispatches immediately, regardless of how long
-you hold them.
+you hold them. No top-row key (**.** included) uses hold.
 
 ### Record
 
@@ -174,8 +182,8 @@ that tab's own key again while its grid is showing. Params screens are
 
 | Key | Outside edit mode | Inside edit mode |
 |---|---|---|
-| **+** | scroll selection down the list | increase the selected parameter |
-| **Bksp** | scroll selection up the list | decrease the selected parameter |
+| **+** | scroll selection up the list | increase the selected parameter |
+| **Bksp** | scroll selection down the list | decrease the selected parameter |
 | **1–9** | jump to a parameter by its on-screen grid position | *(no effect)* |
 | **Enter** | enter edit mode on the highlighted parameter | exit edit mode |
 | **0** | toggle STAGED / LIVE | toggle STAGED / LIVE |
@@ -272,7 +280,7 @@ below). It's unrelated to the FX chain's per-layer `BLEND` row above.
 
 ## SPI display
 
-**Tab bar** (top 42 px) — always visible: SHADER / SAMPLER / LIVE / FX /
+**Tab bar** (top 42 px) — always visible: SHADER / FX / SAMPLER / LIVE /
 SETTINGS, the active tab highlighted with a bright top accent bar. When the
 active tab has more than one sub-screen, small dots under its name show which
 one you're on.
@@ -301,14 +309,19 @@ There is **no touch input** — all control is numpad / MIDI / GPIO.
 
 ## Menu system
 
-Menu pages are reached through the **SETTINGS tab** (key **.**): its grid
-screen has six cells — BROWSER, SHADERS, PRESETS, SETTINGS, MIDI, IMPORT —
-and pressing one jumps straight into that page. (Repeatedly pressing **.**
-also cycles SETTINGS' own sub-screens, which includes the BROWSER and MIDI
-pages directly, without going through the grid.) To back out of a page,
-press **.** again — if you got there via the grid, this closes it back to
-the SETTINGS grid; pressing any *other* tab key also closes the page and
-jumps to that tab.
+Menu pages are reached through the **SETTINGS tab** (key **.** from any grid
+screen): its grid has six cells — BROWSER, SHADERS, PRESETS, SETTINGS, MIDI,
+IMPORT — and pressing one jumps straight into that page. To back out of a
+page, press **.** again — this cancels any in-progress sub-action first
+(assign / CC-edit / confirm-delete / USB browse) if one's active, otherwise
+closes the page back to the SETTINGS grid; pressing any *other* tab key also
+closes the page and jumps to that tab.
+
+> **Note:** because **.** now backs out of an open page rather than
+> advancing, it no longer cycles onward through SETTINGS' own BROWSER/MIDI
+> sub-screens — pressing it on the SETTINGS grid opens BROWSER, and pressing
+> it again returns to the grid. Both pages remain reachable from the
+> SETTINGS grid cells (BROWSER = key 7, MIDI = key 5).
 
 | Key | Action in menu |
 |---|---|
