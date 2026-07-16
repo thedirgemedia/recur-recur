@@ -492,7 +492,7 @@ class DisplayController:
         # Navigable menu overlays the full screen when active.
         menu = getattr(inst, "menu", None)
         if menu is not None and menu.active:
-            palette = (C_BG, C_ON, C_LABEL, C_VALUE, C_HINT, C_BAR_FILL)
+            palette = (C_BG, C_ON, C_LABEL, C_VALUE, C_HINT, C_BAR_FILL, C_STAGED)
             menu.render(img, d, font_lg, font_md, font_sm, FB_W, FB_H, palette)
             return img
 

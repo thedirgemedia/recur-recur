@@ -8,17 +8,24 @@ to recur-recur's modes and engines. Four pages cycled with 7 / 9:
   BROWSER  — clips list; 5 stages a pick (loads on menu close); ENTER+4–9 assigns
              the highlighted clip to that performance slot
   SHADERS  — generative shaders list; same bindings as BROWSER
-  SETTINGS — editable options (mode, sampler mode, overlay/blend toggles,
-             shader/fx selectors, prefs/system actions)
+  SETTINGS — editable options as a plain scrolling list grouped under
+             headers (PLAYBACK / VIDEO / MIX / SHADERS / SYSTEM). Each row's
+             group is declared on the _Item itself and a header is drawn
+             wherever the group changes, so `self.sel` still indexes the
+             ITEM list — headers are never selectable. ENTER opens the
+             highlighted row for editing (+/BKSP then step its value, ENTER
+             closes); rows flagged action=True fire on ENTER instead.
   MIDI     — per-target CC overrides; 4/6 step ±5, 5 = numeric entry,
              BKSP = reset to built-in default
 
 Navigation (logical key names, mapped in keyboard.py for both NumLock states):
-  8 / 2   move selection up / down
-  4 / 6   adjust selected value (left / right)
+  + / BKSP   move selection up / down the list (BKSP is page-specific on
+             BROWSER/PRESETS/MIDI/IMPORT — see handle())
+  8 / 2      move selection up / down
+  4 / 6      adjust selected value (left / right)
   5 / ENTER  select / activate (the "■" action)
-  7 / 9   previous / next page (loops)
-  NUM     exit menu (handled in keyboard.py)
+  7 / 9      previous / next page (loops)
+  .          back out one level / close the menu (handled in keyboard.py)
 
 While the menu is active, NONE of these keys reach the perform handlers, so the
 HDMI video output is never changed by a keypress in menu mode.
@@ -71,6 +78,8 @@ class Menu:
         self.sel    = 0          # selection row within the current page
         self._midi_editing   = False   # True while numeric CC entry is active
         self._midi_input_buf = ""      # digits typed so far
+        self._settings_editing = False # True while +/BKSP change the highlighted
+                                       # SETTINGS value instead of scrolling
         self._assigning      = False   # True while waiting for a slot key (BROWSER/SHADERS)
         self._confirm_delete = False   # True after one BKSP in BROWSER/PRESETS (arm delete)
         # Staged selections applied to the live output when the menu closes
@@ -132,6 +141,13 @@ class Menu:
                 self._handle_midi_edit(name)
                 return
 
+            # SETTINGS value edit — +/BKSP step the highlighted row's value
+            # rather than scrolling the list (checked before page navigation
+            # so 7/9 can't page out mid-edit).
+            if self._settings_editing:
+                self._handle_settings_edit(name)
+                return
+
             # Page navigation (only reached when no edit mode is active).
             # 7 / 9 cycle through all pages in each direction (wrapping).
             if name in ("7", "9"):
@@ -183,10 +199,11 @@ class Menu:
             log.warning("menu handle %r: %s", name, e)
 
     def _cancel_edits(self):
-        self._assigning      = False
-        self._midi_editing   = False
-        self._midi_input_buf = ""
-        self._confirm_delete = False
+        self._assigning        = False
+        self._midi_editing     = False
+        self._midi_input_buf   = ""
+        self._settings_editing = False
+        self._confirm_delete   = False
 
     def _rows(self):
         """Number of selectable rows on the current page."""
@@ -243,14 +260,38 @@ class Menu:
             self._usb_action()
 
     def _action_enter(self):
-        """ENTER: enter slot-assign mode for BROWSER/SHADERS/PRESETS; eject IMPORT."""
+        """ENTER: enter slot-assign mode for BROWSER/SHADERS/PRESETS; eject
+        IMPORT; on SETTINGS fire an action row or open value-edit mode."""
         page = PAGES[self.page]
         if page in ("BROWSER", "SHADERS", "PRESETS"):
             self._assigning = True
         elif page == "IMPORT":
             self._usb_eject()
+        elif page == "SETTINGS":
+            items = self._settings()
+            if 0 <= self.sel < len(items):
+                it = items[self.sel]
+                if it.action:
+                    it.select()               # SAVE PREFS / RESTART / QUIT
+                else:
+                    self._settings_editing = True
         else:
             self._action_primary()
+
+    def _handle_settings_edit(self, name):
+        """Process a keypress while a SETTINGS row is open for editing.
+
+        +/BKSP (and 4/6) step the value; ENTER/5 close edit mode. Any other
+        key also closes it, so no keypress is silently swallowed mid-edit.
+        """
+        if name == "+":
+            self._adjust(+1)
+        elif name == "BKSP":
+            self._adjust(-1)
+        elif name in ("4", "6"):
+            self._adjust(-1 if name == "4" else +1)
+        else:
+            self._settings_editing = False
 
     def _handle_assign(self, name):
         """While in assign mode, press 4–9 to assign item to that performance slot."""
@@ -598,23 +639,24 @@ class Menu:
 
         items = []
 
-        # instrument mode
+        # ── PLAYBACK ──────────────────────────────────────────────────────
         items.append(_Item(
             "MODE", lambda: inst.mode,
             adjust=lambda d: inst.cycle_mode(d),
-            select=lambda: inst.cycle_mode(+1)))
+            select=lambda: inst.cycle_mode(+1), group="PLAYBACK"))
         items.append(_Item(
             "LIVE MODE",
             lambda: "ON" if getattr(cfg, 'live_mode_enabled', True) else "OFF",
             adjust=lambda d: setattr(cfg, 'live_mode_enabled', not cfg.live_mode_enabled),
-            select=lambda: setattr(cfg, 'live_mode_enabled', not cfg.live_mode_enabled)))
+            select=lambda: setattr(cfg, 'live_mode_enabled', not cfg.live_mode_enabled),
+            group="PLAYBACK"))
 
         # sampler playback mode
         from engine.sampler import MODES as SMODES
         items.append(_Item(
             "PLAY", lambda: inst.sampler.mode,
             adjust=lambda d: inst.sampler.set_mode(cyc(SMODES, inst.sampler.mode, d)),
-            select=lambda: inst.sampler.cycle_mode()))
+            select=lambda: inst.sampler.cycle_mode(), group="PLAYBACK"))
 
         # camera capture resolution — lower = less lag
         def _cam_res_label():
@@ -624,28 +666,30 @@ class Menu:
             cur = (cfg.camera_width, cfg.camera_height)
             i   = presets.index(cur) if cur in presets else 1
             cfg.camera_width, cfg.camera_height = presets[(i + d) % len(presets)]
+        # ── VIDEO ─────────────────────────────────────────────────────────
         items.append(_Item(
             "CAM RES", _cam_res_label,
             adjust=lambda d: _cam_res_cycle(d),
-            select=lambda: _cam_res_cycle(+1)))
+            select=lambda: _cam_res_cycle(+1), group="VIDEO"))
 
         # video scaling for mismatched aspect ratios
         items.append(_Item(
             "VID SCALE", lambda: getattr(cfg, 'video_scale_mode', 'fit').upper(),
             adjust=lambda d: inst.video_scale_cycle(d),
-            select=lambda: inst.video_scale_cycle(+1)))
+            select=lambda: inst.video_scale_cycle(+1), group="VIDEO"))
 
-        # overlay on/off (mode/opacity live on Bksp BLEND layer)
+        # ── MIX ───────────────────────────────────────────────────────────
+        # overlay on/off (mode/opacity live on the BLEND param layer)
         items.append(_Item(
             "OVERLAY", lambda: "ON" if cfg.overlay_on else "OFF",
             adjust=lambda d: self._set_overlay(not cfg.overlay_on),
-            select=lambda: self._set_overlay(not cfg.overlay_on)))
+            select=lambda: self._set_overlay(not cfg.overlay_on), group="MIX"))
 
-        # shader blend on/off (mode/amount/source live on Bksp BLEND layer)
+        # shader blend on/off (mode/amount/source live on the BLEND param layer)
         items.append(_Item(
             "BLEND", lambda: "ON" if cfg.shader_blend else "OFF",
             adjust=lambda d: inst.shader_blend_toggle(),
-            select=lambda: inst.shader_blend_toggle()))
+            select=lambda: inst.shader_blend_toggle(), group="MIX"))
 
         # shaders (params live on Bksp SHDR/FX layers; trail on Bksp TRAIL layer)
         def _fx_label():
@@ -659,7 +703,7 @@ class Menu:
         items.append(_Item(
             "FX", _fx_label,
             adjust=lambda d: inst.shader.cycle(d, kind="fx"),
-            select=lambda: inst.shader.cycle(+1, kind="fx")))
+            select=lambda: inst.shader.cycle(+1, kind="fx"), group="SHADERS"))
         def _gen_label():
             chain = getattr(cfg, "shader_chain", [])
             if not chain:
@@ -671,29 +715,30 @@ class Menu:
         items.append(_Item(
             "GEN", _gen_label,
             adjust=lambda d: inst.shader.cycle(d, kind="generative"),
-            select=lambda: inst.shader.cycle(+1, kind="generative")))
+            select=lambda: inst.shader.cycle(+1, kind="generative"), group="SHADERS"))
 
-        # prefs / system
+        # ── SYSTEM ────────────────────────────────────────────────────────
+        # action=True rows fire on ENTER instead of opening value-edit mode.
         def _do_save():
             inst.cfg.save_prefs(sampler_mode=inst.sampler.mode)
             inst.osd.show("PREFS SAVED")
         items.append(_Item(
-            "SAVE PREFS", lambda: "ENTER to save",
+            "SAVE PREFS", lambda: "ENTER ■",
             adjust=lambda d: None,
-            select=_do_save))
+            select=_do_save, group="SYSTEM", action=True))
         def _do_restart():
             inst.osd.show("RESTARTING…")
             inst.restart()
         items.append(_Item(
             "RESTART", lambda: "restart app ↺",
             adjust=lambda d: None,
-            select=_do_restart))
+            select=_do_restart, group="SYSTEM", action=True))
         # Quits the application (prefs auto-save in teardown).  A true Pi
         # poweroff would need root; the service user can't escalate.
         items.append(_Item(
-            "SYSTEM", lambda: "quit app ■",
+            "QUIT", lambda: "quit app ■",
             adjust=lambda d: None,
-            select=lambda: inst._shutdown()))
+            select=lambda: inst._shutdown(), group="SYSTEM", action=True))
 
         return items
 
@@ -705,7 +750,7 @@ class Menu:
     # ───────────────────────────────────────────────────────── rendering
     def render(self, img, draw, font_lg, font_md, font_sm, W, H, palette):
         """Draw the active menu page onto the PIL image."""
-        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT = palette
+        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT, C_EDIT = palette
         page = PAGES[self.page]
 
         # title bar — dark bg with bright green text, green border
@@ -862,85 +907,75 @@ class Menu:
                           font=font_sm, fill=C_HL, anchor="mm")
 
         else:  # SETTINGS
-            draw.text((10, 44), f"ip  {_local_ip()}", font=font_sm, fill=C_DIM)
-
-            items     = self._settings()
-            n_sliders = max(0, len(items) - 3)   # last 3 are action buttons
-            sliders   = items[:n_sliders]
-            buttons   = items[n_sliders:]
-
-            # ── slider grid (3×3) ──────────────────────────────────────────
-            GM  = 4
-            GG  = 4
-            GY0 = 66
-            GY1 = 258
-            gh  = GY1 - GY0
-            cw  = (W - 2 * GM - 2 * GG) // 3
-            ch  = (gh - 2 * GG) // 3
-
-            for pos in range(len(sliders)):
-                row  = pos // 3
-                col_ = pos % 3
-                x0 = GM  + col_ * (cw + GG)
-                y0 = GY0 + row  * (ch + GG)
-                x1 = x0 + cw
-                y1 = y0 + ch
-
-                it       = sliders[pos]
-                selected = (pos == self.sel)
-
-                if selected:
-                    bg_c   = tuple(max(0, c // 5) for c in C_HL)
-                    border = C_HL
-                    vc     = C_HL
-                    tc     = C_VALUE
-                else:
-                    bg_c   = (0x00, 0x0a, 0x00)
-                    border = C_ACCENT
-                    vc     = C_VALUE
-                    tc     = C_LABEL
-
-                draw.rectangle([x0, y0, x1, y1], fill=bg_c)
-                draw.rectangle([x0, y0, x1, y1], outline=border, width=2)
-                cx = (x0 + x1) // 2
-                cy = (y0 + y1) // 2
-                draw.text((cx, cy - 7), str(it.value())[:10], font=font_sm,
-                          fill=vc, anchor="mm")
-                draw.text((cx, cy + 8), it.label[:10], font=font_sm,
-                          fill=tc, anchor="mm")
-
-            # ── action buttons at bottom ───────────────────────────────────
-            if buttons:
-                BY  = GY1 + 4
-                BH  = H - 22 - BY - 4
-                bw  = (W - 2 * GM - (len(buttons) - 1) * GG) // len(buttons)
-                for bi, it in enumerate(buttons):
-                    bx0 = GM + bi * (bw + GG)
-                    bx1 = bx0 + bw
-                    btn_sel = (n_sliders + bi == self.sel)
-                    if btn_sel:
-                        bg_c   = C_HL
-                        border = C_HL
-                        tc     = C_BG
-                    else:
-                        bg_c   = C_BG
-                        border = C_ACCENT
-                        tc     = C_LABEL
-                    draw.rectangle([bx0, BY, bx1, BY + BH], fill=bg_c)
-                    draw.rectangle([bx0, BY, bx1, BY + BH], outline=border, width=2)
-                    cx = (bx0 + bx1) // 2
-                    cy = BY + BH // 2
-                    draw.text((cx, cy), it.label[:12], font=font_sm,
-                              fill=tc, anchor="mm")
+            if self._settings_editing:
+                draw.text((10, 44), "+/BKSP change value    ENTER done",
+                          font=font_sm, fill=C_EDIT)
+            else:
+                draw.text((10, 44), f"ip  {_local_ip()}", font=font_sm, fill=C_DIM)
+            self._render_settings_list(draw, font_sm, W, H, palette, y0=62)
 
         # footer hint
         draw.line([0, H - 22, W, H - 22], fill=C_DIM, width=1)
-        draw.text((W // 2, H - 11),
-                  "+/BKSP scroll   4/6 adjust   5 ok   ENTER action   7/9 page",
-                  font=font_sm, fill=C_DIM, anchor="mm")
+        if page == "SETTINGS":
+            hint = ("+/BKSP change value   ENTER done"
+                    if self._settings_editing else
+                    "+/BKSP scroll   ENTER edit/do   7/9 page")
+        else:
+            hint = "+/BKSP scroll   4/6 adjust   5 ok   ENTER action   7/9 page"
+        draw.text((W // 2, H - 11), hint, font=font_sm, fill=C_DIM, anchor="mm")
+
+    def _render_settings_list(self, draw, font, W, H, palette, y0=62):
+        """SETTINGS as a plain scrolling list, grouped under headers.
+
+        `self.sel` indexes the ITEM list (headers aren't selectable), so the
+        rows are built once here and the selection's visual row looked up to
+        window the view around it.
+        """
+        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT, C_EDIT = palette
+
+        items = self._settings()
+        rows  = []          # (kind, label, value, item_idx)
+        group = None
+        for i, it in enumerate(items):
+            if it.group != group:
+                rows.append(("hdr", it.group, "", -1))
+                group = it.group
+            rows.append(("item", it.label, str(it.value()), i))
+
+        sel_row = next((r for r, (k, _l, _v, i) in enumerate(rows)
+                        if k == "item" and i == self.sel), 0)
+
+        line_h = 18
+        avail  = max(1, (H - 22 - y0) // line_h)
+        top    = max(0, min(sel_row - avail // 2, max(0, len(rows) - avail)))
+
+        for vi in range(min(avail, len(rows) - top)):
+            r    = top + vi
+            y    = y0 + vi * line_h
+            kind, label, value, idx = rows[r]
+            mid  = y + line_h // 2
+
+            if kind == "hdr":
+                draw.text((8, mid), label[:20], font=font, fill=C_ACCENT, anchor="lm")
+                ly = y + line_h - 2
+                draw.line([8, ly, W - 8, ly], fill=C_DIM, width=1)
+                continue
+
+            selected = (idx == self.sel)
+            editing  = selected and self._settings_editing
+            if selected:
+                draw.rectangle([4, y, W - 4, y + line_h - 2],
+                               fill=C_EDIT if editing else C_HL)
+                lc = vc = C_BG
+            else:
+                lc, vc = C_LABEL, C_VALUE
+            # Arrows on the edited row show +/BKSP will now change the value.
+            val = f"‹ {value[:16]} ›" if editing else value[:20]
+            draw.text((18,     mid), label[:16], font=font, fill=lc, anchor="lm")
+            draw.text((W - 12, mid), val,        font=font, fill=vc, anchor="rm")
 
     def _render_list(self, draw, font, W, H, palette, rows, y0=48):
-        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT = palette
+        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT, C_EDIT = palette
         line_h = 24
         avail  = (H - 22 - y0) // line_h
         top    = max(0, min(self.sel - avail // 2, max(0, len(rows) - avail)))
@@ -956,7 +991,7 @@ class Menu:
             draw.text((10, mid), f"{prefix}{str(label)[:40]}", font=font, fill=col, anchor="lm")
 
     def _render_kv(self, draw, font, W, H, palette, rows, y0=66):
-        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT = palette
+        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT, C_EDIT = palette
         line_h = 24
         avail  = (H - 22 - y0) // line_h
         top    = max(0, min(self.sel - avail // 2, max(0, len(rows) - avail)))
@@ -974,11 +1009,23 @@ class Menu:
 
 
 class _Item:
-    """A single editable settings row."""
-    __slots__ = ("label", "_value", "_adjust", "_select")
+    """A single editable settings row.
 
-    def __init__(self, label, value, adjust, select):
+    `group` is the header the row is filed under on the SETTINGS page — rows
+    are rendered in list order and a header is drawn each time the group
+    changes, so grouping lives here next to the row rather than as a separate
+    table that has to be kept in step.
+
+    `action` marks a row that *does* something rather than holding a value
+    (SAVE PREFS / RESTART / QUIT): ENTER fires it straight away instead of
+    entering value-edit mode.
+    """
+    __slots__ = ("label", "group", "action", "_value", "_adjust", "_select")
+
+    def __init__(self, label, value, adjust, select, group="", action=False):
         self.label   = label
+        self.group   = group
+        self.action  = action
         self._value  = value
         self._adjust = adjust
         self._select = select

@@ -328,10 +328,10 @@ closes the page and jumps to that tab.
 | **8 / 2** | selection up / down |
 | **4 / 6** | adjust value (SETTINGS, MIDI, PRESETS pages) |
 | **5** | primary action: load (BROWSER/SHADERS/PRESETS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT) |
-| **Enter** | BROWSER/SHADERS/PRESETS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
+| **Enter** | SETTINGS: open the highlighted row for editing (or fire an action row); BROWSER/SHADERS/PRESETS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
 | **7 / 9** | previous / next page (wraps) |
-| **+** | scroll up (alternative to 8) |
-| **Bksp** | scroll down (SETTINGS); reset CC (MIDI); eject (IMPORT); arm/confirm delete (BROWSER, PRESETS) |
+| **+** | scroll up (alternative to 8) — steps the value instead while a SETTINGS row is in edit mode |
+| **Bksp** | scroll down (SETTINGS — steps the value instead while a row is in edit mode); reset CC (MIDI); eject (IMPORT); arm/confirm delete (BROWSER, PRESETS) |
 
 While a menu page is open, every setting you change (overlay/blend toggles,
 FX/GEN cycling, params, MIDI CC bindings) applies to the live output
@@ -371,22 +371,32 @@ Lists saved presets (`presets/*.json` — shader + FX + params snapshots).
 
 ### SETTINGS page
 
-The SETTINGS page header shows the Pi's current IP address (useful for SSH when the display is the only UI available). Rows are laid out as a slider grid with three action buttons underneath.
+The SETTINGS page header shows the Pi's current IP address (useful for SSH
+when the display is the only UI available). Rows are a plain scrolling list,
+grouped under headers — **+**/**Bksp** move the selection up/down (headers
+are skipped), **Enter** opens the highlighted row for editing.
 
-| Row | Description |
-|---|---|
-| MODE | instrument mode — SAMPLER/SHADER/LIVE (4/6 or 5 cycles) |
-| LIVE MODE | ON/OFF — OFF removes LIVE from the mode cycle |
-| PLAY | sampler playback mode (see *Playback modes*) |
-| CAM RES | camera capture: 320×180 / 640×360 / 1280×720 (applies on next LIVE entry) |
-| VID SCALE | video scaling mode for mismatched aspect ratios |
-| OVERLAY | V-overlay on/off toggle |
-| BLEND | shader blend on/off toggle |
-| FX | cycle the FX chain's currently-edited slot to the next/previous FX shader |
-| GEN | cycle the active generative shader |
-| SAVE PREFS | write current state to `prefs.json` now |
-| RESTART | restart the application |
-| SYSTEM | quit the application (a Pi poweroff would need root; the service can't escalate) |
+Editing works like the params screens: **Enter** on a value row turns the row
+amber and puts it in **edit mode**, where **+**/**Bksp** step the value
+(`‹ value ›` arrows show this is live); **Enter** again closes edit mode and
+returns +/Bksp to scrolling. The three SYSTEM rows are *actions*, not values —
+**Enter** fires them immediately rather than opening edit mode. (**4**/**6**
+still adjust the highlighted value directly, in or out of edit mode.)
+
+| Group | Row | Description |
+|---|---|---|
+| PLAYBACK | MODE | instrument mode — SAMPLER/SHADER/LIVE |
+| PLAYBACK | LIVE MODE | ON/OFF — OFF removes LIVE from the mode cycle |
+| PLAYBACK | PLAY | sampler playback mode (see *Playback modes*) |
+| VIDEO | CAM RES | camera capture: 320×180 / 640×360 / 1280×720 (applies on next LIVE entry) |
+| VIDEO | VID SCALE | video scaling mode for mismatched aspect ratios |
+| MIX | OVERLAY | V-overlay on/off toggle |
+| MIX | BLEND | shader blend on/off toggle |
+| SHADERS | FX | cycle the FX chain's currently-edited slot to the next/previous FX shader |
+| SHADERS | GEN | cycle the active generative shader |
+| SYSTEM | SAVE PREFS | *(action)* write current state to `prefs.json` now |
+| SYSTEM | RESTART | *(action)* restart the application |
+| SYSTEM | QUIT | *(action)* quit the application (a Pi poweroff would need root; the service can't escalate) |
 
 Note: this page has on/off toggles for OVERLAY and BLEND, and cycle actions
 for FX/GEN, but no rows for their mode/amount/source/palette/hue/sat details
@@ -438,7 +448,7 @@ shows `RUN install-usb-import.sh`.
    in slot order (4→5→…→9→4), advancing at each clip's end or OUT point.
 
 ### Chain multiple FX over the video
-1. Press **-** (FX tab). Tap an FX cell to add it to the chain (up to 4 at
+1. Press **/** (FX tab). Tap an FX cell to add it to the chain (up to 4 at
    once) — its cell gets a `[n]` badge showing its position; you stay on the
    grid, so you can keep tapping to build up the whole chain before touching
    any params. Tap it again to remove it.
