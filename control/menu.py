@@ -660,8 +660,16 @@ class Menu:
             "FX", _fx_label,
             adjust=lambda d: inst.shader.cycle(d, kind="fx"),
             select=lambda: inst.shader.cycle(+1, kind="fx")))
+        def _gen_label():
+            chain = getattr(cfg, "shader_chain", [])
+            if not chain:
+                return "—"
+            slot  = getattr(cfg, "shader_edit_slot", 0)
+            names = [s.replace(".glsl","").upper() for s in chain]
+            tag   = f"[{slot+1}/{len(chain)}] " if len(chain) > 1 else ""
+            return tag + (names[slot] if slot < len(names) else names[0])
         items.append(_Item(
-            "GEN", lambda: (cfg.current_shader or "—"),
+            "GEN", _gen_label,
             adjust=lambda d: inst.shader.cycle(d, kind="generative"),
             select=lambda: inst.shader.cycle(+1, kind="generative")))
 

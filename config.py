@@ -61,9 +61,21 @@ class Config:
         self.camera_height = 360
         self.CAMERA_RESOLUTIONS = [(320, 180), (640, 360), (1280, 720)]
 
-        # Generative-shader params, live-tweakable.  Shaders declare as many
-        # PARAM_N defines as they need (up to 8); extra slots default to 0.5.
-        self.params = {f"p{n}": 0.5 for n in range(1, 11)}
+        # Generative shader chain: up to 4 generative shaders stacked in
+        # sequence, mirroring the FX chain below. shader_params_chain[i]
+        # holds slot i's own p1-p10; shader_blend_chain[i] holds slot i's
+        # blend mode/amount against whatever is below it (the previous
+        # generative layer, or nothing for the bottom slot — a generative
+        # shader synthesizes its image from scratch, so slot 0 never blends
+        # against incoming video the way the FX chain's bottom layer does).
+        # shader_edit_slot selects which slot the SHDR params screen edits.
+        self.shader_chain        = []
+        self.shader_params_chain = []
+        self.shader_blend_chain  = []
+        self.shader_edit_slot    = 0
+        # Backward-compat aliases: always kept in sync via _sync_shader_compat().
+        self.params             = {f"p{n}": 0.5 for n in range(1, 11)}
+        self.shader_layer_blend = {"mode": "normal", "amt": 1.0}
         # FX chain: up to 3 FX shader names stacked in sequence.
         # fx_params_chain[i] holds the independent params for chain slot i.
         # fx_edit_slot selects which chain slot the params screen edits.
@@ -213,6 +225,28 @@ class Config:
         'midi_target_cc',
     ]
 
+    def _sync_shader_compat(self):
+        """Keep backward-compat aliases (current_shader / params /
+        shader_layer_blend) in sync with shader_chain / shader_params_chain /
+        shader_blend_chain — same pattern as _sync_fx_compat()."""
+        n = len(self.shader_chain)
+        _default_params = {f"p{i}": 0.5 for i in range(1, 11)}
+        _default_blend  = {"mode": "normal", "amt": 1.0}
+        if n == 0:
+            self.shader_edit_slot   = 0
+            self.current_shader    = None
+            self.params             = self.shader_params_chain[0] if self.shader_params_chain else _default_params
+            self.shader_layer_blend = self.shader_blend_chain[0] if self.shader_blend_chain else dict(_default_blend)
+            return
+        self.shader_edit_slot = max(0, min(self.shader_edit_slot, n - 1))
+        while len(self.shader_params_chain) < n:
+            self.shader_params_chain.append(dict(_default_params))
+        while len(self.shader_blend_chain) < n:
+            self.shader_blend_chain.append(dict(_default_blend))
+        self.current_shader     = self.shader_chain[self.shader_edit_slot]
+        self.params             = self.shader_params_chain[self.shader_edit_slot]
+        self.shader_layer_blend = self.shader_blend_chain[self.shader_edit_slot]
+
     def _sync_fx_compat(self):
         """Keep backward-compat aliases in sync with fx_chain / fx_params_chain
         / fx_blend_chain."""
@@ -250,6 +284,19 @@ class Config:
                 setattr(self, key, data[key])
         if 'params' in data:
             self.params.update(data['params'])
+        if 'shader_chain' in data and isinstance(data['shader_chain'], list):
+            self.shader_chain = data['shader_chain']
+        if 'shader_params_chain' in data and isinstance(data['shader_params_chain'], list):
+            self.shader_params_chain = data['shader_params_chain']
+        if 'shader_blend_chain' in data and isinstance(data['shader_blend_chain'], list):
+            self.shader_blend_chain = data['shader_blend_chain']
+        elif not self.shader_chain and data.get('current_shader'):
+            # Legacy (pre-stack) prefs: promote the single current_shader/params
+            # into a one-entry chain.
+            self.shader_chain        = [data['current_shader']]
+            self.shader_params_chain = [dict(self.params)]
+            self.shader_blend_chain  = [{"mode": "normal", "amt": 1.0}]
+        self._sync_shader_compat()
         if 'fx_chain' in data and isinstance(data['fx_chain'], list):
             self.fx_chain = data['fx_chain']
         if 'fx_params_chain' in data and isinstance(data['fx_params_chain'], list):
@@ -275,7 +322,10 @@ class Config:
 
     def save_prefs(self, sampler_mode=None):
         data = {key: getattr(self, key, None) for key in self._PREFS_ATTRS}
-        data['params']          = dict(self.params)
+        data['params']              = dict(self.params)
+        data['shader_chain']        = list(self.shader_chain)
+        data['shader_params_chain'] = [dict(p) for p in self.shader_params_chain]
+        data['shader_blend_chain']  = [dict(b) for b in self.shader_blend_chain]
         data['fx_params']       = dict(self.fx_params)
         data['fx_chain']        = list(self.fx_chain)
         data['fx_params_chain'] = [dict(p) for p in self.fx_params_chain]
@@ -317,10 +367,24 @@ class Config:
         except Exception as e:
             log.warning("preset load error %s: %s", name, e)
             return {}
-        if "shader" in data:
-            self.current_shader = data["shader"]
-        if "params" in data:
-            self.params.update(data["params"])
+        # Generative shader chain — prefer new list format, fall back to the
+        # legacy single-shader keys.
+        if "shader_chain" in data and isinstance(data["shader_chain"], list):
+            self.shader_chain = list(data["shader_chain"])
+            if "shader_params_chain" in data and isinstance(data["shader_params_chain"], list):
+                self.shader_params_chain = [dict(p) for p in data["shader_params_chain"]]
+            if "shader_blend_chain" in data and isinstance(data["shader_blend_chain"], list):
+                self.shader_blend_chain = [dict(b) for b in data["shader_blend_chain"]]
+            self.shader_edit_slot = 0
+        elif data.get("shader"):
+            self.shader_chain        = [data["shader"]]
+            _defp = {f"p{i}": 0.5 for i in range(1, 11)}
+            if "params" in data:
+                _defp.update(data["params"])
+            self.shader_params_chain = [_defp]
+            self.shader_blend_chain  = [{"mode": "normal", "amt": 1.0}]
+            self.shader_edit_slot    = 0
+        self._sync_shader_compat()
         # FX chain — prefer new list format, fall back to legacy single-fx key
         if "fx_chain" in data and isinstance(data["fx_chain"], list):
             self.fx_chain = list(data["fx_chain"])
@@ -347,12 +411,15 @@ class Config:
     def save_preset(self, name: str):
         path = os.path.join(self.presets_dir, name)
         data = {
-            "version": 2,
+            "version": 3,
             "mode":      self.current_mode,
-            "shader":    self.current_shader,
+            "shader":    self.current_shader,      # legacy compat: edit slot or None
+            "params":    dict(self.params),        # legacy compat: current edit slot
+            "shader_chain":        list(self.shader_chain),
+            "shader_params_chain": [dict(p) for p in self.shader_params_chain],
+            "shader_blend_chain":  [dict(b) for b in self.shader_blend_chain],
             "fx":        self.current_fx,          # legacy compat: slot 0 or None
             "fx_chain":  list(self.fx_chain),
-            "params":    dict(self.params),
             "fx_params": dict(self.fx_params),     # legacy compat: current edit slot
             "fx_params_chain": [dict(p) for p in self.fx_params_chain],
             "fx_blend_chain":  [dict(b) for b in self.fx_blend_chain],

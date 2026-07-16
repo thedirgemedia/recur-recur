@@ -68,13 +68,16 @@ class RecurInstrument:
 
         # Per-mode volatile state — saved before leaving a mode, restored on
         # re-entry. Initialized from prefs so the first return to SHADER keeps
-        # whatever blend/fx-stack state was active at last shutdown.
+        # whatever blend/fx-stack/generative-stack state was active at last
+        # shutdown.
         self._mode_states = {
             "SHADER": {
-                "shader_blend":    getattr(cfg, "shader_blend",    False),
-                "shader_fx_stack": getattr(cfg, "shader_fx_stack", False),
-                "current_shader":  getattr(cfg, "current_shader",  None),
-                "params":          dict(cfg.params),
+                "shader_blend":        getattr(cfg, "shader_blend",    False),
+                "shader_fx_stack":     getattr(cfg, "shader_fx_stack", False),
+                "shader_chain":        list(getattr(cfg, "shader_chain", [])),
+                "shader_params_chain": [dict(p) for p in getattr(cfg, "shader_params_chain", [])],
+                "shader_blend_chain":  [dict(b) for b in getattr(cfg, "shader_blend_chain", [])],
+                "shader_edit_slot":    getattr(cfg, "shader_edit_slot", 0),
             }
         }
 
@@ -90,10 +93,12 @@ class RecurInstrument:
         """Snapshot volatile SHADER-mode fields before leaving that mode."""
         if mode == "SHADER":
             self._mode_states["SHADER"] = {
-                "shader_blend":    self.cfg.shader_blend,
-                "shader_fx_stack": self.cfg.shader_fx_stack,
-                "current_shader":  self.cfg.current_shader,
-                "params":          dict(self.cfg.params),
+                "shader_blend":        self.cfg.shader_blend,
+                "shader_fx_stack":     self.cfg.shader_fx_stack,
+                "shader_chain":        list(self.cfg.shader_chain),
+                "shader_params_chain": [dict(p) for p in self.cfg.shader_params_chain],
+                "shader_blend_chain":  [dict(b) for b in self.cfg.shader_blend_chain],
+                "shader_edit_slot":    self.cfg.shader_edit_slot,
             }
 
     def _restore_mode_state(self, mode):
@@ -102,10 +107,14 @@ class RecurInstrument:
             state = self._mode_states.get("SHADER", {})
             self.cfg.shader_blend    = state.get("shader_blend",    False)
             self.cfg.shader_fx_stack = state.get("shader_fx_stack", False)
-            # Restore shader name so _apply_mode() picks it up.
-            # (shader.load(None) in SAMPLER entry clears cfg.current_shader.)
-            if state.get("current_shader"):
-                self.cfg.current_shader = state["current_shader"]
+            # Restore the whole generative stack so _apply_mode() picks it
+            # up. (shader.load(None) in SAMPLER entry clears shader_chain.)
+            if state.get("shader_chain"):
+                self.cfg.shader_chain        = list(state["shader_chain"])
+                self.cfg.shader_params_chain = [dict(p) for p in state.get("shader_params_chain", [])]
+                self.cfg.shader_blend_chain  = [dict(b) for b in state.get("shader_blend_chain", [])]
+                self.cfg.shader_edit_slot    = state.get("shader_edit_slot", 0)
+                self.cfg._sync_shader_compat()
 
     def set_mode(self, name: str):
         name = name.upper()
@@ -194,20 +203,27 @@ class RecurInstrument:
             if self.sampler._active_source != 'camera':
                 self.sampler._cmd_async("set_property", "loop-file", "inf")
             self.sampler.resume()
-            # Restore shader — current_shader was set by _restore_mode_state().
-            cur  = self.cfg.current_shader
+            # The whole generative stack (+ its per-slot params/blends) was
+            # already restored into cfg.shader_chain etc. by
+            # _restore_mode_state() — just validate it against what's still
+            # on disk (files can change between sessions) and push it to
+            # mpv, rather than going through shader.load()/_read_shader_defaults()
+            # which would reset params to authored defaults.
             gens = self.shader.list_shaders(kind="generative")
-            if cur not in gens:
-                cur = gens[0] if gens else None
-            self.shader.load(cur)
-            # shader.load() calls _read_defaults() which resets cfg.params to the
-            # file's authored values.  Re-apply the params the user had set before
-            # leaving SHADER mode, but only when returning to the same shader.
-            _ms = self._mode_states.get("SHADER", {})
-            if _ms.get("current_shader") == cur and _ms.get("params"):
-                self.cfg.params.update(_ms["params"])
-                if self.shader.current:
-                    self.shader.reapply()
+            valid_chain = [s for s in self.cfg.shader_chain if s in gens]
+            if valid_chain != self.cfg.shader_chain:
+                keep_idx = [i for i, s in enumerate(self.cfg.shader_chain) if s in gens]
+                self.cfg.shader_params_chain = [self.cfg.shader_params_chain[i]
+                                                for i in keep_idx if i < len(self.cfg.shader_params_chain)]
+                self.cfg.shader_blend_chain  = [self.cfg.shader_blend_chain[i]
+                                                for i in keep_idx if i < len(self.cfg.shader_blend_chain)]
+                self.cfg.shader_chain     = valid_chain
+                self.cfg.shader_edit_slot = 0
+                self.cfg._sync_shader_compat()
+            if not self.cfg.shader_chain and gens:
+                self.shader.load(gens[0])
+            else:
+                self.shader.reapply()
         elif self._mode == "LIVE":
             self.shader.load(None)
             self.sampler.play_camera()
@@ -239,9 +255,18 @@ class RecurInstrument:
         gen_shader — a SHADERS selection to make the active generative, or None.
         """
         if gen_shader is not None:
-            self.cfg.current_shader = gen_shader
             if self._mode == "SHADER":
                 self.shader.load(gen_shader)
+            else:
+                # Not in SHADER mode yet — stage it into the mode-state cache
+                # (mirrors apply_preset) so switching into SHADER mode later
+                # picks it up, replacing whatever stack was there before.
+                ms = self._mode_states.setdefault("SHADER", {})
+                ms["shader_chain"]        = [gen_shader]
+                ms["shader_params_chain"] = [{f"p{n}": 0.5 for n in range(1, 11)}]
+                ms["shader_blend_chain"]  = [{"mode": "normal", "amt": 1.0}]
+                ms["shader_edit_slot"]    = 0
+                self.cfg.current_shader = gen_shader   # cosmetic: SHADERS page "▶" marker
         if clip_idx is not None:
             self.sampler.load(clip_idx)
             self.sampler.trigger()
@@ -264,41 +289,35 @@ class RecurInstrument:
         """Apply a loaded preset dict to the live instrument state.
 
         Switches to the saved mode if it differs from the current one.
-        For SHADER mode: primes the mode-state cache with the preset's shader
-        and params so _apply_mode() picks them up cleanly via _restore_mode_state.
+        cfg.load_preset() (which produced `data`) already populated
+        cfg.shader_chain / shader_params_chain / shader_blend_chain directly
+        from the file, so this just decides how/when to push that into
+        _mode_states and onto the live output.
         """
         cfg         = self.cfg
         target_mode = data.get("mode", "").upper() or None
 
         if target_mode == "SHADER":
-            # Prime the cache so set_mode/restore_mode_state loads the right shader
-            # and re-applies the preset params after _read_defaults() resets them.
+            # Prime the cache so set_mode/_restore_mode_state picks up the
+            # preset's whole generative stack (bypassing shader.load()'s
+            # default-param reset).
             ms = self._mode_states.setdefault("SHADER", {})
-            if data.get("shader"):
-                ms["current_shader"] = data["shader"]
-                cfg.current_shader   = data["shader"]
-            if "params" in data:
-                ms["params"] = dict(data["params"])
+            ms["shader_chain"]        = list(cfg.shader_chain)
+            ms["shader_params_chain"] = [dict(p) for p in cfg.shader_params_chain]
+            ms["shader_blend_chain"]  = [dict(b) for b in cfg.shader_blend_chain]
+            ms["shader_edit_slot"]    = cfg.shader_edit_slot
             if "shader_blend" in data:
                 ms["shader_blend"] = data["shader_blend"]
 
-        # Switch mode (calls _restore_mode_state → _apply_mode, loads shader).
+        # Switch mode (calls _restore_mode_state → _apply_mode, loads the stack).
         if target_mode and target_mode != self.mode:
             self.set_mode(target_mode)
         elif target_mode == "SHADER" and self.mode == "SHADER":
-            # Already in SHADER — reload shader and re-apply params directly.
-            if data.get("shader"):
-                self.shader.load(data["shader"])
-            if "params" in data:
-                cfg.params.update(data["params"])
-                if self.shader.current:
-                    self.shader.reapply()
-        else:
-            # Non-SHADER preset or no mode field — update config for next entry.
-            if data.get("shader"):
-                cfg.current_shader = data["shader"]
-            if "params" in data:
-                cfg.params.update(data["params"])
+            # Already in SHADER — cfg's shader_chain etc. are already the
+            # preset's values; just push them live.
+            self.shader.reapply()
+        # else: non-SHADER preset or no mode field — cfg fields are already
+        # updated (by cfg.load_preset()) for the next SHADER-mode entry.
 
         # FX
         if data.get("fx"):

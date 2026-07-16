@@ -115,17 +115,20 @@ position (7 = top-left … 3 = bottom-right):
 | **1–9** | select that grid cell (see per-tab behaviour below) |
 | **+** | next page (SHADER / FX grids only — they paginate 9 shaders at a time) |
 | **Bksp** | previous page (SHADER / FX grids only) |
-| **0** | toggle **STAGED** mode — footer pill shows amber `STAGED` (picks wait for **Enter**) vs. green `LIVE` (picks apply immediately). Turning STAGED back off discards anything pending |
+| **0** | toggle **STAGED** mode (SAMPLER grid only) — footer pill shows amber `STAGED` (clip picks wait for **Enter**) vs. green `LIVE` (clip picks apply immediately). SHADER and FX grid taps always apply immediately regardless of this setting. Turning STAGED back off discards anything pending |
 | **Enter** | push all staged picks to the live output |
 | **000** | toggle the temporal trail (works from any screen) |
 
 Per-tab grid behaviour — **SHADER and FX use tap/hold**, distinguished by how
 long the key is held (see *Numpad layout* → *Tap vs. hold*); the other three
 grids are tap-only and unchanged:
-- **SHADER** — **tap** loads the shader (or unloads it if you tap the
-  currently-loaded one again — there's only ever one active generative).
-  **Hold** opens its params screen, loading it first if it wasn't already
-  active.
+- **SHADER** — lists generative shaders and doubles as the multi-shader
+  stack editor (see *Parameter editing* → SHADER below). **Tap** toggles the
+  shader in/out of the stack (up to 4 at once) — adding or removing never
+  changes the screen, so you can build up a stack with repeated taps without
+  being bounced into params. **Hold** opens that shader's params screen,
+  adding it to the stack first if it wasn't already there (without removing
+  anything else already stacked).
 - **SAMPLER** — the 6 clip slots (keys 4–9; assigned in the BROWSER menu
   page). Tap triggers the clip; tapping the currently-playing clip's key
   again drills into a **SPEED** params screen (playback speed + reverse)
@@ -134,10 +137,10 @@ grids are tap-only and unchanged:
   page). Always loads immediately — presets are never staged.
 - **FX** — lists FX shaders and doubles as the multi-FX chain editor (see
   *Parameter editing* → FX below). **Tap** toggles the FX in/out of the chain
-  (up to 4 at once) — adding one also jumps straight to its params screen so
-  you can tune it immediately. **Hold** opens an already-chained FX's params
-  screen *without* touching chain membership — the only way to inspect a
-  different chain member's params without adding or removing anything.
+  (up to 4 at once) — adding or removing never changes the screen, so you can
+  build up a chain with repeated taps without being bounced into params.
+  **Hold** opens that FX's params screen, adding it to the chain first if it
+  wasn't already there (without removing anything else already chained).
 - **SETTINGS** — six cells (BROWSER / SHADERS / PRESETS / SETTINGS / MIDI /
   IMPORT) that jump straight into the matching menu page (see *Menu system*).
 
@@ -145,12 +148,14 @@ grids are tap-only and unchanged:
 
 Release a grid key within ~0.4s and it's a **tap**; keep it held past that
 and it fires as a **hold** instead — the tap action never also fires
-afterwards. Holding always activates the item first if it wasn't already
-(load the shader / add the FX to the chain) and jumps to its params screen;
-it bypasses STAGED mode entirely, since holding to configure something is a
-workshop action, not a performance change. SAMPLER/LIVE/SETTINGS grids don't
-use hold at all — pressing those keys always dispatches immediately,
-regardless of how long you hold them.
+afterwards. On the SHADER and FX grids, tap always toggles stack membership
+immediately — STAGED mode has no effect on either grid, only on SAMPLER clip
+picks (see the table above). Holding always activates the item first if it
+wasn't already (adds the shader / FX to its stack) and jumps to its params
+screen; holding to configure something is a workshop action, not a
+performance change. SAMPLER/LIVE/SETTINGS grids don't use hold at all —
+pressing those keys always dispatches immediately, regardless of how long
+you hold them.
 
 ### Record
 
@@ -179,12 +184,33 @@ that tab's own key again while its grid is showing. Params screens are
 The header and the selected row turn amber while in edit mode, so it's
 visually obvious whether +/Bksp will move the selection or change a value.
 
-### SHADER params — the loaded generative shader's own p1–pN
+### SHADER params — the edited stack slot's own p1–pN, plus blend mode/amount (slots 1+)
 
-Labels are read from the shader source. Loading a generative resets its
-params to the authored defaults; knobs and MIDI (CC1–4 family) feed the same
+Up to 4 generative shaders can be stacked simultaneously (see the SHADER tab
+above). Each stack slot keeps independent params. The bottom slot (0) never
+composites — a generative shader synthesizes its picture from scratch, so
+there's nothing meaningful beneath it — so its params list is just its own
+p1–pN. Slots above the bottom also carry their own blend mode/amount — how
+that layer's output composites with the folded result of the layers below
+it — adding two extra rows:
+
+| Row | Meaning |
+|---|---|
+| `BLEND` | this layer's blend mode against the stack below it — same palette as the FX chain's per-layer blend |
+| `BLD AMT` | that blend's strength, 0–1 |
+
+**`NORMAL` is the default for every layer**, so a freshly-stacked shader
+looks unchanged until you pick a different blend mode. The params screen
+shows whichever slot is currently selected for editing, tagged
+`[slot/total]` when more than one shader is stacked. Labels are read from
+the shader source; loading a shader into a slot resets its p-params to the
+authored defaults, but leaves that slot's blend mode/amount untouched (the
+blend belongs to the *position* in the stack, not to whichever shader
+currently occupies it). Knobs and MIDI (CC1–4 family) feed the same p-param
 values. Scrolling means shaders with more than 9 params (currently only
-**starfield**, 15) are now fully reachable — see *Shaders reference*.
+**starfield**, 15) are fully reachable — see *Shaders reference*. Persists
+in `prefs.json` / presets as `shader_chain` / `shader_params_chain` /
+`shader_blend_chain`.
 
 ### SAMPLER params — FX chain params, speed, and status
 
@@ -400,12 +426,12 @@ shows `RUN install-usb-import.sh`.
 
 ### Chain multiple FX over the video
 1. Press **-** (FX tab). Tap an FX cell to add it to the chain (up to 4 at
-   once) — its cell gets a `[n]` badge showing its position, and you land
-   straight on its params screen to start tuning it. Tap it again (from the
-   grid) to remove it from the chain.
-2. To check or adjust a *different* chain member without disturbing the
-   others, **hold** its key instead of tapping — that opens its params
-   without adding/removing anything.
+   once) — its cell gets a `[n]` badge showing its position; you stay on the
+   grid, so you can keep tapping to build up the whole chain before touching
+   any params. Tap it again to remove it.
+2. To tune a chained FX's params (or check/adjust a *different* member
+   without disturbing the others), **hold** its key — that opens its params
+   screen without adding/removing anything.
 3. On an FX's params screen: scroll with **+ / Bksp**, jump to a row with
    **1–9**, press **Enter** to edit the highlighted row, then **+ / Bksp** to
    step its value, **Enter** again to stop editing. The last two rows —
@@ -425,15 +451,22 @@ shows `RUN install-usb-import.sh`.
    clip or camera loaded beneath it — otherwise it's forced to plain
    pass-through so it never mixes with the blank keep-alive picture.
 
-### Load a generative shader
-1. Press **Num** (SHADER tab). Tap a shader cell to load it live (or stage
-   it first with **0**, then **Enter** to push) — tap the loaded one again
-   to unload it.
-2. **Hold** a shader's key to jump straight to its params screen (loading it
-   first if it wasn't already active). Scroll with **+ / Bksp**, jump with
-   **1–9**, **Enter** to edit a row, **+ / Bksp** to step its value.
-3. Chain FX on top of it via the FX tab (above) — the pipeline is
-   generative → (blend, if on) → FX chain → colour.
+### Stack generative shaders
+1. Press **Num** (SHADER tab). Tap a shader cell to add it to the stack (up
+   to 4 at once) — its cell gets a `[n]` badge showing its position; you
+   stay on the grid, so you can keep tapping to build up the whole stack
+   before touching any params. Tap it again to remove it.
+2. To tune a stacked shader's params (or check/adjust a *different* member
+   without disturbing the others), **hold** its key — that opens its params
+   screen, adding it to the stack first if it wasn't already there (without
+   removing anything else already stacked).
+3. On a shader's params screen: scroll with **+ / Bksp**, jump to a row with
+   **1–9**, **Enter** to edit the highlighted row, then **+ / Bksp** to step
+   its value, **Enter** again to stop editing. Slots above the bottom (1+)
+   also get `BLEND` / `BLD AMT` rows — see *Parameter editing* → SHADER
+   above.
+4. Chain FX on top of the whole stack via the FX tab (above) — the pipeline
+   is generative stack → (blend-with-video, if on) → FX chain → colour.
 
 ### Record
 

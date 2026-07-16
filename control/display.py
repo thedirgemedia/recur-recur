@@ -433,6 +433,10 @@ class DisplayController:
                         getattr(_kb, "_editing_param", False),
                         getattr(cfg, "current_shader", None),
                         getattr(cfg, "current_fx",     None),
+                        tuple(getattr(cfg, "shader_chain", [])),
+                        getattr(cfg, "shader_edit_slot", 0),
+                        tuple((b.get("mode",""), round(b.get("amt",1.0),3))
+                              for b in getattr(cfg, "shader_blend_chain", [])),
                         tuple(getattr(cfg, "fx_chain", [])),
                         getattr(cfg, "fx_edit_slot",   0),
                         tuple((b.get("mode",""), round(b.get("amt",1.0),3))
@@ -603,21 +607,27 @@ class DisplayController:
                 d.text((cx, cy + 8), bot, font=font_sm, fill=tc, anchor="mm")
 
     def _render_shader_grid(self, d, font_md, font_sm, inst, cfg, col):
-        sh_list = inst.shader.list_shaders(kind="generative")
-        cur     = cfg.current_shader or ""
-        pending = self._grid_pending[0]
+        sh_list      = inst.shader.list_shaders(kind="generative")
+        shader_chain = getattr(cfg, "shader_chain", [])
         offset  = min(self._shader_grid_offset, max(0, len(sh_list) - 1) // 9 * 9)
         self._shader_grid_offset = offset
         page_items = sh_list[offset:offset + 9]
         cells = []
         for name in page_items:
-            label = name.replace(".glsl", "").upper().replace("_", " ")
-            cells.append({"label": label, "active": name == cur, "pending": name == pending})
+            label    = name.replace(".glsl", "").upper().replace("_", " ")
+            in_stack = name in shader_chain
+            # Show stack-position badge for stack members (mirrors FX grid)
+            if in_stack:
+                stack_pos = shader_chain.index(name) + 1
+                label = f"[{stack_pos}]{label[:10]}"
+            cells.append({"label": label, "active": in_stack})
         while len(cells) < 9:
             cells.append({"label": "", "empty": True})
         total_pages = max(1, (len(sh_list) + 8) // 9)
         cur_page    = offset // 9 + 1
-        section     = f"GEN SHADER  {cur_page}/{total_pages}"
+        n_stack     = len(shader_chain)
+        stack_info  = f" ({n_stack})" if n_stack else ""
+        section     = f"GEN SHADER{stack_info}  {cur_page}/{total_pages}"
         self._draw_grid(d, font_md, font_sm, section, cells, col)
 
     def _render_sampler_grid(self, d, font_md, font_sm, inst, cfg, col):
@@ -842,17 +852,32 @@ class DisplayController:
     # ── SHADER tab ────────────────────────────────────────────────────────────
 
     def _render_shader_tab(self, d, font_lg, font_md, font_sm, inst, cfg):
-        plabels  = inst.shader.param_labels()
-        all_keys = sorted(plabels.keys(), key=lambda k: int(k[1:]))
-        sel_idx  = getattr(getattr(inst, "kb", None), "_param_idx", 0)
+        plabels     = inst.shader.param_labels()
+        all_keys    = inst.shader.shader_row_keys()
+        sel_idx     = getattr(getattr(inst, "kb", None), "_param_idx", 0)
+        blend_modes = list(getattr(cfg, "FX_LAYER_BLEND_MODES", ("normal",)))
 
         def get_lbl(k):
+            if k == "__blend_mode__":
+                return "BLEND"
+            if k == "__blend_amt__":
+                return "BLD AMT"
             return plabels.get(k, k.upper()).upper()
 
         def get_val(k):
+            if k == "__blend_mode__":
+                cur = cfg.shader_layer_blend.get("mode", "normal")
+                i   = blend_modes.index(cur) if cur in blend_modes else 0
+                return i / max(1, len(blend_modes) - 1)
+            if k == "__blend_amt__":
+                return cfg.shader_layer_blend.get("amt", 1.0)
             return cfg.params.get(k, 0.5)
 
         def fmt_val(k, v):
+            if k == "__blend_mode__":
+                return cfg.shader_layer_blend.get("mode", "normal").upper()[:9]
+            if k == "__blend_amt__":
+                return f"{v:.2f}"
             ul = get_lbl(k)
             if ul.endswith((' X', ' Y')) or ul in ('X', 'Y'):
                 return f"{(v - 0.5) * 200:+.0f}"
@@ -860,7 +885,11 @@ class DisplayController:
                 return str(max(1, round(v * 500)))
             return f"{v:.2f}"
 
-        name    = (cfg.current_shader or "—").replace(".glsl", "").upper()
+        shader_chain = getattr(cfg, "shader_chain", [])
+        slot = getattr(cfg, "shader_edit_slot", 0)
+        n    = len(shader_chain)
+        slot_tag = f" [{slot+1}/{n}]" if n > 1 else ""
+        name    = ((cfg.current_shader or "—").replace(".glsl", "").upper()) + slot_tag
         editing = getattr(getattr(inst, "kb", None), "_editing_param", False)
         self._render_params_screen(d, font_sm, TAB_COL["SHADER"], name,
                                    all_keys, get_lbl, get_val, fmt_val, sel_idx,

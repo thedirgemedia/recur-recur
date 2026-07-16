@@ -24,11 +24,10 @@ Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
   SHADER grid — tap: load/unload the one active generative shader (tap the
                 loaded one again to unload). Hold: open its params screen,
                 loading it first if it wasn't already active.
-  FX grid     — tap: toggle the FX in/out of the chain (up to 4 at once);
-                adding one also jumps straight to its params screen. Hold:
-                open an already-chained FX's params screen without touching
-                chain membership (needed to view a different chain member's
-                params without adding/removing anything).
+  FX grid     — tap: toggle the FX in/out of the chain (up to 4 at once) —
+                never changes screens, whether adding or removing. Hold:
+                open that FX's params screen (adding it to the chain first
+                if it wasn't already there, without removing anything else).
   SAMPLER/LIVE/SETTINGS grids — unchanged: tap triggers a clip/preset or
                 opens a menu page; pressing the already-playing clip's key
                 opens a SPEED params screen instead.
@@ -341,60 +340,25 @@ class KeyboardController:
         inst = self.inst
         tab  = _disp._active_tab
 
-        if tab == 0:   # SHADER_GRID: tap loads/unloads the one active generative shader
-            from control.display import _GRID_SLOTS as _GS
-            try:
-                pos = _GS.index(slot)
-            except ValueError:
+        if tab in (0, 3):   # SHADER_GRID / FX_GRID: tap ONLY toggles stack
+                            # membership — never changes screens. Opening
+                            # params is hold's job (see _grid_hold), even for
+                            # a newly-added item. Both grids are now real
+                            # stacks (up to 4) with identical semantics.
+            kind, offset_attr, toggle_fn, chain_attr, tag = (
+                ("generative", "_shader_grid_offset", inst.shader.shader_chain_toggle,
+                 "shader_chain", "SHADER")
+                if tab == 0 else
+                ("fx", "_fx_grid_offset", inst.shader.fx_chain_toggle,
+                 "fx_chain", "FX")
+            )
+            name = self._resolve_grid_item(slot, _disp, kind, offset_attr)
+            if name is None:
                 return
-            sh_list = inst.shader.list_shaders(kind="generative")
-            idx     = _disp._shader_grid_offset + pos
-            if idx >= len(sh_list):
-                return
-            sname   = sh_list[idx]
-            cur     = inst.cfg.current_shader or ""
-            pending = _disp._grid_pending[0]
-            if sname == cur or sname == pending:
-                # Tap the active/staged shader again -> unload / un-stage it
-                if pending == sname:
-                    _disp._grid_pending[0] = None
-                    inst.osd.show("UNSTAGED")
-                else:
-                    inst.shader.load(None)
-                    inst.osd.show("SHADER: —")
-                return
-            if _disp._staged:
-                _disp._grid_pending[0] = sname
-                inst.osd.show(f"STAGED: {sname.replace('.glsl','').upper()}")
-            else:
-                inst.shader.load(sname)
-                inst.osd.show(f"SHADER: {sname.replace('.glsl','').upper()}")
-            return
-
-        if tab == 3:   # FX_GRID: tap toggles chain membership
-            from control.display import _GRID_SLOTS as _GS
-            try:
-                pos = _GS.index(slot)
-            except ValueError:
-                return
-            fx_list = inst.shader.list_shaders(kind="fx")
-            idx     = _disp._fx_grid_offset + pos
-            if idx >= len(fx_list):
-                return
-            name_fx      = fx_list[idx]
-            was_in_chain = name_fx in inst.cfg.fx_chain
-            inst.shader.fx_chain_toggle(name_fx)
-            chain_str = " > ".join(f.replace(".glsl","").upper()
-                                   for f in inst.cfg.fx_chain) if inst.cfg.fx_chain else "—"
-            if not was_in_chain:
-                # Just added -> jump straight to its params so it can be tuned.
-                self._param_layer   = 1
-                self._param_idx     = 0
-                self._editing_param = False
-                _disp.go_to_params_screen()
-                inst.osd.show(f"FX ADDED: {chain_str}")
-            else:
-                inst.osd.show(f"FX: {chain_str}")
+            toggle_fn(name)
+            chain = getattr(inst.cfg, chain_attr)
+            chain_str = " > ".join(n.replace(".glsl", "").upper() for n in chain) if chain else "—"
+            inst.osd.show(f"{tag}: {chain_str}")
             return
 
         if tab == 4:   # SETTINGS_GRID: open menu page
@@ -442,57 +406,56 @@ class KeyboardController:
         # LIVE mode: load immediately.
         self._load_slot(tab, slot, inst)
 
+    def _resolve_grid_item(self, slot, _disp, kind, offset_attr):
+        """Map a numpad key on a paginated grid (SHADER or FX) to the shader
+        filename at that grid position, or None if the slot is empty/out of
+        range. Shared by the tap and hold handlers for both grids."""
+        from control.display import _GRID_SLOTS as _GS
+        try:
+            pos = _GS.index(slot)
+        except ValueError:
+            return None
+        lst    = self.inst.shader.list_shaders(kind=kind)
+        offset = getattr(_disp, offset_attr)
+        idx    = offset + pos
+        return lst[idx] if idx < len(lst) else None
+
     def _grid_hold(self, key, _disp):
         """Handle a hold (long-press) on a SHADER/FX grid cell: jump straight
-        to that item's params screen, activating it first if it wasn't
-        already (see module docstring). Bypasses STAGED mode — holding to
-        configure something is a workshop action, not a performance change."""
+        to that item's params screen. If it's already in the stack, this
+        only SELECTS it for editing (no membership change); if not, it's
+        added first (auto-activate — see module docstring). Bypasses STAGED
+        mode — holding to configure something is a workshop action, not a
+        performance change."""
         slot = int(key)
         inst = self.inst
         tab  = _disp._active_tab
 
-        if tab == 0:   # SHADER_GRID
-            from control.display import _GRID_SLOTS as _GS
-            try:
-                pos = _GS.index(slot)
-            except ValueError:
-                return
-            sh_list = inst.shader.list_shaders(kind="generative")
-            idx     = _disp._shader_grid_offset + pos
-            if idx >= len(sh_list):
-                return
-            sname = sh_list[idx]
-            if sname != (inst.cfg.current_shader or ""):
-                inst.shader.load(sname)
-            self._param_layer   = 0
-            self._param_idx     = 0
-            self._editing_param = False
-            _disp.go_to_params_screen()
-            inst.osd.show(f"PARAMS: {sname.replace('.glsl','').upper()}")
+        if tab not in (0, 3):
             return
+        if tab == 0:
+            kind, offset_attr, toggle_fn = "generative", "_shader_grid_offset", inst.shader.shader_chain_toggle
+            chain_attr, edit_slot_attr   = "shader_chain", "shader_edit_slot"
+            sync_fn, param_layer         = inst.cfg._sync_shader_compat, 0
+        else:
+            kind, offset_attr, toggle_fn = "fx", "_fx_grid_offset", inst.shader.fx_chain_toggle
+            chain_attr, edit_slot_attr   = "fx_chain", "fx_edit_slot"
+            sync_fn, param_layer         = inst.cfg._sync_fx_compat, 1
 
-        if tab == 3:   # FX_GRID
-            from control.display import _GRID_SLOTS as _GS
-            try:
-                pos = _GS.index(slot)
-            except ValueError:
-                return
-            fx_list = inst.shader.list_shaders(kind="fx")
-            idx     = _disp._fx_grid_offset + pos
-            if idx >= len(fx_list):
-                return
-            name_fx  = fx_list[idx]
-            fx_chain = inst.cfg.fx_chain
-            if name_fx in fx_chain:
-                inst.cfg.fx_edit_slot = fx_chain.index(name_fx)
-                inst.cfg._sync_fx_compat()
-            else:
-                inst.shader.fx_chain_toggle(name_fx)   # adds it, selects it
-            self._param_layer   = 1
-            self._param_idx     = 0
-            self._editing_param = False
-            _disp.go_to_params_screen()
-            inst.osd.show(f"PARAMS: {name_fx.replace('.glsl','').upper()}")
+        name = self._resolve_grid_item(slot, _disp, kind, offset_attr)
+        if name is None:
+            return
+        chain = getattr(inst.cfg, chain_attr)
+        if name in chain:
+            setattr(inst.cfg, edit_slot_attr, chain.index(name))
+            sync_fn()
+        else:
+            toggle_fn(name)   # adds it, selects it
+        self._param_layer   = param_layer
+        self._param_idx     = 0
+        self._editing_param = False
+        _disp.go_to_params_screen()
+        inst.osd.show(f"PARAMS: {name.replace('.glsl','').upper()}")
 
     def _active_slot_for_tab(self, tab, inst):
         """Return the slot number of the currently loaded item, or None."""
@@ -604,7 +567,7 @@ class KeyboardController:
             return list(self._trail_slots())
         if self._param_layer == 5:
             return list(self._speed_slots())
-        return self._get_shdr_keys()
+        return self.inst.shader.shader_row_keys()
 
     def _scroll_param(self, direction):
         """+/Bksp outside edit mode: move the selection up/down the list."""
@@ -648,24 +611,22 @@ class KeyboardController:
                 inst.osd.show(f"SPEED: {spd:.2f}x")
             else:
                 inst.osd.show("DIR: REVERSE")
-        else:                          # SHDR generative params
-            keys = self._get_shdr_keys()
-            if not keys:
+        else:                          # SHDR: generative params (+ blend mode/amount if slot > 0)
+            row_keys = inst.shader.shader_row_keys()
+            if not row_keys:
                 return
-            self._param_idx = min(n - 1, len(keys) - 1)
-            key = keys[self._param_idx]
-            lbl = inst.shader.param_labels().get(key, key.upper())
-            inst.osd.show(f"PARAM: {lbl.upper()}")
+            self._param_idx = min(n - 1, len(row_keys) - 1)
+            key = row_keys[self._param_idx]
+            label = ("BLEND" if key == "__blend_mode__" else
+                     "BLD AMT" if key == "__blend_amt__" else
+                     inst.shader.param_labels().get(key, key.upper()).upper())
+            inst.osd.show(f"PARAM: {label}")
 
     def _avail_layers(self):
         """Param layers valid for the current mode."""
         if self.inst.mode == "SHADER":
             return [0, 1, 2, 3, 4, 5]
         return [1, 2, 3, 4, 5]
-
-    def _get_shdr_keys(self):
-        """Sorted param keys for the current generative shader (e.g. p1..p8)."""
-        return sorted(self.inst.shader.param_labels().keys(), key=lambda k: int(k[1:]))
 
     def _colour_slots(self):
         return ("hue", "sat", "trl_opc", "trl_decay")
@@ -695,11 +656,23 @@ class KeyboardController:
         cfg  = self.inst.cfg
         inst = self.inst
         sign = 1.0 if delta > 0 else -1.0
-        if self._param_layer == 0:        # ── SHDR: generative params (dynamic)
-            keys = self._get_shdr_keys()
-            if not keys:
+        if self._param_layer == 0:        # ── SHDR: generative params + this slot's blend mode/amount
+            row_keys = inst.shader.shader_row_keys()
+            if not row_keys:
                 return
-            key = keys[self._param_idx % len(keys)]
+            key = row_keys[self._param_idx % len(row_keys)]
+            if key == "__blend_mode__":
+                inst.shader.cycle_shader_layer_blend_mode(1 if delta > 0 else -1)
+                inst.osd.show(f"BLEND: {cfg.shader_layer_blend.get('mode','normal').upper()}")
+                return
+            if key == "__blend_amt__":
+                cur = cfg.shader_layer_blend.get("amt", 1.0)
+                new = clamp01(cur + delta)
+                if new == cur:
+                    return
+                inst.shader.set_shader_layer_blend_amount(new)
+                inst.osd.show(f"BLD AMT: {new:.2f}")
+                return
             cur = cfg.params.get(key, 0.5)
             new = clamp01(cur + delta)
             if new == cur:
