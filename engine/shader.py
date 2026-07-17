@@ -1190,8 +1190,12 @@ class ShaderEngine:
             if self.cfg.fx_chain:
                 self._apply_fx_chain_only()
             else:
-                self._refresh_color()
-                self._push_shaders()
+                # Nothing left to render. This must go through
+                # _finalize_shaders so _tmp_active is actually emptied:
+                # _push_shaders() re-sends list(self._tmp_active), so pushing
+                # without clearing it left the last removed effect on screen
+                # (and leaked its tmp file).
+                self._finalize_shaders([])
             return
 
         active_fx  = [fx for fx in self.cfg.fx_chain if fx]
