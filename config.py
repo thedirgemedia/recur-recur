@@ -148,6 +148,28 @@ class Config:
         self.shader_blend_source  = "clip"
         self.SHADER_BLEND_SOURCES = ("clip", "live")
 
+        # ── LFOs ─────────────────────────────────────────────────────────────
+        # Three LFOs that can drive any shader/FX param. They are evaluated on
+        # the GPU (engine/shader.py substitutes a recur_lfo() call in place of a
+        # param's literal), so a modulated param costs nothing per frame — the
+        # shader is only rewritten when one of these settings changes.
+        #
+        # A param's assignment lives beside its value in the chain's params dict
+        # under an "lfo_" key: fx_params_chain[slot]["lfo_f1"] = 0 binds LFO 1
+        # to that slot's f1. None / absent = unmodulated. Keeping it in the same
+        # dict means it travels with the slot through add/remove and presets for
+        # free.
+        self.lfos = [
+            {"shape": 0, "amp": 0.5, "offset": 0.0, "period":  4.0, "bpm_sync": False, "beat": 1.0},
+            {"shape": 0, "amp": 0.3, "offset": 0.0, "period":  8.0, "bpm_sync": False, "beat": 2.0},
+            {"shape": 0, "amp": 0.3, "offset": 0.0, "period": 16.0, "bpm_sync": False, "beat": 4.0},
+        ]
+        self.lfo_bpm = 120.0
+        self.LFO_SHAPES = ("SINE", "TRI", "SAW", "SQUARE", "S&H")
+        # Musical divisions available when an LFO is synced to the BPM.
+        self.LFO_BEATS  = (0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
+        self.LFO_BEAT_LABELS = ("1/8", "1/4", "1/2", "1", "2", "4", "8", "16")
+
         # V-overlay state: self-blend of the current frame using overlay_mode,
         # mixed at overlay_blend_amount (OVL OPC). No time delay — echoes are
         # the trail's job now.
@@ -223,6 +245,7 @@ class Config:
         'camera_width', 'camera_height',
         'video_scale_mode',
         'midi_target_cc',
+        'lfos', 'lfo_bpm',
     ]
 
     def _sync_shader_compat(self):

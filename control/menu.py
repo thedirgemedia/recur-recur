@@ -35,6 +35,7 @@ import logging
 import os
 import socket
 import threading
+import time
 
 from control.midi import MIDI_TARGETS, MIDI_TARGET_LABELS, MIDI_DEFAULTS
 
@@ -94,6 +95,7 @@ class Menu:
         self._usb_status      = ""    # transient status line ("MOUNTING…", "COPIED", …)
         self._usb_import_busy = False # True while a copy/transcode thread is running
         self._usb_cancel      = threading.Event()  # set to abort in-progress import
+        self._lfo_taps        = []    # monotonic times of recent TAP presses
 
     def open_page(self, page_name):
         """Open a menu page by name, running its leave/enter hooks.
@@ -756,6 +758,108 @@ class Menu:
             "GEN", _gen_label,
             adjust=lambda d: inst.shader.cycle(d, kind="generative"),
             select=lambda: inst.shader.cycle(+1, kind="generative"), group="SHADERS"))
+
+        # ── LFO ───────────────────────────────────────────────────────────
+        # The LFOs run on the GPU (engine/shader.py substitutes a recur_lfo()
+        # call for a modulated param's literal), so every row here costs one
+        # shader rewrite and nothing per frame. A param is bound by setting
+        # "lfo_<key>" in its chain slot's params dict — no UI for that yet.
+        def _lfo_touch():
+            """Rebuild the shaders so a changed LFO takes effect."""
+            inst.shader.reapply()
+
+        def _lfo_tap():
+            now  = time.monotonic()
+            # Drop stale taps so an old session doesn't drag the average down.
+            taps = [t for t in self._lfo_taps if now - t < 3.0] + [now]
+            self._lfo_taps = taps[-4:]
+            if len(self._lfo_taps) >= 2:
+                spans = [b - a for a, b in zip(self._lfo_taps, self._lfo_taps[1:])]
+                avg   = sum(spans) / len(spans)
+                if avg > 0.05:
+                    cfg.lfo_bpm = max(20.0, min(300.0, round(60.0 / avg, 1)))
+                    _lfo_touch()
+            inst.osd.show(f"BPM {cfg.lfo_bpm:.1f}  ({len(self._lfo_taps)} taps)")
+
+        def _bpm_step(d):
+            cfg.lfo_bpm = max(20.0, min(300.0, round(cfg.lfo_bpm + d, 1)))
+            _lfo_touch()
+
+        items.append(_Item(
+            "BPM", lambda: f"{cfg.lfo_bpm:.1f}",
+            adjust=_bpm_step, select=lambda: _bpm_step(+1), group="LFO"))
+        items.append(_Item(
+            "TAP", lambda: "tap ENTER x4",
+            adjust=lambda d: _lfo_tap(), select=_lfo_tap,
+            group="LFO", action=True))
+
+        def _lfo_get(i):
+            return cfg.lfos[i] if i < len(cfg.lfos) else {}
+
+        def _shape_lbl(i):
+            l = _lfo_get(i)
+            return cfg.LFO_SHAPES[int(l.get("shape", 0)) % len(cfg.LFO_SHAPES)]
+
+        def _shape_step(i, d):
+            l = _lfo_get(i)
+            l["shape"] = (int(l.get("shape", 0)) + (1 if d > 0 else -1)) % len(cfg.LFO_SHAPES)
+            _lfo_touch()
+
+        def _rate_lbl(i):
+            l = _lfo_get(i)
+            if l.get("bpm_sync"):
+                beat = float(l.get("beat", 1.0))
+                lbl  = (cfg.LFO_BEAT_LABELS[cfg.LFO_BEATS.index(beat)]
+                        if beat in cfg.LFO_BEATS else f"{beat:g}")
+                return f"{lbl} beat"
+            return f"{float(l.get('period', 4.0)):.2f}s"
+
+        def _rate_step(i, d):
+            l = _lfo_get(i)
+            if l.get("bpm_sync"):
+                beats = list(cfg.LFO_BEATS)
+                cur   = float(l.get("beat", 1.0))
+                j     = beats.index(cur) if cur in beats else 3
+                l["beat"] = beats[max(0, min(len(beats) - 1, j + (1 if d > 0 else -1)))]
+            else:
+                # Geometric steps: 0.1s and 30s are both useful, and a linear
+                # nudge would take forever to cross that range.
+                cur = float(l.get("period", 4.0))
+                l["period"] = max(0.05, min(60.0, round(cur * (1.15 if d > 0 else 1 / 1.15), 3)))
+            _lfo_touch()
+
+        def _amt_step(i, key, d):
+            l = _lfo_get(i)
+            l[key] = max(0.0, min(1.0, round(float(l.get(key, 0.0)) + 0.05 * (1 if d > 0 else -1), 3)))
+            _lfo_touch()
+
+        def _sync_toggle(i):
+            l = _lfo_get(i)
+            l["bpm_sync"] = not l.get("bpm_sync", False)
+            _lfo_touch()
+
+        for i in range(len(cfg.lfos)):
+            grp = f"LFO {i + 1}"
+            items.append(_Item(
+                "SHAPE", (lambda i=i: _shape_lbl(i)),
+                adjust=(lambda d, i=i: _shape_step(i, d)),
+                select=(lambda i=i: _shape_step(i, +1)), group=grp))
+            items.append(_Item(
+                "RATE", (lambda i=i: _rate_lbl(i)),
+                adjust=(lambda d, i=i: _rate_step(i, d)),
+                select=(lambda i=i: _rate_step(i, +1)), group=grp))
+            items.append(_Item(
+                "AMP", (lambda i=i: f"{float(_lfo_get(i).get('amp', 0.5)):.2f}"),
+                adjust=(lambda d, i=i: _amt_step(i, "amp", d)),
+                select=(lambda i=i: _amt_step(i, "amp", +1)), group=grp))
+            items.append(_Item(
+                "OFFSET", (lambda i=i: f"{float(_lfo_get(i).get('offset', 0.0)):.2f}"),
+                adjust=(lambda d, i=i: _amt_step(i, "offset", d)),
+                select=(lambda i=i: _amt_step(i, "offset", +1)), group=grp))
+            items.append(_Item(
+                "SYNC", (lambda i=i: "BPM" if _lfo_get(i).get("bpm_sync") else "SEC"),
+                adjust=(lambda d, i=i: _sync_toggle(i)),
+                select=(lambda i=i: _sync_toggle(i)), group=grp))
 
         # ── SYSTEM ────────────────────────────────────────────────────────
         # action=True rows fire on ENTER instead of opening value-edit mode.

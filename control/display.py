@@ -33,6 +33,12 @@ FPS   = 20
 # key set (p1..p10, f1..f5) never actually changes.
 _P_SIG_KEYS = tuple(f"p{n}" for n in range(1, 11))
 _F_SIG_KEYS = tuple(f"f{n}" for n in range(1, 6))
+# LFO bindings live in the same dicts under "lfo_" keys. They change the badge
+# and the grid, so they belong in the signature — but their VALUE does not
+# change per frame (the LFO runs on the GPU), which is what keeps the SPI
+# display from redrawing continuously while a param is modulated.
+_P_LFO_KEYS = tuple("lfo_" + k for k in _P_SIG_KEYS)
+_F_LFO_KEYS = tuple("lfo_" + k for k in _F_SIG_KEYS)
 
 SPI_BUS   = 0
 SPI_DEV   = 0
@@ -416,6 +422,8 @@ class DisplayController:
                     param_sig = (
                         tuple(cfg.params.get(k, 0.5) for k in _P_SIG_KEYS),
                         tuple(cfg.fx_params.get(k, 0.5) for k in _F_SIG_KEYS),
+                        tuple(cfg.params.get(k) for k in _P_LFO_KEYS),
+                        tuple(cfg.fx_params.get(k) for k in _F_LFO_KEYS),
                         round(getattr(cfg, "shader_blend_amount",   0.5),  3),
                         round(getattr(cfg, "overlay_blend_amount",  1.0) or 1.0, 2),
                         round(getattr(cfg, "trail_delay_s",         2.0),  2),
@@ -763,7 +771,7 @@ class DisplayController:
 
     def _render_params_screen(self, d, font_sm, tab_col, name,
                                all_keys, get_lbl, get_val, fmt_val, sel_idx,
-                               editing=False):
+                               editing=False, lfo_of=None):
         """Scrollable params list: as many rows as fit are shown at once,
         windowed around sel_idx so lists longer than the visible area (e.g.
         an FX layer's own params + its BLEND/BLD AMT rows) stay reachable via
@@ -811,6 +819,11 @@ class DisplayController:
                         fill=bc)
             d.text((BAR_X + BAR_W + 6, by + BAR_H // 2),
                    fmt_val(k, v), font=font_sm, fill=lc, anchor="lm")
+            # LFO badge: a modulated param's bar moves on its own, so say why.
+            li = lfo_of(k) if lfo_of else None
+            if li is not None:
+                d.text((FB_W - 6, by + BAR_H // 2), f"L{int(li) + 1}",
+                       font=font_sm, fill=C_STAGED, anchor="rm")
 
         # ── 3×3 selector grid (same window as the sliders above) ──────────
         GM  = 4
@@ -827,6 +840,24 @@ class DisplayController:
             y0 = GY0 + row  * (ch + GG)
             x1 = x0 + cw
             y1 = y0 + ch
+
+            # Bottom row (keys 1/2/3) assigns LFO 1-3 to the highlighted param
+            # instead of jumping to params 7-9 — those keys clamped to the last
+            # row on every shader with fewer than seven params, so they were
+            # dead. Drawn here so the grid still says what each key does.
+            if pos >= 6 and lfo_of is not None:
+                li    = pos - 6
+                cur   = (lfo_of(all_keys[sel_idx])
+                         if 0 <= sel_idx < len(all_keys) else None)
+                bound = cur is not None and int(cur) == li
+                bg_c   = tuple(max(0, c // 4) for c in C_STAGED) if bound else (0x00, 0x06, 0x00)
+                border = C_STAGED if bound else C_DIVIDER
+                tc     = C_STAGED if bound else C_HINT
+                d.rectangle([x0, y0, x1, y1], fill=bg_c)
+                d.rectangle([x0, y0, x1, y1], outline=border, width=2)
+                d.text(((x0 + x1) // 2, (y0 + y1) // 2), f"LFO {li + 1}",
+                       font=font_sm, fill=tc, anchor="mm")
+                continue
 
             i = top + pos
             if i < len(all_keys):
@@ -909,7 +940,8 @@ class DisplayController:
         editing = getattr(getattr(inst, "kb", None), "_editing_param", False)
         self._render_params_screen(d, font_sm, TAB_COL["SHADER"], name,
                                    all_keys, get_lbl, get_val, fmt_val, sel_idx,
-                                   editing=editing)
+                                   editing=editing,
+                                   lfo_of=lambda k: cfg.params.get("lfo_" + k))
 
     # ── SAMPLER tab ───────────────────────────────────────────────────────────
 
@@ -1058,7 +1090,8 @@ class DisplayController:
         editing = getattr(getattr(inst, "kb", None), "_editing_param", False)
         self._render_params_screen(d, font_sm, fx_col, name,
                                    all_keys, get_lbl, get_val, fmt_val, sel_idx,
-                                   editing=editing)
+                                   editing=editing,
+                                   lfo_of=lambda k: cfg.fx_params.get("lfo_" + k))
 
     # ── SETTINGS tab ──────────────────────────────────────────────────────────
 

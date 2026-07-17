@@ -48,10 +48,94 @@ def clamp01(x):
 
 def _subst(text, vals, prefix):
     """Substitute live values into a shader's #define PARAM_N lines. `prefix`
-    is 'p' for generative params (vals=cfg.params) or 'f' for FX params."""
+    is 'p' for generative params (vals=cfg.params) or 'f' for FX params.
+
+    A param with an LFO assigned (vals["lfo_f1"] = 0..2) gets a call to
+    recur_lfo() substituted in place of its literal, so the GPU evaluates it
+    per frame — see _lfo_preamble(). The #define is only ever used as a value
+    expression inside hook(), never in a const or preprocessor context, so an
+    expression is a safe drop-in for a number.
+
+    Returns (text, lfos_used) — the caller must inject the preamble when the
+    set is non-empty, or the substituted call has nothing to resolve to.
+    """
+    used = set()
+
     def repl(m):
-        return f"{m.group(1)}{vals.get(prefix + m.group(2), 0.5):.4f}"
-    return PARAM_RE.sub(repl, text)
+        key = prefix + m.group(2)
+        idx = vals.get("lfo_" + key)
+        if idx is not None and 0 <= int(idx) < _LFO_COUNT:
+            used.add(int(idx))
+            return f"{m.group(1)}recur_lfo({int(idx)})"
+        return f"{m.group(1)}{vals.get(key, 0.5):.4f}"
+
+    return PARAM_RE.sub(repl, text), used
+
+
+_LFO_COUNT = 3
+
+# Evaluated on the GPU from mpv's frame counter. Costs nothing per frame: this
+# is rewritten only when an LFO setting or an assignment changes, never while it
+# runs. Rows are x=shape, y=period (seconds), z=amp, w=offset.
+_LFO_SRC = """
+// ── LFO engine (generated — see config.lfos) ────────────────────────────────
+const vec4 RECUR_LFO[%(count)d] = vec4[%(count)d](%(rows)s);
+
+float recur_lfo(int i) {
+    vec4  L      = RECUR_LFO[i];
+    float period = max(0.05, L.y);
+    float t      = float(frame) / %(fps).2f;
+    float phase  = fract(t / period);
+    int   shape  = int(L.x + 0.5);
+    float bip;
+    if      (shape == 0) bip = sin(phase * 6.28318530718);
+    else if (shape == 1) bip = phase < 0.5 ? phase * 4.0 - 1.0 : 3.0 - phase * 4.0;
+    else if (shape == 2) bip = phase * 2.0 - 1.0;
+    else if (shape == 3) bip = phase < 0.5 ? 1.0 : -1.0;
+    else {
+        // sample & hold: one value per period, held until the next epoch
+        float epoch = floor(t / period);
+        bip = fract(sin(epoch * 127.1 + float(i) * 311.7) * 43758.5453) * 2.0 - 1.0;
+    }
+    // unipolar, matching recur-web: offset .. offset+amp, clamped to a param's range
+    return clamp(L.w + (bip + 1.0) * 0.5 * L.z, 0.0, 1.0);
+}
+"""
+
+
+def lfo_period(cfg, lfo):
+    """An LFO's period in seconds — from the global BPM when synced."""
+    if lfo.get("bpm_sync"):
+        bpm = max(1.0, float(getattr(cfg, "lfo_bpm", 120.0)))
+        return max(0.05, float(lfo.get("beat", 1.0)) * 60.0 / bpm)
+    return max(0.05, float(lfo.get("period", 4.0)))
+
+
+def _lfo_preamble(cfg):
+    """GLSL declaring the three LFOs and recur_lfo()."""
+    rows = []
+    for lfo in getattr(cfg, "lfos", [])[:_LFO_COUNT]:
+        rows.append("vec4(%.1f, %.4f, %.4f, %.4f)"
+                    % (float(lfo.get("shape", 0)), lfo_period(cfg, lfo),
+                       float(lfo.get("amp", 0.5)), float(lfo.get("offset", 0.0))))
+    while len(rows) < _LFO_COUNT:                    # keep the array well-formed
+        rows.append("vec4(0.0, 4.0, 0.0, 0.0)")
+    # mpv advances `frame` once per rendered frame, so seconds = frame / fps.
+    return _LFO_SRC % {"count": _LFO_COUNT, "rows": ", ".join(rows),
+                       "fps": max(1.0, float(getattr(cfg, "fps", 30)))}
+
+
+def _insert_preamble(src, code):
+    """Put generated GLSL at the top of the shader body — after the last
+    directive line, never inside the directive block: mpv treats a line
+    containing the directive prefix as starting a new block, wherever it
+    appears, and would cut the shader in half."""
+    lines = src.splitlines(keepends=True)
+    last = 0
+    for i, line in enumerate(lines):
+        if line.startswith("//!"):
+            last = i + 1
+    return "".join(lines[:last]) + code + "".join(lines[last:])
 
 # Blend modes for shader+clip compositing (SHADER mode). Integers are
 # substituted into the blend shader; the names match cfg.SHADER_BLEND_MODES.
@@ -977,10 +1061,12 @@ class ShaderEngine:
         path = name if os.path.isabs(name) else os.path.join(self.cfg.shaders_dir, name)
         try:
             with open(path) as f:
-                src = _subst(f.read(), params, prefix)
+                src, lfos_used = _subst(f.read(), params, prefix)
         except OSError as e:
             log.warning("can't read shader %s: %s", path, e)
             return None
+        if lfos_used:
+            src = _insert_preamble(src, _lfo_preamble(self.cfg))
         if pre_process:
             src = pre_process(src)
         if save_name:

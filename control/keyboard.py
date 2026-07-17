@@ -54,7 +54,12 @@ again):
                 (matches the menu list, and MANUAL.md. The view keeps the
                 selection centred, so the rows slide the opposite way to the
                 cursor — read the cursor when checking the direction.)
-  1-9         — jump to a parameter by its on-screen grid position
+  7/8/9/4/5/6 — jump to parameter 1-6 by its on-screen grid position
+  1/2/3       — assign LFO 1/2/3 to the highlighted parameter; the same key
+                again clears it. So "7 2" = LFO 2 on parameter 1. These keys
+                used to jump to params 7-9, which clamped to the last row on
+                any shader with fewer (nearly all) — params 7+ scroll into
+                reach with +/Bksp.
   Enter       — toggle edit mode on the highlighted parameter
   +/Bksp (in edit mode) — step that parameter's value up/down
   Enter (in edit mode)  — exit edit mode, back to scrolling the list
@@ -615,7 +620,13 @@ class KeyboardController:
             self._scroll_param(-1)
         elif name == "BKSP":
             self._scroll_param(+1)
-        elif name in ("1","2","3","4","5","6","7","8","9"):
+        elif name in ("1", "2", "3"):
+            # Assign LFO 1/2/3 to the highlighted param. These used to jump to
+            # params 7-9, which every shader with fewer than seven params
+            # (nearly all of them) clamped to the last row — so they did
+            # nothing. Params 7+ are still reachable by scrolling.
+            self._assign_lfo(int(name) - 1)
+        elif name in ("4","5","6","7","8","9"):
             n   = int(name)
             # Map numpad key to grid position so keys match the visual layout
             pos = _GRID_KEY_TO_POS.get(n, n - 1)
@@ -702,6 +713,43 @@ class KeyboardController:
                      "BLD AMT" if key == "__blend_amt__" else
                      inst.shader.param_labels().get(key, key.upper()).upper())
             inst.osd.show(f"PARAM: {label}")
+
+    def _assign_lfo(self, idx):
+        """Toggle LFO `idx` on the highlighted param — "tap 7 2": 7 picks the
+        param, 2 names the LFO. Pressing the same LFO again clears it, so no
+        separate un-assign key is needed.
+
+        Only the SHDR (0) and FX (1) layers hold real shader params; the blend
+        mode/amount rows and the other layers have no PARAM_N to substitute.
+        """
+        inst = self.inst
+        cfg  = inst.cfg
+        if self._param_layer == 0:
+            params, labels = cfg.params, inst.shader.param_labels()
+        elif self._param_layer == 1:
+            params, labels = cfg.fx_params, inst.shader.fx_param_labels()
+        else:
+            inst.osd.show("NO PARAMS HERE")
+            return
+
+        keys = self._current_row_keys()
+        if not keys:
+            return
+        key = keys[self._param_idx % len(keys)]
+        if key.startswith("__"):          # __blend_mode__ / __blend_amt__
+            inst.osd.show("NO LFO ON BLEND")
+            return
+
+        label = labels.get(key, key.upper()).upper()
+        mkey  = "lfo_" + key
+        cur   = params.get(mkey)
+        if cur is not None and int(cur) == idx:
+            params.pop(mkey, None)
+            inst.osd.show(f"{label}: LFO OFF")
+        else:
+            params[mkey] = idx
+            inst.osd.show(f"{label} -> LFO {idx + 1}")
+        inst.shader.reapply()
 
     def _step_video_blend_mode(self, d):
         """Slot 0's BLEND row: how the shader composites over the video layer.
