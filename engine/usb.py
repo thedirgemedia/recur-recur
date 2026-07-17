@@ -30,6 +30,7 @@ import os
 import shutil
 import subprocess
 import threading
+import time
 import logging
 
 log = logging.getLogger("usb")
@@ -61,6 +62,15 @@ MAX_IMPORT_PIXELS = 3840 * 2160
 # output's ceiling keeps clips valid when the output resolution changes.
 TARGET_W, TARGET_H = 1920, 1080
 TARGET_PIXELS = TARGET_W * TARGET_H
+
+# Kill ffmpeg if it goes this long without writing anything to stderr. Seen
+# importing 1080p HEVC: ffmpeg encodes the whole clip, then spins at ~150% CPU
+# without writing the MP4 trailer or exiting, so the import thread never returns
+# and the UI sits at a stuck percentage forever. Root cause unproven — this
+# bounds the damage either way. ffmpeg prints stats about twice a second while
+# it is alive, so silence this long means it is wedged, not slow: a legitimate
+# 1080p HEVC transcode takes ~7min but never goes quiet.
+STALL_TIMEOUT = 120.0
 _SKIP_DIRS = {"System Volume Information", "$RECYCLE.BIN", ".Trash-1000", ".Spotlight-V100"}
 _SYSTEM_MOUNTS = ("/", "/boot", "/boot/firmware")
 _MEDIA_CORES   = {2, 3}   # pin ffmpeg here; Python lives on {0, 1}
@@ -145,19 +155,26 @@ def _run_ffmpeg(cmd, duration=0.0, progress=None, cancel=None):
     cancel is an optional threading.Event; set it to kill ffmpeg and abort.
     Pins the ffmpeg process to _MEDIA_CORES so it doesn't compete with the
     Python render loop on cores 0-1.
+
+    Kills ffmpeg and raises if it goes quiet for STALL_TIMEOUT — see there.
+    stdin is /dev/null (the service's own stdin is /dev/tty1, which ffmpeg would
+    otherwise inherit and poll for keypresses).
     """
     proc = subprocess.Popen(cmd, stderr=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, text=True)
+                            stdout=subprocess.DEVNULL,
+                            stdin=subprocess.DEVNULL, text=True)
     try:
         os.sched_setaffinity(proc.pid, _MEDIA_CORES)
     except OSError:
         pass
 
     _stderr_tail = []
+    _last_output = [time.monotonic()]   # boxed: written by the drain thread
 
     def _drain():
         try:
             for line in proc.stderr:
+                _last_output[0] = time.monotonic()
                 stripped = line.rstrip()
                 _stderr_tail.append(stripped)
                 if len(_stderr_tail) > 12:
@@ -175,7 +192,7 @@ def _run_ffmpeg(cmd, duration=0.0, progress=None, cancel=None):
 
     drain = threading.Thread(target=_drain, daemon=True)
     drain.start()
-    cancelled = False
+    cancelled = stalled = False
     try:
         while True:
             try:
@@ -187,12 +204,24 @@ def _run_ffmpeg(cmd, duration=0.0, progress=None, cancel=None):
                     proc.wait()
                     cancelled = True
                     break
+                quiet = time.monotonic() - _last_output[0]
+                if quiet > STALL_TIMEOUT:
+                    log.error("ffmpeg silent for %.0fs — killing wedged process",
+                              quiet)
+                    proc.kill()
+                    proc.wait()
+                    stalled = True
+                    break
     finally:
         proc.stderr.close()
         drain.join(timeout=5)
 
     if cancelled:
         raise RuntimeError("ffmpeg cancelled")
+    if stalled:
+        if _stderr_tail:
+            log.error("ffmpeg stderr before stall:\n%s", "\n".join(_stderr_tail))
+        raise RuntimeError(f"ffmpeg stalled (no output for {STALL_TIMEOUT:.0f}s)")
     if proc.returncode != 0:
         if _stderr_tail:
             log.error("ffmpeg stderr:\n%s", "\n".join(_stderr_tail))
@@ -473,7 +502,7 @@ class UsbManager:
                             MAX_IMPORT_PIXELS)
                 return None, "too_big"
 
-            cmd = ["ffmpeg", "-y", "-threads", "2", "-i", src]
+            cmd = ["ffmpeg", "-nostdin", "-y", "-threads", "2", "-i", src]
             if action == "remux":
                 cmd += ["-c:v", "copy", "-an"]
             else:
