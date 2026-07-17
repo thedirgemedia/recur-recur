@@ -49,11 +49,14 @@ Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
 
 Params screens (reached via hold, or by pressing an already-open tab's key
 again):
-  +/Bksp      — scroll the highlighted parameter up/down the list (not in
-                edit mode)
+  +           — move the selection UP the list (not in edit mode)
+  Bksp        — move the selection DOWN the list
+                (matches the menu list, and MANUAL.md. The view keeps the
+                selection centred, so the rows slide the opposite way to the
+                cursor — read the cursor when checking the direction.)
   1-9         — jump to a parameter by its on-screen grid position
   Enter       — toggle edit mode on the highlighted parameter
-  +/Bksp (in edit mode) — step that parameter's value down/up
+  +/Bksp (in edit mode) — step that parameter's value up/down
   Enter (in edit mode)  — exit edit mode, back to scrolling the list
   On the FX params screen, the layer's own f-params are followed by two
   extra rows: BLEND (its blend mode against whatever is below it in the
@@ -609,9 +612,9 @@ class KeyboardController:
             return
 
         if name == "+":
-            self._scroll_param(+1)
-        elif name == "BKSP":
             self._scroll_param(-1)
+        elif name == "BKSP":
+            self._scroll_param(+1)
         elif name in ("1","2","3","4","5","6","7","8","9"):
             n   = int(name)
             # Map numpad key to grid position so keys match the visual layout
@@ -642,7 +645,13 @@ class KeyboardController:
         return self.inst.shader.shader_row_keys()
 
     def _scroll_param(self, direction):
-        """+/Bksp outside edit mode: move the selection up/down the list."""
+        """Move the selection down (+1) or up (-1) the list.
+
+        Callers map + to -1 and Bksp to +1, matching the menu list, where +
+        also moves the selection up. Note the params view keeps the selection
+        centred, so the rows slide the opposite way to the cursor — read the
+        cursor, not the content, when checking this.
+        """
         keys = self._current_row_keys()
         if not keys:
             return
