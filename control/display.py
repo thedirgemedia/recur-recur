@@ -857,6 +857,22 @@ class DisplayController:
         sel_idx     = getattr(getattr(inst, "kb", None), "_param_idx", 0)
         blend_modes = list(getattr(cfg, "FX_LAYER_BLEND_MODES", ("normal",)))
 
+        # Slot 0 blends against the video layer, not the slot below — its rows
+        # read cfg.shader_blend* instead (see shader.shader_row_keys()), where
+        # blend being off reads as "normal": the shader replaces the video.
+        video_blend = getattr(cfg, "shader_edit_slot", 0) == 0
+
+        def _blend_mode_name():
+            if video_blend:
+                return (getattr(cfg, "shader_blend_mode", "normal")
+                        if getattr(cfg, "shader_blend", False) else "normal")
+            return cfg.shader_layer_blend.get("mode", "normal")
+
+        def _blend_amt():
+            if video_blend:
+                return getattr(cfg, "shader_blend_amount", 0.5)
+            return cfg.shader_layer_blend.get("amt", 1.0)
+
         def get_lbl(k):
             if k == "__blend_mode__":
                 return "BLEND"
@@ -866,16 +882,16 @@ class DisplayController:
 
         def get_val(k):
             if k == "__blend_mode__":
-                cur = cfg.shader_layer_blend.get("mode", "normal")
+                cur = _blend_mode_name()
                 i   = blend_modes.index(cur) if cur in blend_modes else 0
                 return i / max(1, len(blend_modes) - 1)
             if k == "__blend_amt__":
-                return cfg.shader_layer_blend.get("amt", 1.0)
+                return _blend_amt()
             return cfg.params.get(k, 0.5)
 
         def fmt_val(k, v):
             if k == "__blend_mode__":
-                return cfg.shader_layer_blend.get("mode", "normal").upper()[:9]
+                return _blend_mode_name().upper()[:9]
             if k == "__blend_amt__":
                 return f"{v:.2f}"
             ul = get_lbl(k)
@@ -964,8 +980,16 @@ class DisplayController:
         Y0 = TAB_H + 4
         s  = inst.sampler
 
+        # This tab is not the instrument's mode: the camera only starts when the
+        # mode is LIVE, so outside LIVE mode it was never asked for and saying
+        # "NO CAMERA" is a lie. Only claim that when the mode IS LIVE — then
+        # play_camera() has run and genuinely failed to give us a camera.
         if getattr(s, "_active_source", None) == "camera":
             d.text((10, Y0 + 6), "LIVE", font=font_lg, fill=TAB_COL["LIVE"])
+        elif getattr(inst, "mode", None) != "LIVE":
+            d.text((10, Y0 + 6), "CAMERA IDLE", font=font_md, fill=C_LABEL)
+            d.text((10, Y0 + 30), f"MODE: {getattr(inst, 'mode', '—')}",
+                   font=font_sm, fill=C_HINT)
         else:
             d.text((10, Y0 + 6), "NO CAMERA", font=font_md, fill=C_HINT)
 

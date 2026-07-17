@@ -700,11 +700,23 @@ class Menu:
             adjust=lambda d: self._set_overlay(not cfg.overlay_on),
             select=lambda: self._set_overlay(not cfg.overlay_on), group="MIX"))
 
-        # shader blend on/off (mode/amount/source live on the BLEND param layer)
+        # shader blend on/off (mode/amount live on the BLEND param layer)
         items.append(_Item(
             "BLEND", lambda: "ON" if cfg.shader_blend else "OFF",
             adjust=lambda d: inst.shader_blend_toggle(),
             select=lambda: inst.shader_blend_toggle(), group="MIX"))
+
+        # What the shader blends against: the clip, or the live camera. The only
+        # other control is the BLEND param layer's SRC row, and that layer is
+        # unreachable (nothing assigns _param_layer = 3), which left the camera
+        # unusable as a blend source. Cycling the source hot-swaps it (and
+        # starts the camera), whereas shader_blend_toggle() deliberately won't —
+        # enabling blend must never launch the camera by surprise (main.py).
+        items.append(_Item(
+            "BLEND SRC", lambda: cfg.shader_blend_source.upper(),
+            adjust=lambda d: inst.shader_blend_source_cycle(),
+            select=lambda: inst.shader_blend_source_cycle(),
+            group="MIX"))
 
         # temporal echo on/off. The only control for it: the TRAIL param layer
         # is unreachable, and the 000 key it was bound to never fired.

@@ -779,13 +779,19 @@ class ShaderEngine:
 
     def shader_row_keys(self):
         """Ordered list of selectable rows for the SHDR params screen: the
-        edited slot's own p-params, then (only for slot > 0 — slot 0 never
-        composites, so its blend would be permanently inert) its blend mode
-        and amount."""
+        edited slot's own p-params, then its blend mode and amount.
+
+        Every slot composites against whatever is below it. For slots above the
+        bottom that is the slot beneath (cfg.shader_layer_blend); for slot 0 it
+        is the video layer — clip or camera — via cfg.shader_blend_mode/amount,
+        where "normal" carries its usual pass-through meaning: the shader
+        replaces the video rather than blending with it (cfg.shader_blend off).
+        Slot 0 used to omit these rows on the grounds that it "never
+        composites", which left the shader/video blend with no reachable
+        control at all once the old * and / bindings became tab keys.
+        """
         pkeys = sorted(self.param_labels().keys(), key=lambda k: int(k[1:]))
-        if self.cfg.shader_edit_slot > 0:
-            return pkeys + ["__blend_mode__", "__blend_amt__"]
-        return pkeys
+        return pkeys + ["__blend_mode__", "__blend_amt__"]
 
     def _snapshot(self):
         chain_params = tuple(

@@ -703,6 +703,33 @@ class KeyboardController:
                      inst.shader.param_labels().get(key, key.upper()).upper())
             inst.osd.show(f"PARAM: {label}")
 
+    def _step_video_blend_mode(self, d):
+        """Slot 0's BLEND row: how the shader composites over the video layer.
+
+        Uses the same palette as every other slot, so "normal" keeps its
+        pass-through meaning — here that is "shader replaces the video", i.e.
+        cfg.shader_blend off. Any real mode turns it on. Routed through
+        shader_blend_toggle() so starting/tearing down the video source and the
+        reapply stay in one place (it also shows its own OSD).
+        """
+        cfg   = self.inst.cfg
+        inst  = self.inst
+        modes = list(cfg.FX_LAYER_BLEND_MODES)      # ("normal",) + SHADER_BLEND_MODES
+        cur   = cfg.shader_blend_mode if cfg.shader_blend else "normal"
+        i     = modes.index(cur) if cur in modes else 0
+        new   = modes[(i + d) % len(modes)]
+
+        if new == "normal":
+            if cfg.shader_blend:
+                inst.shader_blend_toggle()          # OFF: blank the source, reapply
+            return
+        cfg.shader_blend_mode = new
+        if not cfg.shader_blend:
+            inst.shader_blend_toggle()              # ON: starts the source, reapply
+        else:
+            inst.shader.reapply()
+            inst.osd.show(f"BLEND: {new.upper()}")
+
     def _avail_layers(self):
         """Param layers valid for the current mode."""
         if self.inst.mode == "SHADER":
@@ -742,11 +769,21 @@ class KeyboardController:
             if not row_keys:
                 return
             key = row_keys[self._param_idx % len(row_keys)]
+            # Slot 0's "layer below" is the video, not another shader — see
+            # shader_row_keys(). Its blend rows drive cfg.shader_blend* instead.
+            video_blend = cfg.shader_edit_slot == 0
             if key == "__blend_mode__":
+                if video_blend:
+                    self._step_video_blend_mode(1 if delta > 0 else -1)
+                    return
                 inst.shader.cycle_shader_layer_blend_mode(1 if delta > 0 else -1)
                 inst.osd.show(f"BLEND: {cfg.shader_layer_blend.get('mode','normal').upper()}")
                 return
             if key == "__blend_amt__":
+                if video_blend:
+                    # shows its own OSD, and reapplies only when blend is on
+                    inst.shader_blend_adjust_amount(delta)
+                    return
                 cur = cfg.shader_layer_blend.get("amt", 1.0)
                 new = clamp01(cur + delta)
                 if new == cur:
