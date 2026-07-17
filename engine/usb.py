@@ -49,6 +49,18 @@ _libc.umount2.argtypes = [ctypes.c_char_p, ctypes.c_int]
 _libc.umount2.restype = ctypes.c_int
 
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg")
+# Importing an 8K clip (7680x4320 HEVC) hard-crashes the board: the machine
+# dies mid-transcode with no OOM kill and no kernel log, and comes back via the
+# watchdog. 1080p is verified safe, 4K is untested; reject anything above 4K
+# rather than attempt it. See _classify().
+MAX_IMPORT_PIXELS = 3840 * 2160
+
+# Clips are stored at 1080p max — the HDMI output tops out there, so larger
+# costs encode time and playback CPU for nothing visible. Deliberately not tied
+# to cfg.width/height (720p by default, 720x576 on composite): storing at the
+# output's ceiling keeps clips valid when the output resolution changes.
+TARGET_W, TARGET_H = 1920, 1080
+TARGET_PIXELS = TARGET_W * TARGET_H
 _SKIP_DIRS = {"System Volume Information", "$RECYCLE.BIN", ".Trash-1000", ".Spotlight-V100"}
 _SYSTEM_MOUNTS = ("/", "/boot", "/boot/firmware")
 _MEDIA_CORES   = {2, 3}   # pin ffmpeg here; Python lives on {0, 1}
@@ -89,6 +101,8 @@ def _probe_video(path):
             "is_cfr":    is_cfr,
             "has_audio": has_audio,
             "duration":  duration,
+            "width":     int(video.get("width") or 0),
+            "height":    int(video.get("height") or 0),
         }
     except FileNotFoundError:
         log.error("ffprobe not found — sudo apt install ffmpeg")
@@ -98,7 +112,7 @@ def _probe_video(path):
 
 
 def _classify(info, fallback_fps=30.0):
-    """Return (action, target_fps) where action is 'remux' | 'transcode'.
+    """Return (action, target_fps) where action is 'reject' | 'remux' | 'transcode'.
 
     fallback_fps is used when probe data is absent or the detected fps is
     implausibly low (< 10); callers should pass cfg.fps so the transcode
@@ -107,9 +121,19 @@ def _classify(info, fallback_fps=30.0):
     if not info:
         return "transcode", fallback_fps
     fps = info["a_fps"] if info["a_fps"] >= 10.0 else fallback_fps
+    # Checked ahead of the remux/transcode split: remux (-c:v copy) would import
+    # an oversized clip without decoding it, only for playback to decode it — and
+    # take the board down — later.
+    pixels = info["width"] * info["height"]
+    if pixels > MAX_IMPORT_PIXELS:
+        return "reject", fps
+    # Oversized clips fail `ideal` even when the codec is right: remux (-c:v
+    # copy) would keep them at full size, leaving every playback to decode more
+    # pixels than the output can show.
     ideal = (info["codec"] == "h264"
              and info["pix_fmt"] == "yuv420p"
-             and info["is_cfr"])
+             and info["is_cfr"]
+             and pixels <= TARGET_PIXELS)
     if ideal:
         return "remux", fps   # -c:v copy -an: strips audio, keeps video stream
     return "transcode", fps
@@ -413,13 +437,18 @@ class UsbManager:
         """Import src into cfg.clips_dir, transcoding to H.264/yuv420p/CFR/MP4
         as needed for low CPU playback and full effects compatibility.
 
-        Fast path (no re-encode): already H.264 + yuv420p + CFR → remux
-        (ffmpeg -c:v copy -an) to strip any audio and rewrap in MP4.
+        Fast path (no re-encode): already H.264 + yuv420p + CFR and no larger
+        than 1080p → remux (ffmpeg -c:v copy -an) to strip any audio and rewrap
+        in MP4. Anything larger is scaled down to fit 1080p.
 
         cancel is an optional threading.Event; set it to abort an in-progress
         ffmpeg run (e.g. when the user ejects the drive).
 
-        Returns (dest_path, status) where status is 'copied' | 'exists' | 'error'.
+        Clips above MAX_IMPORT_PIXELS are refused outright ('too_big') — see
+        _classify().
+
+        Returns (dest_path, status) where status is 'copied' | 'exists' |
+        'too_big' | 'error'.
         progress(frac) is called with 0.0–1.0 during transcode if provided.
         """
         tmp = None
@@ -438,6 +467,12 @@ class UsbManager:
             log.info("import %s: action=%s fps=%.3f dur=%.1fs",
                      os.path.basename(src), action, target_fps, duration)
 
+            if action == "reject":
+                log.warning("import %s refused: %dx%d exceeds the %d-pixel limit",
+                            os.path.basename(src), info["width"], info["height"],
+                            MAX_IMPORT_PIXELS)
+                return None, "too_big"
+
             cmd = ["ffmpeg", "-y", "-threads", "2", "-i", src]
             if action == "remux":
                 cmd += ["-c:v", "copy", "-an"]
@@ -448,6 +483,16 @@ class UsbManager:
                     "-r", f"{target_fps:.3f}",
                     "-an",
                 ]
+                if info and info["width"] * info["height"] > TARGET_PIXELS:
+                    # fit inside 1080p, preserving aspect (portrait included);
+                    # force_divisible_by keeps the result even for yuv420p
+                    cmd += ["-vf",
+                            f"scale='min({TARGET_W},iw)':'min({TARGET_H},ih)'"
+                            ":force_original_aspect_ratio=decrease"
+                            ":force_divisible_by=2"]
+                    log.info("import %s: scaling %dx%d down to fit %dx%d",
+                             os.path.basename(src), info["width"],
+                             info["height"], TARGET_W, TARGET_H)
             cmd += ["-f", "mp4", tmp]
             if progress:
                 progress(0.0)

@@ -20,7 +20,7 @@ to recur-recur's modes and engines. Four pages cycled with 7 / 9:
 
 Navigation (logical key names, mapped in keyboard.py for both NumLock states):
   + / BKSP   move selection up / down the list (BKSP is page-specific on
-             BROWSER/PRESETS/MIDI/IMPORT — see handle())
+             BROWSER/PRESETS/MIDI — see handle())
   8 / 2      move selection up / down
   4 / 6      adjust selected value (left / right)
   5 / ENTER  select / activate (the "■" action)
@@ -95,6 +95,29 @@ class Menu:
         self._usb_import_busy = False # True while a copy/transcode thread is running
         self._usb_cancel      = threading.Event()  # set to abort in-progress import
 
+    def open_page(self, page_name):
+        """Open a menu page by name, running its leave/enter hooks.
+
+        Both routes in — 7/9 cycling and the SETTINGS grid jump — go through
+        here. They used to each switch pages themselves, and IMPORT's drive
+        scan was wired into the cycling path only, so reaching IMPORT from the
+        grid showed an empty drive list.
+        """
+        if page_name not in PAGES:
+            return
+        prev = PAGES[self.page] if self.active else None
+        if prev == "IMPORT":
+            self._usb_leave()          # release any mounted drive
+        self.page   = PAGES.index(page_name)
+        self.sel    = 0
+        self.active = True
+        self._cancel_edits()
+        if page_name == "BROWSER":
+            threading.Thread(
+                target=self.inst.sampler.rescan_clips, daemon=True).start()
+        elif page_name == "IMPORT":
+            self._usb_enter()          # list removable drives
+
     # ───────────────────────────────────────────────────────── lifecycle
     def toggle(self):
         self.active = not self.active
@@ -122,7 +145,8 @@ class Menu:
     def handle(self, name):
         """Route a logical key while the menu is active.
 
-        Navigation: + = scroll up,  BKSP = scroll down (or delete/eject action).
+        Navigation: + = scroll up,  BKSP = scroll down (or, on BROWSER/PRESETS/
+        MIDI, that page's delete/clear action).
         """
         try:
             # Any key other than BKSP cancels an armed BROWSER delete.
@@ -151,17 +175,8 @@ class Menu:
             # Page navigation (only reached when no edit mode is active).
             # 7 / 9 cycle through all pages in each direction (wrapping).
             if name in ("7", "9"):
-                prev = PAGES[self.page]
-                self.page = (self.page + (-1 if name == "7" else +1)) % len(PAGES)
-                self.sel  = 0
-                if prev == "IMPORT":
-                    self._usb_leave()          # release any mounted drive
-                new = PAGES[self.page]
-                if new == "BROWSER":
-                    threading.Thread(
-                        target=self.inst.sampler.rescan_clips, daemon=True).start()
-                elif new == "IMPORT":
-                    self._usb_enter()          # list removable drives
+                step = -1 if name == "7" else +1
+                self.open_page(PAGES[(self.page + step) % len(PAGES)])
                 return
 
             # + = scroll up
@@ -181,8 +196,6 @@ class Menu:
                 page = PAGES[self.page]
                 if page == "MIDI":
                     self._midi_clear()
-                elif page == "IMPORT":
-                    self._usb_eject()
                 elif page in ("BROWSER", "PRESETS"):
                     # First BKSP arms delete, second executes it.
                     if self._confirm_delete:
@@ -194,7 +207,7 @@ class Menu:
                     else:
                         self._confirm_delete = True
                 else:
-                    self._move(+1)   # SETTINGS: scroll down
+                    self._move(+1)   # SETTINGS / SHADERS / IMPORT: scroll down
         except Exception as e:
             log.warning("menu handle %r: %s", name, e)
 
@@ -530,9 +543,10 @@ class Menu:
 
             _, status = mgr.copy_to_internal(src, progress=_progress,
                                              cancel=self._usb_cancel)
-            self._usb_status = {"copied": "IMPORTED  ✓",
-                                "exists": "already imported",
-                                "error":  "IMPORT FAILED"}.get(status, status)
+            self._usb_status = {"copied":  "IMPORTED  ✓",
+                                "exists":  "already imported",
+                                "too_big": "TOO BIG — 4K MAX",
+                                "error":   "IMPORT FAILED"}.get(status, status)
             if status == "copied":
                 # make the new clip immediately playable / assignable
                 threading.Thread(target=self.inst.sampler.rescan_clips,
@@ -541,7 +555,8 @@ class Menu:
             self._usb_import_busy = False
 
     def _usb_eject(self):
-        """ENTER / BKSP on the IMPORT page: unmount and go back to the drive list."""
+        """ENTER (or '.') on the IMPORT page: unmount and go back to the drive
+        list. Not BKSP — that scrolls the list, alongside +."""
         self._usb_cancel.set()
         mgr = getattr(self.inst, "usb", None)
         if self._usb_dev and mgr:
@@ -690,6 +705,19 @@ class Menu:
             "BLEND", lambda: "ON" if cfg.shader_blend else "OFF",
             adjust=lambda d: inst.shader_blend_toggle(),
             select=lambda: inst.shader_blend_toggle(), group="MIX"))
+
+        # temporal echo on/off. The only control for it: the TRAIL param layer
+        # is unreachable, and the 000 key it was bound to never fired.
+        # trail_toggle() refuses in SHADER mode (no cross-frame GPU feedback on
+        # the Pi 5 V3D driver), so the label says so rather than reading OFF.
+        def _trail_label():
+            if inst.mode == "SHADER":
+                return "N/A"
+            return "ON" if getattr(cfg, 'trail_on', False) else "OFF"
+        items.append(_Item(
+            "TRAIL", _trail_label,
+            adjust=lambda d: inst.trail_toggle(),
+            select=lambda: inst.trail_toggle(), group="MIX"))
 
         # shaders (params live on Bksp SHDR/FX layers; trail on Bksp TRAIL layer)
         def _fx_label():

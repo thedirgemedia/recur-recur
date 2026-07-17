@@ -41,9 +41,11 @@ Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
                 opens a SPEED params screen instead.
   0           — toggle STAGED (amber, picks wait for Enter) vs LIVE (green,
                 picks apply immediately)
-  Enter       — push staged picks
+  Enter       — push staged picks if any are waiting; otherwise put the active
+                tab's mode on the screen (SHADER/SAMPLER/LIVE tab + Enter
+                switches the instrument to that mode — LIVE starts the camera).
+                FX and SETTINGS aren't modes, so Enter there just says so.
   +/Bksp      — page the SHADER/FX grid (9 items per page)
-  000         — toggle the temporal trail (any screen)
 
 Params screens (reached via hold, or by pressing an already-open tab's key
 again):
@@ -62,9 +64,9 @@ routes to `self.inst.menu.handle()` and none reach the perform handlers
 (see control/menu.py for the bindings) — except the tab keys and '.', which
 keyboard.py intercepts everywhere, menu included (see above).
 
-Note: the dedicated '000' key sends KEY_KP000 (or KEY_KP00) and is mapped
-directly. The triple-KP0 coalescing below is a fallback for numpads that
-implement '000' by sending three rapid KEY_KP0 events instead.
+Note: the '000' key is not usable on this numpad. It has no keycode of its own
+— it emits three rapid KEY_KP0 presses, arriving as three plain '0's. Nothing
+binds it, so it just toggles STAGED an odd number of times.
 """
 
 import logging
@@ -93,9 +95,10 @@ NUMPAD_MAP = {
     "KEY_KPENTER":     "ENTER",
     "KEY_BACKSPACE":   "BKSP",
     "KEY_KPDOT":       ".",
+    # There is no KEY_KP00/KEY_KP000 in Linux input-event-codes.h; entries for
+    # them sat here for a long time and could never match. See the module
+    # docstring for what the 000 key actually sends.
     "KEY_KP0":         "0",
-    "KEY_KP00":        "000",   # dedicated 00 key (some numpads)
-    "KEY_KP000":       "000",   # dedicated 000 key — single press, no triple-tap needed
     "KEY_KP1":         "1",
     "KEY_KP2":         "2",
     "KEY_KP3":         "3",
@@ -107,8 +110,9 @@ NUMPAD_MAP = {
     "KEY_KP9":         "9",
 }
 
-# The 000 key is detected as three rapid KP0 presses within this window.
-TRIPLE_ZERO_WINDOW = 0.15   # seconds
+# This numpad's 000 key has no keycode of its own: it fires three rapid KEY_KP0
+# presses (measured 16ms down-to-down), so it arrives as three plain "0"s and is
+# not usable as a distinct key without coalescing them. Nothing binds it.
 PARAM_STEP = 0.05
 SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 
@@ -116,6 +120,10 @@ SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 # a tap (SHADER/FX grids only — see _HOLD_TABS).
 HOLD_THRESHOLD = 0.4   # seconds
 _HOLD_TABS = (0, 1)    # SHADER, FX — the only grids with tap/hold semantics
+
+# Display tab → instrument mode, for the 000 key. FX (1) and SETTINGS (4) are
+# absent: neither is a mode, they act on whatever mode is already running.
+_TAB_MODES = {0: "SHADER", 2: "SAMPLER", 3: "LIVE"}
 
 # Numpad key → grid position (top-left=0 … bottom-right=8), matching display layout:
 #   7 8 9   →   0 1 2
@@ -307,6 +315,26 @@ class KeyboardController:
         if _disp:
             _disp.set_tab(4)
 
+    def _force_tab_mode(self):
+        """ENTER on a grid screen: put the active tab's mode on the screen.
+
+        The tab keys only change what the SPI display shows; this is what
+        commits that choice to the instrument, so LIVE tab + ENTER starts the
+        camera. set_mode() ignores live_mode_enabled — that flag only filters
+        the GPIO/MIDI cycle, and this press is explicit.
+        """
+        _disp = getattr(self.inst, "display", None)
+        if _disp is None:
+            return
+        mode = _TAB_MODES.get(_disp._active_tab)
+        if mode is None:
+            self.inst.osd.show("NO MODE FOR THIS TAB")
+            return
+        if mode == self.inst.mode:
+            self.inst.osd.show(f"MODE: {mode}")
+            return
+        self.inst.set_mode(mode)   # shows its own OSD
+
     # ------------------------------------------------------------- dispatch
     def _dispatch(self, name):
         # Top-row keys always select display tabs. '.' is context-dependent
@@ -362,17 +390,20 @@ class KeyboardController:
                     _disp.shader_grid_page(-1)
                 return
             if name == "ENTER":
-                if _disp._staged:
+                # Staged picks waiting: push them (that's what staging is for).
+                # Otherwise ENTER commits the active tab to the instrument mode,
+                # which is the only numpad route into SHADER/SAMPLER/LIVE.
+                if _disp._staged and any(_disp._grid_pending[t] is not None
+                                         for t in (0, 2, 3)):
                     self._push_staged(_disp)
+                else:
+                    self._force_tab_mode()
                 return
             if name == "0":
                 staged = _disp.toggle_staged()
                 if not staged:
                     _disp._grid_pending = [None, None, None, None, None]
                 self.inst.osd.show("STAGED" if staged else "LIVE")
-                return
-            if name == "000":
-                self.inst.trail_toggle()
                 return
             return
 
@@ -420,15 +451,9 @@ class KeyboardController:
             except ValueError:
                 return
             if pos < len(_SETTINGS_PAGES):
-                page_name = _SETTINGS_PAGES[pos]
-                from control.menu import PAGES
-                menu = inst.menu
-                menu.page   = list(PAGES).index(page_name)
-                menu.sel    = 0
-                menu.active = True
-                menu._cancel_edits()
-                if page_name == "BROWSER":
-                    threading.Thread(target=inst.sampler.rescan_clips, daemon=True).start()
+                # open_page runs the page's entry hooks (clip rescan, USB drive
+                # scan); don't set menu.page directly here.
+                inst.menu.open_page(_SETTINGS_PAGES[pos])
             return
 
         # SAMPLER: pressing the already-active clip slot drills into speed params.
@@ -581,8 +606,6 @@ class KeyboardController:
                 self._step_param(+PARAM_STEP)
             elif name == "BKSP":
                 self._step_param(-PARAM_STEP)
-            elif name == "000":
-                inst.trail_toggle()
             return
 
         if name == "+":
@@ -600,8 +623,6 @@ class KeyboardController:
                 if not staged:
                     _disp._grid_pending = [None, None, None, None, None]
                 inst.osd.show("STAGED" if staged else "LIVE")
-        elif name == "000":
-            inst.trail_toggle()
         elif name == "REC":
             inst.record_toggle()
 

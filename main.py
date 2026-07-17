@@ -559,7 +559,8 @@ class RecurInstrument:
 
         self.sampler.apply_video_scale()
 
-        log.info("ready. numpad ENTER cycles modes, NumLock opens the menu.")
+        log.info("ready. numpad ENTER puts the active tab's mode on screen, "
+                 "'.' opens SETTINGS.")
         try:
             while self.running:
                 time.sleep(0.1)
