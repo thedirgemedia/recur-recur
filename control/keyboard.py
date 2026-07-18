@@ -36,9 +36,11 @@ Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
                 never changes screens, whether adding or removing. Hold:
                 open that FX's params screen (adding it to the chain first
                 if it wasn't already there, without removing anything else).
-  SAMPLER/LIVE/SETTINGS grids — unchanged: tap triggers a clip/preset or
-                opens a menu page; pressing the already-playing clip's key
-                opens a SPEED params screen instead.
+  SAMPLER grid — tap: load/trigger the clip in that slot. Hold: load it and
+                open its per-clip CLIP settings screen (rotate / zoom / speed /
+                dir / trail); tapping the already-playing clip opens the same
+                screen. Each clip remembers its own settings.
+  LIVE/SETTINGS grids — unchanged: tap triggers a preset or opens a menu page.
   0           — toggle STAGED (amber, picks wait for Enter) vs LIVE (green,
                 picks apply immediately)
   Enter       — push staged picks if any are waiting; otherwise put the active
@@ -127,7 +129,8 @@ SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 # How long a grid key must be held before it's treated as a hold rather than
 # a tap (SHADER/FX grids only — see _HOLD_TABS).
 HOLD_THRESHOLD = 0.4   # seconds
-_HOLD_TABS = (0, 1)    # SHADER, FX — the only grids with tap/hold semantics
+_HOLD_TABS = (0, 1, 2)   # SHADER, FX, SAMPLER — grids with tap/hold semantics
+                         # (SAMPLER hold opens a clip's per-clip settings)
 
 # Display tab → instrument mode, for the 000 key. FX (1) and SETTINGS (4) are
 # absent: neither is a mode, they act on whatever mode is already running.
@@ -149,13 +152,18 @@ _GRID_KEY_TO_POS = {7: 0, 8: 1, 9: 2, 4: 3, 5: 4, 6: 5, 1: 6, 2: 7, 3: 8}
 #             — currently unreachable, no key/grid selects this layer (see MANUAL.md)
 #   4 TRAIL   temporal echo — on/off, blend type, mode, delay, opacity
 #             — currently unreachable, no key/grid selects this layer (see MANUAL.md)
-#   5 SPEED   sampler playback speed + direction (SAMPLER tab, drill into the playing clip)
-_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL", "SPEED")
+#   5 CLIP    per-clip settings — rotate / zoom / speed / dir / trail
+#             (SAMPLER tab; long-press a clip, or tap the already-playing one)
+_PARAM_LAYERS = ("SHDR", "FX", "COLOUR", "BLEND", "TRAIL", "CLIP")
 _BLEND_LABELS = {"mode": "MODE", "amt": "BLD AMT", "opc": "OVL OPC", "src": "SRC"}
 _COLOUR_LABELS = {"hue": "HUE", "sat": "SAT", "trl_opc": "TRL OPC", "trl_decay": "TRL DEC"}
 _TRAIL_LABELS  = {"on": "TRL ON", "type": "TYPE", "mode": "MODE",
                   "delay": "DELAY", "echos": "ECHOS", "opacity": "OPACITY"}
-_SPEED_LABELS  = {"speed": "SPEED", "dir": "DIR"}
+_CLIPSET_LABELS = {"rotate": "ROTATE", "zoom": "ZOOM", "speed": "SPEED",
+                   "dir": "DIR", "bright": "BRIGHT", "contrast": "CONTRAST",
+                   "trail_on": "TRAIL", "trail": "TRL STEP",
+                   "trail_time": "TRL TIME", "trail_mode": "TRL MODE",
+                   "trail_opc": "TRL BLEND"}
 
 
 class KeyboardController:
@@ -168,6 +176,13 @@ class KeyboardController:
         self._param_layer   = 0
         self._param_idx     = 0
         self._editing_param = False   # True while Enter has "entered" the highlighted param
+
+        # MIDI-assign sub-mode on the params screen (key 4). While active, the
+        # highlighted param is waiting for a CC: move a knob to learn one, or
+        # type a CC number. Any other key cancels.
+        self._midi_assign     = False
+        self._midi_cc_buf     = ""     # digits typed for a manual CC number
+        self._midi_assign_key = None   # param key being bound (frozen at begin)
 
         # Hold-vs-tap detection for the SHADER/FX grids (see _on_key_down).
         self._hold_timers = {}   # key name -> pending threading.Timer
@@ -310,7 +325,7 @@ class KeyboardController:
             return
 
         if self._editing_param:
-            self._editing_param = False
+            self._clear_param_edit()
             return
 
         if _disp and not _disp.is_grid_screen():
@@ -319,7 +334,7 @@ class KeyboardController:
 
         # Already at the top level — nothing to back out of, so this is the
         # SETTINGS tab key (and cycles its sub-screens when already there).
-        self._editing_param = False
+        self._clear_param_edit()
         if _disp:
             _disp.set_tab(4)
 
@@ -357,7 +372,7 @@ class KeyboardController:
             # Any tab-bar keypress leaves behind a fresh (non-editing) params
             # screen so you never land back on a stale edit-mode from a
             # different context.
-            self._editing_param = False
+            self._clear_param_edit()
         if name == "NUM":
             if _disp:
                 _disp.set_tab(0)   # SHADER
@@ -385,17 +400,21 @@ class KeyboardController:
             if name in ("1","2","3","4","5","6","7","8","9"):
                 self._grid_select(name, _disp)
                 return
+            # + = previous page, BKSP = next page — matches the menu, where +
+            # moves up/back through the list and BKSP moves down/forward. The
+            # grid used to be reversed (+ = next), which read as opposite to the
+            # menus on the same numpad.
             if name == "+":
-                if tab == 1:
-                    _disp.fx_grid_page(+1)
-                elif tab == 0:
-                    _disp.shader_grid_page(+1)
-                return
-            if name == "BKSP":
                 if tab == 1:
                     _disp.fx_grid_page(-1)
                 elif tab == 0:
                     _disp.shader_grid_page(-1)
+                return
+            if name == "BKSP":
+                if tab == 1:
+                    _disp.fx_grid_page(+1)
+                elif tab == 0:
+                    _disp.shader_grid_page(+1)
                 return
             if name == "ENTER":
                 # Staged picks waiting: push them (that's what staging is for).
@@ -464,15 +483,11 @@ class KeyboardController:
                 inst.menu.open_page(_SETTINGS_PAGES[pos])
             return
 
-        # SAMPLER: pressing the already-active clip slot drills into speed params.
+        # SAMPLER: tapping the already-playing clip opens its per-clip settings
+        # (rotate / zoom / speed / dir / trail) — same screen a long-press opens.
         active_slot = self._active_slot_for_tab(tab, inst)
         if active_slot == slot and tab == 2:
-            self._param_layer   = 5   # SPEED layer
-            self._param_idx     = 0
-            self._editing_param = False
-            _disp.go_to_params_screen()
-            spd = getattr(inst.sampler, "speed", 1.0)
-            inst.osd.show(f"SPEED: {spd:.2f}x")
+            self._open_clip_settings(_disp)
             return
 
         # LIVE tab: always load immediately (no staging for presets).
@@ -504,6 +519,15 @@ class KeyboardController:
         idx    = offset + pos
         return lst[idx] if idx < len(lst) else None
 
+    def _open_clip_settings(self, _disp):
+        """Open the CLIP settings params screen for the currently-loaded clip
+        (rotate / zoom / speed / dir / trail)."""
+        self._param_layer = 5
+        self._param_idx   = 0
+        self._clear_param_edit()
+        _disp.go_to_params_screen()
+        self.inst.osd.show("CLIP SETTINGS")
+
     def _grid_hold(self, key, _disp):
         """Handle a hold (long-press) on a SHADER/FX grid cell: jump straight
         to that item's params screen. If it's already in the stack, this
@@ -514,6 +538,15 @@ class KeyboardController:
         slot = int(key)
         inst = self.inst
         tab  = _disp._active_tab
+
+        # SAMPLER: hold a clip to load it and open its per-clip settings.
+        if tab == 2:
+            if not inst.sampler.slot(slot):
+                inst.osd.show(f"SLOT {slot}: EMPTY")
+                return
+            inst.sampler.trigger()
+            self._open_clip_settings(_disp)
+            return
 
         if tab not in (0, 1):
             return
@@ -537,7 +570,7 @@ class KeyboardController:
             toggle_fn(name)   # adds it, selects it
         self._param_layer   = param_layer
         self._param_idx     = 0
-        self._editing_param = False
+        self._clear_param_edit()
         _disp.go_to_params_screen()
         inst.osd.show(f"PARAMS: {name.replace('.glsl','').upper()}")
 
@@ -597,13 +630,20 @@ class KeyboardController:
         """Handle keys on the params sub-screen (second screen of each tab).
 
         ENTER toggles edit mode on the highlighted parameter. Outside edit
-        mode, +/Bksp scroll the list and 1-9 jump to a row by grid position;
-        inside edit mode, +/Bksp step that parameter's value instead.
+        mode, +/Bksp scroll the list, 1/2/3 assign LFO 1/2/3, and 4 starts
+        MIDI-assign (learn a knob or type a CC); inside edit mode, +/Bksp step
+        that parameter's value instead. While MIDI-assign is active it swallows
+        every key until a CC is learned/typed or the assign is cancelled.
         Tab key (NUM/slash/asterisk/minus/dot)  exit back to grid (handled
                in _dispatch before this method is reached)
         """
         inst  = self.inst
         _disp = getattr(inst, "display", None)
+
+        # MIDI-assign sub-mode swallows every key until it resolves.
+        if self._midi_assign:
+            self._midi_assign_key_press(name)
+            return
 
         if name == "ENTER":
             self._editing_param = not self._editing_param
@@ -626,11 +666,11 @@ class KeyboardController:
             # (nearly all of them) clamped to the last row — so they did
             # nothing. Params 7+ are still reachable by scrolling.
             self._assign_lfo(int(name) - 1)
-        elif name in ("4","5","6","7","8","9"):
-            n   = int(name)
-            # Map numpad key to grid position so keys match the visual layout
-            pos = _GRID_KEY_TO_POS.get(n, n - 1)
-            self._select_param_by_number(pos + 1)
+        elif name == "4":
+            # MIDI-assign the highlighted param (learn a knob or type a CC).
+            # Replaces the old param-jump quick-access on keys 4-9, which was
+            # redundant with +/Bksp scrolling.
+            self._begin_midi_assign()
         elif name == "0":
             if _disp:
                 staged = _disp.toggle_staged()
@@ -652,7 +692,7 @@ class KeyboardController:
         if self._param_layer == 4:
             return list(self._trail_slots())
         if self._param_layer == 5:
-            return list(self._speed_slots())
+            return list(self._clipset_slots())
         return self.inst.shader.shader_row_keys()
 
     def _scroll_param(self, direction):
@@ -694,15 +734,10 @@ class KeyboardController:
             slots = self._trail_slots()
             self._param_idx = min(n - 1, len(slots) - 1)
             inst.osd.show(f"TRAIL: {_TRAIL_LABELS[slots[self._param_idx]]}")
-        elif self._param_layer == 5:   # SPEED
-            slots = self._speed_slots()
+        elif self._param_layer == 5:   # CLIP (per-clip settings)
+            slots = self._clipset_slots()
             self._param_idx = min(n - 1, len(slots) - 1)
-            slot = slots[self._param_idx]
-            if slot == "speed":
-                spd = getattr(inst.sampler, "speed", 1.0)
-                inst.osd.show(f"SPEED: {spd:.2f}x")
-            else:
-                inst.osd.show("DIR: REVERSE")
+            inst.osd.show(f"CLIP: {_CLIPSET_LABELS[slots[self._param_idx]]}")
         else:                          # SHDR: generative params (+ blend mode/amount if slot > 0)
             row_keys = inst.shader.shader_row_keys()
             if not row_keys:
@@ -724,6 +759,9 @@ class KeyboardController:
         """
         inst = self.inst
         cfg  = inst.cfg
+        if self._param_layer == 5:
+            self._assign_clip_lfo(idx)
+            return
         if self._param_layer == 0:
             params, labels = cfg.params, inst.shader.param_labels()
         elif self._param_layer == 1:
@@ -750,6 +788,143 @@ class KeyboardController:
             params[mkey] = idx
             inst.osd.show(f"{label} -> LFO {idx + 1}")
         inst.shader.reapply()
+
+    def _assign_clip_lfo(self, idx):
+        """CLIP layer: toggle an LFO on the highlighted zoom/speed row (per
+        clip). Other rows aren't continuous CPU targets, so they refuse."""
+        inst = self.inst
+        cfg  = inst.cfg
+        key  = self._clipset_slots()[self._param_idx % len(self._clipset_slots())]
+        if key not in ("zoom", "speed"):
+            inst.osd.show("LFO: ZOOM/SPEED ONLY")
+            return
+        path  = cfg.current_clip
+        label = key.upper()
+        cur   = cfg.clip_lfo(path, key)
+        if cur is not None and cur == idx:
+            cfg.clip_set_lfo(path, key, None)
+            inst.osd.show(f"{label}: LFO OFF")
+            # restore the clip's static value the LFO was overriding
+            if key == "zoom":
+                inst.sampler.apply_video_zoom()
+            else:
+                inst.sampler.set_speed_dir(cfg.clip_get(path, "speed"),
+                                           cfg.clip_get(path, "reverse"))
+        else:
+            cfg.clip_set_lfo(path, key, idx)
+            inst.osd.show(f"{label} -> LFO {idx + 1}")
+
+    def _clear_param_edit(self):
+        """Leave both params-screen sub-modes (value-edit and MIDI-assign),
+        disarming any pending MIDI-learn. Called whenever navigation lands on
+        or leaves a params screen so neither sub-mode leaks across contexts."""
+        self._editing_param = False
+        if self._midi_assign:
+            self._cancel_midi_assign()
+
+    # ── MIDI assign (params-screen key 4) ───────────────────────────────────
+
+    def _midi_param_labels(self):
+        """(labels, ok) for the current layer — SHDR/FX hold shader params a CC
+        can drive; the CLIP layer exposes zoom/speed (the two continuous CPU
+        targets). Everything else has nothing a CC can scale."""
+        inst = self.inst
+        if self._param_layer == 0:
+            return inst.shader.param_labels(), True
+        if self._param_layer == 1:
+            return inst.shader.fx_param_labels(), True
+        if self._param_layer == 5:
+            return {"zoom": "ZOOM", "speed": "SPEED"}, True
+        return {}, False
+
+    def _begin_midi_assign(self):
+        """Start MIDI-assign for the highlighted param: arm learn AND accept a
+        typed CC number, whichever the user does first."""
+        inst = self.inst
+        labels, ok = self._midi_param_labels()
+        if not ok:
+            inst.osd.show("NO MIDI HERE")
+            return
+        keys = self._current_row_keys()
+        if not keys:
+            return
+        key = keys[self._param_idx % len(keys)]
+        if key.startswith("__"):          # __blend_mode__ / __blend_amt__
+            inst.osd.show("NO MIDI ON BLEND")
+            return
+        if key not in labels:             # e.g. CLIP rotate/dir/trail: not CC-able
+            inst.osd.show("NO MIDI HERE")
+            return
+
+        self._midi_assign     = True
+        self._midi_cc_buf     = ""
+        self._midi_assign_key = key
+        midi = getattr(inst, "midi", None)
+        if midi is not None:
+            midi.arm_learn(self._on_midi_learned)
+        inst.osd.show("MIDI: move knob or type CC")
+
+    def _midi_assign_key_press(self, name):
+        """Handle a keypress while MIDI-assign is active."""
+        if name.isdigit():
+            self._midi_cc_buf += name
+            self.inst.osd.show(f"MIDI CC: {self._midi_cc_buf}")
+            if len(self._midi_cc_buf) == 3:   # 3 digits can't grow further
+                self._commit_midi_cc()
+        elif name == "ENTER":
+            self._commit_midi_cc()
+        elif name == "BKSP":
+            self._midi_cc_buf = self._midi_cc_buf[:-1]
+            self.inst.osd.show(f"MIDI CC: {self._midi_cc_buf or '_'}")
+        else:
+            self._cancel_midi_assign()
+
+    def _on_midi_learned(self, cc):
+        """arm_learn callback — runs on the MIDI thread when a knob moves."""
+        if not self._midi_assign:
+            return
+        self._bind_midi_cc(self._midi_assign_key, int(cc))
+        self._midi_assign = False
+        self._midi_cc_buf = ""
+
+    def _commit_midi_cc(self):
+        """Finish MIDI-assign using whatever CC number was typed (empty=cancel)."""
+        inst = self.inst
+        buf  = self._midi_cc_buf
+        self._midi_assign = False
+        self._midi_cc_buf = ""
+        midi = getattr(inst, "midi", None)
+        if midi is not None:
+            midi.cancel_learn()
+        if not buf:
+            inst.osd.show("MIDI: CANCELLED")
+            return
+        self._bind_midi_cc(self._midi_assign_key, max(0, min(127, int(buf))))
+
+    def _cancel_midi_assign(self):
+        self._midi_assign = False
+        self._midi_cc_buf = ""
+        midi = getattr(self.inst, "midi", None)
+        if midi is not None:
+            midi.cancel_learn()
+        self.inst.osd.show("MIDI: CANCELLED")
+
+    def _bind_midi_cc(self, key, cc):
+        """Store key -> CC in cfg.midi_target_cc and refresh the reverse map.
+        Pressing MIDI again on an already-bound CC clears it (no un-assign key)."""
+        inst   = self.inst
+        cfg    = inst.cfg
+        labels, _ = self._midi_param_labels()
+        label  = labels.get(key, key.upper()).upper()
+        if cfg.midi_target_cc.get(key) == cc:
+            cfg.midi_target_cc.pop(key, None)
+            inst.osd.show(f"{label}: MIDI OFF")
+        else:
+            cfg.midi_target_cc[key] = cc
+            inst.osd.show(f"{label} -> CC {cc}")
+        midi = getattr(inst, "midi", None)
+        if midi is not None:
+            midi.invalidate_cc_map()
 
     def _step_video_blend_mode(self, d):
         """Slot 0's BLEND row: how the shader composites over the video layer.
@@ -797,8 +972,9 @@ class KeyboardController:
     def _trail_slots(self):
         return ("on", "type", "mode", "delay", "echos", "opacity")
 
-    def _speed_slots(self):
-        return ("speed", "dir")
+    def _clipset_slots(self):
+        return ("rotate", "zoom", "speed", "dir", "bright", "contrast",
+                "trail_on", "trail", "trail_time", "trail_mode", "trail_opc")
 
     def sync_param_layer(self):
         """Keep the selected layer valid for the current mode (called on mode
@@ -984,14 +1160,87 @@ class KeyboardController:
                 inst.osd.show(f"TRL OPC: {new:.2f}")
                 if cfg.trail_on:
                     inst.sampler.refresh_trail()
-        else:                             # ── SPEED: sampler playback speed / direction
-            slots = self._speed_slots()
+        else:                             # ── CLIP: per-clip rotate/zoom/speed/dir/trail
+            slots = self._clipset_slots()
             slot  = slots[self._param_idx % len(slots)]
-            if slot == "speed":
-                step = SPEED_STEP * (1 if delta > 0 else -1)
-                inst.sampler.nudge_speed(step)
-                spd = inst.sampler.speed
-                inst.osd.show(f"SPEED: {spd:.2f}x")
+            path  = cfg.current_clip
+            d     = 1 if delta > 0 else -1
+            if not path:
+                inst.osd.show("NO CLIP")
+                return
+            if slot == "rotate":
+                steps = list(getattr(cfg, 'VIDEO_ROTATE_STEPS', (0, 90, 180, 270)))
+                cur   = cfg.clip_get(path, "rotate")
+                i     = steps.index(cur) if cur in steps else 0
+                val   = steps[(i + d) % len(steps)]
+                cfg.clip_set(path, "rotate", val)
+                inst.sampler.refresh_overlay()   # rebuild vf with the new angle
+                inst.osd.show(f"ROTATE: {val}°")
+            elif slot == "zoom":
+                zmax = getattr(cfg, 'VIDEO_ZOOM_MAX', 4.0)
+                cur  = cfg.clip_get(path, "zoom")
+                val  = round(max(1.0, min(zmax, cur + d * 0.05)), 2)
+                if val == cur:
+                    return
+                cfg.clip_set(path, "zoom", val)
+                inst.sampler.apply_video_zoom()
+                inst.osd.show(f"ZOOM: {val:.2f}x")
+            elif slot == "speed":
+                cur = cfg.clip_get(path, "speed")
+                val = round(max(0.1, min(4.0, cur + SPEED_STEP * d)), 2)
+                if val == cur:
+                    return
+                cfg.clip_set(path, "speed", val)
+                inst.sampler.set_speed_dir(val, cfg.clip_get(path, "reverse"))
+                inst.osd.show(f"SPEED: {val:.2f}x")
             elif slot == "dir":
-                inst.sampler.reverse()
-                inst.osd.show("REVERSE")
+                rev = not cfg.clip_get(path, "reverse")
+                cfg.clip_set(path, "reverse", rev)
+                inst.sampler.set_speed_dir(cfg.clip_get(path, "speed"), rev)
+                inst.osd.show("REVERSE" if rev else "FORWARD")
+            elif slot in ("bright", "contrast"):
+                cur = int(cfg.clip_get(path, slot))
+                val = max(-100, min(100, cur + d * 5))
+                if val == cur:
+                    return
+                cfg.clip_set(path, slot, val)
+                inst.sampler.apply_video_eq()
+                inst.osd.show(f"{slot.upper()}: {val:+d}")
+            elif slot == "trail_on":                  # trail on/off toggle
+                on = not bool(cfg.clip_get(path, "trail_on"))
+                cfg.clip_set(path, "trail_on", on)
+                inst.sampler.apply_clip_trail(path)
+                inst.osd.show(f"TRAIL: {'ON' if on else 'OFF'}")
+            elif slot == "trail":                     # echo STEPS (1..max)
+                tmax = getattr(cfg, 'CLIP_TRAIL_MAX', 5)
+                cur  = int(cfg.clip_get(path, "trail"))
+                val  = max(1, min(tmax, cur + d))
+                if val == cur:
+                    return
+                cfg.clip_set(path, "trail", val)
+                inst.sampler.apply_clip_trail(path)
+                inst.osd.show(f"TRL STEPS: {val}")
+            elif slot == "trail_time":                # delay to furthest echo
+                cur = cfg.clip_get(path, "trail_time")
+                val = round(max(0.25, min(8.0, cur + d * 0.25)), 2)
+                if val == cur:
+                    return
+                cfg.clip_set(path, "trail_time", val)
+                inst.sampler.apply_clip_trail(path)
+                inst.osd.show(f"TRL TIME: {val:.2f}s")
+            elif slot == "trail_mode":                # echo blend mode
+                modes = list(cfg.TRAIL_MODES)
+                cur   = cfg.clip_get(path, "trail_mode")
+                i     = modes.index(cur) if cur in modes else 0
+                val   = modes[(i + d) % len(modes)]
+                cfg.clip_set(path, "trail_mode", val)
+                inst.sampler.apply_clip_trail(path)
+                inst.osd.show(f"TRL MODE: {val.upper()}")
+            elif slot == "trail_opc":                 # per-echo blend opacity
+                cur = cfg.clip_get(path, "trail_opc")
+                val = round(max(0.0, min(1.0, cur + d * 0.05)), 2)
+                if val == cur:
+                    return
+                cfg.clip_set(path, "trail_opc", val)
+                inst.sampler.apply_clip_trail(path)
+                inst.osd.show(f"TRL BLEND: {val:.2f}")

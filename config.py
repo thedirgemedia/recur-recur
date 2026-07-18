@@ -195,6 +195,25 @@ class Config:
         self.video_scale_mode  = "fit"
         self.VIDEO_SCALE_MODES = ("fit", "fill", "stretch")
 
+        # Per-clip playback settings (SAMPLER / LIVE), reached by long-pressing
+        # a clip on the SAMPLER grid. Keyed by clip path; each clip remembers
+        # its own orientation, zoom, speed, direction and trail so loading it
+        # restores how it was last set up. Missing keys fall back to
+        # CLIP_DEFAULTS below (neutral: upright at the clip's own metadata
+        # rotation, no zoom, 1x forward, no trail).
+        #   rotate  — degrees ADDED on top of the clip's metadata rotation
+        #             (0 already plays portrait phone clips upright). 0/90/180/270.
+        #   zoom    — uniform zoom factor (1.0 = none .. VIDEO_ZOOM_MAX); pushes
+        #             a mismatched-aspect clip out to fill the screen.
+        #   speed   — playback speed 0.1x .. 4.0x.
+        #   reverse — play backwards when True.
+        #   trail   — trail level 0 (off) .. CLIP_TRAIL_MAX; one slider that
+        #             scales both the echo count and the delay length together.
+        self.clip_settings = {}
+        self.VIDEO_ROTATE_STEPS = (0, 90, 180, 270)
+        self.VIDEO_ZOOM_MAX     = 4.0
+        self.CLIP_TRAIL_MAX     = 5
+
         # Temporal trail — echo time delay.
         # Toggle: 000 key.  Mode: menu TRAIL MODE row.  Decay: FX layer TRL DEC param.
         # Two blend types selectable from menu TRAIL TYPE row:
@@ -243,10 +262,55 @@ class Config:
         'current_clip', 'current_shader', 'current_fx',
         'start_mode', 'live_mode_enabled',
         'camera_width', 'camera_height',
-        'video_scale_mode',
+        'video_scale_mode', 'clip_settings',
         'midi_target_cc',
         'lfos', 'lfo_bpm',
     ]
+
+    # -------------------------------------------------- per-clip settings
+    # Neutral defaults for a clip with nothing stored yet. bright/contrast are
+    # mpv equalizer values (-100..100, 0 = neutral).
+    # trail = number of echo steps (0 = off); trail_time = delay to the
+    # furthest echo in seconds; trail_mode = the echo blend mode. These mirror
+    # the reference build's trail controls (blend mode / steps / time).
+    # trail_opc = per-echo blend opacity (0..1). Brightening modes (screen/
+    # addition) accumulate toward white as echoes stack; lowering this fades
+    # each echo's contribution so they don't blow out.
+    CLIP_DEFAULTS = {"rotate": 0, "zoom": 1.0, "speed": 1.0,
+                     "reverse": False,
+                     "bright": 0, "contrast": 0,
+                     "trail_on": False, "trail": 1, "trail_time": 2.0,
+                     "trail_mode": "screen", "trail_opc": 0.5}
+
+    def clip_get(self, path, key):
+        """Read one per-clip setting, falling back to the neutral default."""
+        if not path:
+            return self.CLIP_DEFAULTS[key]
+        return self.clip_settings.get(path, {}).get(key, self.CLIP_DEFAULTS[key])
+
+    def clip_set(self, path, key, value):
+        """Store one per-clip setting (no-op without a path)."""
+        if not path:
+            return
+        self.clip_settings.setdefault(path, {})[key] = value
+
+    def clip_lfo(self, path, target):
+        """LFO index bound to a per-clip continuous target ('zoom'/'speed'),
+        or None if unbound. Stored beside the value under an 'lfo_<target>'
+        key so it travels with the clip."""
+        if not path:
+            return None
+        v = self.clip_settings.get(path, {}).get("lfo_" + target)
+        return None if v is None else int(v)
+
+    def clip_set_lfo(self, path, target, idx):
+        """Bind (idx) or clear (idx=None) an LFO on a per-clip target."""
+        if not path:
+            return
+        if idx is None:
+            self.clip_settings.get(path, {}).pop("lfo_" + target, None)
+        else:
+            self.clip_settings.setdefault(path, {})["lfo_" + target] = int(idx)
 
     def _sync_shader_compat(self):
         """Keep backward-compat aliases (current_shader / params /

@@ -689,7 +689,9 @@ class Menu:
             adjust=lambda d: _cam_res_cycle(d),
             select=lambda: _cam_res_cycle(+1), group="VIDEO"))
 
-        # video scaling for mismatched aspect ratios
+        # video scaling for mismatched aspect ratios (global). Per-clip
+        # rotation / zoom / speed / trail live on the clip's own settings
+        # screen — long-press a clip on the SAMPLER grid.
         items.append(_Item(
             "VID SCALE", lambda: getattr(cfg, 'video_scale_mode', 'fit').upper(),
             adjust=lambda d: inst.video_scale_cycle(d),

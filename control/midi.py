@@ -88,6 +88,7 @@ CC_ACTIONS: dict[int, str] = {
 # "Toggle" targets fire on val > 63; "cycle" targets fire on any value.
 MIDI_TARGETS: list[str] = [
     "p1", "p2", "p3", "p4",
+    "zoom", "speed",
     "blend_amt", "ovl_opacity", "trl_decay",
     "overlay_toggle", "overlay_cycle",
     "shader_blend_toggle", "shader_blend_cycle",
@@ -102,6 +103,8 @@ MIDI_TARGET_LABELS: dict[str, str] = {
     "p2":                  "P2",
     "p3":                  "P3",
     "p4":                  "P4",
+    "zoom":                "ZOOM",
+    "speed":               "SPEED",
     "blend_amt":           "BLD AMT",
     "ovl_opacity":         "OVL OPC",
     "trl_decay":           "TRL DEC",
@@ -125,6 +128,8 @@ MIDI_DEFAULTS: dict[str, int | None] = {
     "p2":                  2,
     "p3":                  3,
     "p4":                  4,
+    "zoom":                None,
+    "speed":               None,
     "blend_amt":           None,
     "ovl_opacity":         None,
     "trl_decay":           None,
@@ -175,6 +180,7 @@ class MidiController:
         self._lock    = threading.Lock()
         self._port_name: str | None = None
         self._cc_reverse: dict[int, str] | None = None  # cc -> target, lazy
+        self._learn_cb = None  # if set, the next CC is captured, not dispatched
 
     # ── lifecycle ──────────────────────────────────────────────────────────────
 
@@ -270,12 +276,32 @@ class MidiController:
             self.inst.cfg.load_preset(f"{d1:02d}.json")
 
     def invalidate_cc_map(self):
-        """Call after midi_target_cc is edited (MIDI settings menu) so the
-        next CC message rebuilds the reverse lookup instead of using stale
-        assignments."""
+        """Call after midi_target_cc is edited (MIDI settings menu, or the
+        params-screen MIDI button) so the next CC message rebuilds the reverse
+        lookup instead of using stale assignments."""
         self._cc_reverse = None
 
+    def arm_learn(self, callback):
+        """MIDI-learn: route the NEXT incoming CC number to `callback(cc)`
+        instead of dispatching it, then disarm. Used by the params-screen MIDI
+        button. Thread-safe: the callback runs on the MIDI thread."""
+        self._learn_cb = callback
+
+    def cancel_learn(self):
+        """Disarm a pending arm_learn() without capturing anything."""
+        self._learn_cb = None
+
     def _handle_cc(self, cc: int, val: int):
+        # MIDI-learn intercept: capture this CC for whoever armed it and stop.
+        cb = self._learn_cb
+        if cb is not None:
+            self._learn_cb = None
+            try:
+                cb(cc)
+            except Exception:
+                log.exception("MIDI-learn callback failed")
+            return
+
         # User-defined assignments take full priority over built-in defaults.
         # A user CC fires its target and returns; built-ins are only reached
         # when no user assignment matches the incoming CC number. Reverse
@@ -311,8 +337,25 @@ class MidiController:
         cfg  = inst.cfg
 
         # ── continuous params ────────────────────────────────────────────
-        if target in ("p1", "p2", "p3", "p4"):
+        # pN → generative shader param, fN → FX param. Covers the built-in
+        # p1-p4 knobs and anything the params-screen MIDI button binds (p5+,
+        # any f-param), all keyed by their bare param name in midi_target_cc.
+        if len(target) > 1 and target[0] == "p" and target[1:].isdigit():
             inst.shader.set_param(target, val / 127.0)
+
+        elif len(target) > 1 and target[0] == "f" and target[1:].isdigit():
+            inst.shader.set_fx_param(target, val / 127.0)
+
+        elif target == "zoom":
+            zmax = getattr(cfg, "VIDEO_ZOOM_MAX", 4.0)
+            z    = round(1.0 + val / 127.0 * (zmax - 1.0), 2)
+            cfg.clip_set(cfg.current_clip, "zoom", z)
+            inst.sampler.apply_video_zoom()
+
+        elif target == "speed":
+            spd = round(0.1 + val / 127.0 * 3.9, 2)
+            cfg.clip_set(cfg.current_clip, "speed", spd)
+            inst.sampler.set_speed_dir(spd, cfg.clip_get(cfg.current_clip, "reverse"))
 
         elif target == "blend_amt":
             cfg.shader_blend_amount = round(val / 127.0, 3)

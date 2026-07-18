@@ -55,6 +55,8 @@ C_BAR_TRACK = (0x00, 0x11, 0x00)   # very dark green
 C_BAR_FILL  = (0x00, 0xaa, 0x00)   # medium green  (#0a0)
 C_ON        = (0x00, 0xff, 0x00)   # bright green  (#0f0) — active / on states
 C_SEL       = (0x00, 0xff, 0x00)   # bright green  (#0f0) — selected parameter
+C_ROWSEL    = (0x00, 0xe0, 0xe0)   # cyan — the highlighted row (not editing);
+                                   # distinct from green (labels) and amber (edit)
 C_HINT      = (0x00, 0x44, 0x00)   # dim green     (#050 approx)
 
 MODE_COLOURS = {
@@ -436,9 +438,16 @@ class DisplayController:
                         getattr(cfg, "shader_blend_mode",   ""),
                         getattr(cfg, "shader_blend_source", ""),
                         getattr(cfg, "trail_on",      False),
+                        getattr(cfg, "current_clip",  None),
+                        tuple(sorted(
+                            (getattr(cfg, "clip_settings", {}) or {})
+                            .get(getattr(cfg, "current_clip", None), {}).items())),
                         getattr(_kb, "_param_idx",   0),
                         getattr(_kb, "_param_layer", 0),
                         getattr(_kb, "_editing_param", False),
+                        getattr(_kb, "_midi_assign", False),
+                        getattr(_kb, "_midi_cc_buf", ""),
+                        tuple(sorted(getattr(cfg, "midi_target_cc", {}).items())),
                         getattr(cfg, "current_shader", None),
                         getattr(cfg, "current_fx",     None),
                         tuple(getattr(cfg, "shader_chain", [])),
@@ -771,7 +780,8 @@ class DisplayController:
 
     def _render_params_screen(self, d, font_sm, tab_col, name,
                                all_keys, get_lbl, get_val, fmt_val, sel_idx,
-                               editing=False, lfo_of=None):
+                               editing=False, lfo_of=None, cc_of=None,
+                               midi_assign=None):
         """Scrollable params list: as many rows as fit are shown at once,
         windowed around sel_idx so lists longer than the visible area (e.g.
         an FX layer's own params + its BLEND/BLD AMT rows) stay reachable via
@@ -782,7 +792,7 @@ class DisplayController:
         d.text((10, sec_y), name[:20], font=font_sm, fill=tab_col)
         if all_keys and 0 <= sel_idx < len(all_keys):
             k = all_keys[sel_idx]
-            hdr_col = C_STAGED if editing else C_ON
+            hdr_col = C_STAGED if editing else C_ROWSEL
             hdr_txt = f"{get_lbl(k)[:8]}: {fmt_val(k, get_val(k))}"
             if editing:
                 hdr_txt = "EDIT " + hdr_txt
@@ -801,14 +811,14 @@ class DisplayController:
         visible = max(1, min(len(all_keys), (GY0 - 4 - SY0) // bar_gap))
         top     = max(0, min(sel_idx - visible // 2, max(0, len(all_keys) - visible)))
 
-        sel_c = C_STAGED if editing else C_SEL
+        sel_c = C_STAGED if editing else C_ROWSEL
         for row, i in enumerate(range(top, min(top + visible, len(all_keys)))):
             k        = all_keys[i]
             v        = get_val(k)
             by       = SY0 + row * bar_gap
             selected = (i == sel_idx)
-            lc = (C_STAGED if editing else C_ON) if selected else C_LABEL
-            bc = sel_c     if selected else C_BAR_FILL
+            lc = sel_c if selected else C_LABEL
+            bc = sel_c if selected else C_BAR_FILL
 
             d.text((10, by + BAR_H // 2), get_lbl(k)[:8],
                    font=font_sm, fill=lc, anchor="lm")
@@ -841,10 +851,10 @@ class DisplayController:
             x1 = x0 + cw
             y1 = y0 + ch
 
-            # Bottom row (keys 1/2/3) assigns LFO 1-3 to the highlighted param
-            # instead of jumping to params 7-9 — those keys clamped to the last
-            # row on every shader with fewer than seven params, so they were
-            # dead. Drawn here so the grid still says what each key does.
+            # The action grid now holds just two controls for the highlighted
+            # param — LFO assign on the bottom row (keys 1/2/3) and MIDI assign
+            # on key 4 — replacing the old param-jump quick-access on keys 4-9,
+            # which duplicated +/Bksp scrolling. Everything else is blank.
             if pos >= 6 and lfo_of is not None:
                 li    = pos - 6
                 cur   = (lfo_of(all_keys[sel_idx])
@@ -859,26 +869,29 @@ class DisplayController:
                        font=font_sm, fill=tc, anchor="mm")
                 continue
 
-            i = top + pos
-            if i < len(all_keys):
-                lbl      = get_lbl(all_keys[i])
-                selected = (i == sel_idx)
-                if selected:
-                    hi_c   = C_STAGED if editing else C_ON
-                    bg_c   = tuple(max(0, c // 5) for c in hi_c)
-                    border = hi_c
-                    tc     = hi_c
+            if pos == 3 and cc_of is not None:   # key 4: MIDI assign
+                if midi_assign and midi_assign[0]:
+                    # Assign in progress: show it's waiting (knob or typed CC).
+                    buf   = midi_assign[1]
+                    label = f"CC {buf}" if buf else "LEARN"
+                    hi    = True
                 else:
-                    bg_c   = (0x00, 0x06, 0x00)
-                    border = tab_col
-                    tc     = C_LABEL
+                    cur   = (cc_of(all_keys[sel_idx])
+                             if 0 <= sel_idx < len(all_keys) else None)
+                    label = f"CC {int(cur)}" if cur is not None else "MIDI"
+                    hi    = cur is not None
+                bg_c   = tuple(max(0, c // 4) for c in C_STAGED) if hi else (0x00, 0x06, 0x00)
+                border = C_STAGED if hi else C_DIVIDER
+                tc     = C_STAGED if hi else C_HINT
                 d.rectangle([x0, y0, x1, y1], fill=bg_c)
                 d.rectangle([x0, y0, x1, y1], outline=border, width=2)
-                d.text(((x0 + x1) // 2, (y0 + y1) // 2), lbl[:9],
+                d.text(((x0 + x1) // 2, (y0 + y1) // 2), label,
                        font=font_sm, fill=tc, anchor="mm")
-            else:
-                d.rectangle([x0, y0, x1, y1], fill=C_BG)
-                d.rectangle([x0, y0, x1, y1], outline=C_DIVIDER, width=2)
+                continue
+
+            # Every other cell is blank (quick-access removed).
+            d.rectangle([x0, y0, x1, y1], fill=C_BG)
+            d.rectangle([x0, y0, x1, y1], outline=C_DIVIDER, width=2)
 
     # ── SHADER tab ────────────────────────────────────────────────────────────
 
@@ -941,11 +954,86 @@ class DisplayController:
         self._render_params_screen(d, font_sm, TAB_COL["SHADER"], name,
                                    all_keys, get_lbl, get_val, fmt_val, sel_idx,
                                    editing=editing,
-                                   lfo_of=lambda k: cfg.params.get("lfo_" + k))
+                                   lfo_of=lambda k: cfg.params.get("lfo_" + k),
+                                   cc_of=lambda k: cfg.midi_target_cc.get(k),
+                                   midi_assign=(getattr(getattr(inst, "kb", None), "_midi_assign", False),
+                                                getattr(getattr(inst, "kb", None), "_midi_cc_buf", "")))
 
     # ── SAMPLER tab ───────────────────────────────────────────────────────────
 
+    def _render_clip_settings(self, d, font_sm, inst, cfg, _kb):
+        """Per-clip settings screen (CLIP layer): rotate / zoom / speed / dir /
+        bright / contrast / trail (steps, time, mode) as sliders, edited with
+        +/Bksp/Enter like every other params list. zoom + speed also take LFO
+        (keys 1/2/3) and MIDI (key 4). Values are normalised 0..1 for the bar."""
+        path  = cfg.current_clip
+        slots = ("rotate", "zoom", "speed", "dir", "bright", "contrast",
+                 "trail_on", "trail", "trail_time", "trail_mode", "trail_opc")
+        labels = {"rotate": "ROTATE", "zoom": "ZOOM", "speed": "SPEED",
+                  "dir": "DIR", "bright": "BRIGHT", "contrast": "CONTRAST",
+                  "trail_on": "TRAIL", "trail": "TRL STEP",
+                  "trail_time": "TRL TIME", "trail_mode": "TRL MODE",
+                  "trail_opc": "TRL BLEND"}
+        zmax  = getattr(cfg, "VIDEO_ZOOM_MAX", 4.0)
+        tmax  = getattr(cfg, "CLIP_TRAIL_MAX", 5)
+        tmodes = list(getattr(cfg, "TRAIL_MODES", ("screen",)))
+
+        # The "dir" row edits the stored "reverse" flag.
+        _store_key = {"dir": "reverse"}
+
+        def raw(k):
+            kk = _store_key.get(k, k)
+            return cfg.clip_get(path, kk) if path else cfg.CLIP_DEFAULTS[kk]
+
+        def get_val(k):   # normalised 0..1 for the slider fill
+            if k == "rotate":     return (raw(k) % 360) / 360.0
+            if k == "zoom":       return (raw(k) - 1.0) / (zmax - 1.0) if zmax > 1.0 else 0.0
+            if k == "speed":      return min(1.0, raw(k) / 4.0)
+            if k == "dir":        return 1.0 if raw(k) else 0.0
+            if k in ("bright", "contrast"): return (raw(k) + 100) / 200.0
+            if k == "trail_on":   return 1.0 if raw(k) else 0.0
+            if k == "trail":      return (raw(k) / tmax) if tmax else 0.0
+            if k == "trail_time": return min(1.0, raw(k) / 8.0)
+            if k == "trail_mode":
+                v = raw(k)
+                return (tmodes.index(v) / max(1, len(tmodes) - 1)) if v in tmodes else 0.0
+            if k == "trail_opc":  return max(0.0, min(1.0, raw(k)))
+            return 0.0
+
+        def fmt_val(k, _v):
+            if k == "rotate":     return f"{raw(k)}°"
+            if k in ("zoom", "speed"): return f"{raw(k):.2f}x"
+            if k == "dir":        return "REV" if raw(k) else "FWD"
+            if k in ("bright", "contrast"): return f"{int(raw(k)):+d}"
+            if k == "trail_on":   return "ON" if raw(k) else "OFF"
+            if k == "trail":      return str(int(raw(k)))
+            if k == "trail_time": return f"{raw(k):.2f}s"
+            if k == "trail_mode": return str(raw(k)).upper()[:9]
+            if k == "trail_opc":  return f"{raw(k):.2f}"
+            return ""
+
+        def lfo_of(k):
+            return cfg.clip_lfo(path, k) if k in ("zoom", "speed") else None
+
+        def cc_of(k):
+            return cfg.midi_target_cc.get(k) if k in ("zoom", "speed") else None
+
+        name = os.path.basename(path).upper() if path else "NO CLIP"
+        self._render_params_screen(
+            d, font_sm, TAB_COL["SAMPLER"], name,
+            list(slots), lambda k: labels[k], get_val, fmt_val,
+            getattr(_kb, "_param_idx", 0),
+            editing=getattr(_kb, "_editing_param", False),
+            lfo_of=lfo_of, cc_of=cc_of,
+            midi_assign=(getattr(_kb, "_midi_assign", False),
+                         getattr(_kb, "_midi_cc_buf", "")))
+
     def _render_sampler_tab(self, d, font_lg, font_md, font_sm, inst, cfg):
+        _kb = getattr(inst, "kb", None)
+        if getattr(_kb, "_param_layer", 0) == 5:
+            self._render_clip_settings(d, font_sm, inst, cfg, _kb)
+            return
+
         Y0 = TAB_H + 4
         s  = inst.sampler
 
@@ -1091,7 +1179,10 @@ class DisplayController:
         self._render_params_screen(d, font_sm, fx_col, name,
                                    all_keys, get_lbl, get_val, fmt_val, sel_idx,
                                    editing=editing,
-                                   lfo_of=lambda k: cfg.fx_params.get("lfo_" + k))
+                                   lfo_of=lambda k: cfg.fx_params.get("lfo_" + k),
+                                   cc_of=lambda k: cfg.midi_target_cc.get(k),
+                                   midi_assign=(getattr(getattr(inst, "kb", None), "_midi_assign", False),
+                                                getattr(getattr(inst, "kb", None), "_midi_cc_buf", "")))
 
     # ── SETTINGS tab ──────────────────────────────────────────────────────────
 

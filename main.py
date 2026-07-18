@@ -558,6 +558,7 @@ class RecurInstrument:
             del self.cfg._prefs_sampler_mode
 
         self.sampler.apply_video_scale()
+        self.sampler.apply_video_zoom()
 
         log.info("ready. numpad ENTER puts the active tab's mode on screen, "
                  "'.' opens SETTINGS.")

@@ -121,8 +121,8 @@ position (7 = top-left … 3 = bottom-right):
 | Key | Action |
 |---|---|
 | **1–9** | select that grid cell (see per-tab behaviour below) |
-| **+** | next page (SHADER / FX grids only — they paginate 9 shaders at a time) |
-| **Bksp** | previous page (SHADER / FX grids only) |
+| **+** | previous page (SHADER / FX grids only — they paginate 9 shaders at a time) |
+| **Bksp** | next page (SHADER / FX grids only) |
 | **0** | toggle **STAGED** mode (SAMPLER grid only) — footer pill shows amber `STAGED` (clip picks wait for **Enter**) vs. green `LIVE` (clip picks apply immediately). SHADER and FX grid taps always apply immediately regardless of this setting. Turning STAGED back off discards anything pending |
 | **Enter** | push all staged picks to the live output |
 | **000** | toggle the temporal trail (works from any screen) |
@@ -184,13 +184,22 @@ that tab's own key again while its grid is showing. Params screens are
 |---|---|---|
 | **+** | scroll selection up the list | increase the selected parameter |
 | **Bksp** | scroll selection down the list | decrease the selected parameter |
-| **1–9** | jump to a parameter by its on-screen grid position | *(no effect)* |
+| **1 / 2 / 3** | assign **LFO 1/2/3** to the highlighted param (press again to clear) | *(no effect)* |
+| **4** | **MIDI-assign** the highlighted param (see below) | *(no effect)* |
 | **Enter** | enter edit mode on the highlighted parameter | exit edit mode |
 | **0** | toggle STAGED / LIVE | toggle STAGED / LIVE |
 | **000** | toggle the temporal trail | toggle the temporal trail |
 
 The header and the selected row turn amber while in edit mode, so it's
 visually obvious whether +/Bksp will move the selection or change a value.
+
+**MIDI-assign (key 4)** — only on the SHADER and FX params screens (the layers
+with real shader params). Press **4** on the highlighted param, then either
+**move a MIDI knob** to learn its CC, or **type a CC number** and press
+**Enter**. Any other key cancels; pressing 4 again on a param already bound to
+that CC clears it. The grid cell shows `CC nn` when the selected param has a
+binding, `MIDI` otherwise. Bindings persist in `prefs.json` as
+`midi_target_cc` (shared with the MIDI settings page for p1–p4).
 
 ### SHADER params — the edited stack slot's own p1–pN, plus blend mode/amount (slots 1+)
 

@@ -33,7 +33,6 @@ MODES = ["loop", "oneshot", "playlist", "random", "fixed", "randstart"]
 OBS_TIME_POS = 1
 OBS_DURATION = 2
 OBS_EOF      = 3
-OBS_ROTATE   = 4
 
 
 class SamplerEngine:
@@ -83,9 +82,17 @@ class SamplerEngine:
         self._cmd_async("observe_property", OBS_TIME_POS, "time-pos")
         self._cmd_async("observe_property", OBS_DURATION, "duration")
         self._cmd_async("observe_property", OBS_EOF,      "eof-reached")
-        self._cmd_async("observe_property", OBS_ROTATE,   "video-params/rotate")
+        # NB: we do NOT observe video-params/rotate. Launched with
+        # --video-rotate=no, mpv reports rotate=0 for every clip regardless of
+        # its metadata, so that property is useless here. Rotation is read from
+        # the file with ffprobe at load time (see _probe_rotation).
+        self.apply_video_zoom()
         if self.clips:
             self.load(0)
+        # CPU LFO driver for zoom/speed (idles until something is bound).
+        self._lfo_thread = threading.Thread(target=self._lfo_loop,
+                                            daemon=True, name="cpu-lfo")
+        self._lfo_thread.start()
         log.info("sampler started (%d clips)", len(self.clips))
 
     def stop(self):
@@ -117,6 +124,168 @@ class SamplerEngine:
             self._cmd_async("set_property", "keepaspect", True)
             self._cmd_async("set_property", "panscan", 0.0)
 
+    def apply_video_zoom(self):
+        """Push video_zoom (a linear factor) to mpv as video-zoom (log2 scale).
+
+        video-zoom uniformly scales the picture at the VO stage, after any vf
+        rotation, so it composes cleanly with rotation and panscan. 1.0x = no
+        zoom; >1 pushes the picture out past the window edges (cropping the
+        overflow) so a mismatched-aspect clip can be filled to the screen.
+        """
+        import math
+        z = max(1.0, min(getattr(self.cfg, 'VIDEO_ZOOM_MAX', 4.0),
+                         float(self.cfg.clip_get(self.cfg.current_clip, "zoom"))))
+        self._cmd_async("set_property", "video-zoom", math.log2(z))
+
+    def _probe_rotation(self, path):
+        """Read a clip's intended display rotation (clockwise degrees) from its
+        container metadata with ffprobe.
+
+        Needed because we launch mpv with --video-rotate=no (so we control
+        rotation entirely, without mpv double-rotating the lavfi trail frames),
+        and under that flag mpv reports video-params/rotate=0 for everything.
+
+        ffprobe exposes the display-matrix rotation, which is the COUNTER-
+        clockwise angle (a portrait phone clip reads -90); mpv's convention —
+        and our transpose table — want the clockwise angle, so negate it.
+        """
+        if not path or not os.path.exists(path):
+            return 0
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream_side_data=rotation",
+                 "-of", "default=nw=1:nk=1", path],
+                capture_output=True, text=True, timeout=5).stdout
+            line = out.strip().splitlines()
+            if not line:
+                return 0
+            disp = int(float(line[0]))
+            return (-disp) % 360
+        except Exception as e:
+            log.debug("rotation probe failed for %s: %s", path, e)
+            return 0
+
+    def set_speed_dir(self, speed, reverse):
+        """Set playback speed and direction in one shot. mpv encodes reverse as
+        a negative speed."""
+        self.speed = max(0.1, min(4.0, float(speed)))
+        self._cmd_async("set_property", "speed",
+                        -self.speed if reverse else self.speed)
+
+    def apply_video_eq(self):
+        """Push this clip's brightness/contrast to mpv's VO equalizer
+        (both -100..100, 0 = neutral)."""
+        p = self.cfg.current_clip
+        self._cmd_async("set_property", "brightness",
+                        int(self.cfg.clip_get(p, "bright")))
+        self._cmd_async("set_property", "contrast",
+                        int(self.cfg.clip_get(p, "contrast")))
+
+    def _apply_trail_from_clip(self, path):
+        """Stage this clip's per-clip trail (steps / time / blend mode) onto the
+        global trail fields the vf builder reads. steps (the 'trail' key) == 0
+        turns it off. Mirrors the reference build's mode/steps/time controls.
+
+        Works in every mode — this is mpv's lavfi tpad trail, NOT a GLSL feedback
+        trail, so the Pi-5 'no cross-frame GPU feedback' limit does not apply."""
+        cfg = self.cfg
+        if not bool(cfg.clip_get(path, "trail_on")):
+            cfg.trail_on = False
+            return
+        cfg.trail_on          = True
+        cfg.trail_blend_type  = "mode"
+        cfg.trail_echo_count  = max(1, min(5, int(cfg.clip_get(path, "trail"))))
+        cfg.trail_delay_s     = float(max(0.25, min(8.0, cfg.clip_get(path, "trail_time"))))
+        cfg.trail_mode        = cfg.clip_get(path, "trail_mode")
+        cfg.trail_mode_opacity = max(0.0, min(1.0, float(cfg.clip_get(path, "trail_opc"))))
+
+    def apply_clip_trail(self, path=None):
+        """Live-apply a trail change (steps/time/mode) from the clip screen."""
+        p = path or self.cfg.current_clip
+        self._apply_trail_from_clip(p)
+        self.refresh_trail()
+        log.info("clip trail: on=%s steps=%d time=%.2fs mode=%s",
+                 self.cfg.trail_on, getattr(self.cfg, 'trail_echo_count', 0),
+                 getattr(self.cfg, 'trail_delay_s', 0.0),
+                 getattr(self.cfg, 'trail_mode', '?'))
+
+    def _apply_clip_settings(self, path):
+        """Load the per-clip settings for `path` and push them to mpv: metadata
+        rotation (probed), speed + direction, zoom, brightness/contrast, and
+        trail. The vf chain (rotation + trail + overlay) is rebuilt by the
+        caller via refresh_trail()/refresh_overlay() right after, so this only
+        needs to stage the cfg trail fields before that runs."""
+        cfg = self.cfg
+        self._clip_rotate = self._probe_rotation(path)
+        self.set_speed_dir(cfg.clip_get(path, "speed"),
+                           cfg.clip_get(path, "reverse"))
+        self._apply_trail_from_clip(path)
+        self.apply_video_zoom()
+        self.apply_video_eq()
+
+    # ------------------------------------------------------- CPU-side LFOs
+    # zoom + speed aren't GPU params (they're mpv properties), so an LFO bound
+    # to them can't ride mpv's `frame` uniform like the shader LFOs do. Instead
+    # a low-rate thread evaluates the same LFO math on the CPU and pushes the
+    # property. Bindings live per-clip under lfo_zoom / lfo_speed.
+    def _eval_lfo(self, idx, t):
+        """Evaluate LFO `idx` at time `t` seconds → unipolar 0..1, matching the
+        GLSL recur_lfo() in engine/shader.py exactly."""
+        import math
+        cfg  = self.cfg
+        lfos = getattr(cfg, "lfos", [])
+        if idx is None or not (0 <= idx < len(lfos)):
+            return None
+        try:
+            from engine.shader import lfo_period
+            L      = lfos[idx]
+            period = max(0.05, lfo_period(cfg, L))
+            shape  = int(float(L.get("shape", 0)) + 0.5)
+            amp    = float(L.get("amp", 0.5))
+            offset = float(L.get("offset", 0.0))
+            phase  = (t / period) % 1.0
+            if   shape == 0: bip = math.sin(phase * 6.28318530718)
+            elif shape == 1: bip = phase * 4.0 - 1.0 if phase < 0.5 else 3.0 - phase * 4.0
+            elif shape == 2: bip = phase * 2.0 - 1.0
+            elif shape == 3: bip = 1.0 if phase < 0.5 else -1.0
+            else:
+                epoch = math.floor(t / period)
+                frac  = math.sin(epoch * 127.1 + idx * 311.7) * 43758.5453
+                bip   = (frac - math.floor(frac)) * 2.0 - 1.0
+            return max(0.0, min(1.0, offset + (bip + 1.0) * 0.5 * amp))
+        except Exception:
+            return None
+
+    def _lfo_loop(self):
+        """Drive zoom/speed from their bound LFOs while a clip is playing.
+        Idles cheaply (5 Hz) when nothing is bound; runs at ~20 Hz when it is."""
+        import math
+        t0 = time.monotonic()
+        while not self._stop.is_set():
+            cfg  = self.cfg
+            path = cfg.current_clip
+            lz   = cfg.clip_lfo(path, "zoom")
+            ls   = cfg.clip_lfo(path, "speed")
+            if (lz is not None or ls is not None) and self._active_source == 'clip':
+                t = time.monotonic() - t0
+                if lz is not None:
+                    v = self._eval_lfo(lz, t)
+                    if v is not None:
+                        zmax = getattr(cfg, 'VIDEO_ZOOM_MAX', 4.0)
+                        z = max(1.0, 1.0 + v * (zmax - 1.0))
+                        self._cmd_async("set_property", "video-zoom", math.log2(z))
+                if ls is not None:
+                    v = self._eval_lfo(ls, t)
+                    if v is not None:
+                        spd = 0.1 + v * 3.9
+                        rev = cfg.clip_get(path, "reverse")
+                        self._cmd_async("set_property", "speed",
+                                        -spd if rev else spd)
+                self._stop.wait(0.05)
+            else:
+                self._stop.wait(0.2)
+
     def stop_playback(self):
         """Stop mpv playback. In v2 we usually don't need this since mpv
         keeps owning the screen across modes — but it's still useful when
@@ -138,8 +307,10 @@ class SamplerEngine:
             self.resume()
             return
         self._cmd_async("loadfile", self.cfg.current_clip, "replace")
+        self._apply_clip_settings(self.cfg.current_clip)
         self._apply_loop_mode()
         self._active_source = 'clip'
+        self.refresh_overlay()   # apply this clip's rotation to the vf chain
         # Clear any stray pause inherited from a previous source ending under
         # --keep-open (e.g. leaving LIVE, or a clip that hit EOF): the pause
         # flag is global and survives loadfile, so a fresh clip could load
@@ -152,27 +323,36 @@ class SamplerEngine:
         'vf remove' + 'vf add' are sent as two separate commands — mpv renders
         one unfiltered frame in the gap between them.
         """
-        # --autorotate=no means mpv never applies metadata rotation itself.
-        # We always apply it manually: via video-rotate when there's no lavfi
-        # chain, or via a transpose prefix inside lavfi (where tpad would
-        # otherwise strip the rotation side-data from its synthetic frames).
-        _rot = self._clip_rotate % 360
-        _rot_prefix = {
-            90:  "transpose=1,",   # 90° clockwise
-            180: "hflip,vflip,",
-            270: "transpose=2,",   # 90° counter-clockwise
+        # We apply ALL rotation ourselves via a lavfi transpose — mpv is
+        # launched with --video-rotate=no and we keep it there. This is
+        # deliberate: setting mpv's video-rotate to a NUMBER re-enables its own
+        # autorotation, which then double-rotates the transpose we bake into the
+        # trail's lavfi graph (mpv autorotates the graph's output frames on top
+        # of the transpose). Keeping autorotate off makes the result
+        # deterministic in every case (plain, overlay, trail).
+        #
+        # Effective angle = the clip's metadata rotation (from _probe_rotation,
+        # since mpv reports 0 under --video-rotate=no) plus this clip's own
+        # ROTATE override. 0 = original orientation.
+        _rot = (self._clip_rotate +
+                self.cfg.clip_get(self.cfg.current_clip, "rotate")) % 360
+        # Rotation is applied ONCE as its own leading lavfi filter (below), not
+        # baked into each of the overlay/trail graphs — baking it into every
+        # part rotated the frame once PER part, so overlay+trail together turned
+        # a 90° step into 180°. As a standalone physical transpose it outputs
+        # already-rotated pixels that the downstream parts just pass through.
+        _rot_filter = {
+            90:  "transpose=1",   # 90° clockwise
+            180: "hflip,vflip",
+            270: "transpose=2",   # 90° counter-clockwise
         }.get(_rot, "")
-        _has_lavfi = (getattr(self.cfg, 'overlay_on', False) or
-                      getattr(self.cfg, 'trail_on', False))
-        # video-rotate=0 means "apply metadata rotation + 0° extra", which is
-        # correct for both cases.  With lavfi: _rot_prefix bakes rotation into
-        # the graph; lavfi output frames lose their rotation side-data so VO
-        # doesn't double-rotate.  Without lavfi: VO applies metadata rotation
-        # directly.  We launched with --video-rotate=no so we must explicitly
-        # set 0 on every _rebuild_vf call to re-enable metadata-driven rotation.
-        self._cmd_async("set_property", "video-rotate", 0)
+        # Belt-and-suspenders: re-assert autorotate off (a stray numeric set
+        # elsewhere would silently re-enable it and double-rotate).
+        self._cmd_async("set_property", "video-rotate", "no")
 
         parts = []
+        if _rot_filter:
+            parts.append(f"@rotate:lavfi=[{_rot_filter}]")
         if getattr(self.cfg, 'overlay_on', False):
             # Self-blend of the current frame using overlay_mode, mixed at
             # overlay_blend_amount (OVL OPC). The old time-delay/lagfun echo was
@@ -180,7 +360,6 @@ class SamplerEngine:
             opacity = max(0.0, min(1.0, getattr(self.cfg, 'overlay_blend_amount', 1.0)))
             parts.append(
                 f"@overlay:lavfi=["
-                f"{_rot_prefix}"
                 f"split[a][b];"
                 f"[a][b]blend=c0_mode={self.cfg.overlay_mode}:"
                 f"c1_mode=normal:c2_mode=normal:"
@@ -207,7 +386,6 @@ class SamplerEngine:
                 split_outs = f"[_cur]" + "".join(f"[_s{i}]" for i in range(1, n + 1))
                 weights = " ".join(f"{x:.3f}" for x in w)
                 g = (
-                    f"{_rot_prefix}"
                     f"split={n+1}{split_outs};"
                     f"{taps}"
                     f"{inputs}"
@@ -218,14 +396,11 @@ class SamplerEngine:
                 # Mode blend: chain n delayed copies blended onto the live frame
                 # with the configured blend mode. Echoes are spaced step_f apart
                 # so the furthest echo lands at trail_delay_s.
-                # difference stays at full strength; other modes are tamed by
-                # trail_mode_opacity so they don't wash out.
+                # Every echo blends at trail_mode_opacity (the per-echo BLEND
+                # slider) so brightening modes don't accumulate to white.
                 tm = self.cfg.trail_mode
-                if tm == 'difference':
-                    c0 = "c0_mode=difference"
-                else:
-                    op = getattr(self.cfg, 'trail_mode_opacity', 0.5)
-                    c0 = f"c0_mode={tm}:c0_opacity={op:.3f}"
+                op = getattr(self.cfg, 'trail_mode_opacity', 0.5)
+                c0 = f"c0_mode={tm}:c0_opacity={op:.3f}"
                 split_outs = "[_ma]" + "".join(f"[_ms{i}]" for i in range(1, n + 1))
                 taps = "".join(
                     f"[_ms{i}]tpad=start_mode=clone:start={step_f*i}[_md{i}];"
@@ -239,7 +414,7 @@ class SamplerEngine:
                         f"c1_mode=normal:c2_mode=normal:shortest=1{out};"
                     )
                 blends = blends.rstrip(";")
-                g = f"{_rot_prefix}split={n+1}{split_outs};{taps}{blends}"
+                g = f"split={n+1}{split_outs};{taps}{blends}"
                 parts.append(f"@trail:lavfi=[{g}]")
         self._cmd_async("vf", "set", ",".join(parts))
 
@@ -279,6 +454,7 @@ class SamplerEngine:
                f":rate={self.cfg.fps}")
         self._cmd_async("loadfile", url, "replace")
         self._cmd_async("set_property", "loop-file", "inf")
+        self._clip_rotate = 0   # synthetic source has no orientation
         self._active_source = 'blank'
         self.resume()   # never inherit a stray pause from a prior source
         log.info("loaded blank source for shader")
@@ -337,6 +513,7 @@ class SamplerEngine:
         # so mpv treats this as a live stream (not a loopable file).
         self._cmd_async("loadfile", url, "replace", 0,
                         "loop-file=no,cache=no,demuxer-readahead-secs=0")
+        self._clip_rotate = 0   # live camera has no metadata rotation
         self._active_source = 'camera'
         self.resume()   # never inherit a stray pause from a prior source
         log.info("loaded USB camera %s", chosen)
@@ -383,6 +560,7 @@ class SamplerEngine:
                         "demuxer-max-back-bytes=0,"
                         "video-latency-hacks=yes,"
                         f"container-fps-override={self.cfg.fps}")
+        self._clip_rotate = 0   # live camera has no metadata rotation
         self._active_source = 'camera'
         self.resume()   # never inherit a stray pause from a prior source
 
@@ -593,11 +771,6 @@ class SamplerEngine:
                 self.duration = data
             elif pid == OBS_EOF and data:
                 self._on_eof()
-            elif pid == OBS_ROTATE and data is not None:
-                new_rot = int(data)
-                if new_rot != self._clip_rotate:
-                    self._clip_rotate = new_rot
-                    self._rebuild_vf()
 
     def _enforce_out_point(self):
         if self.mode in ("loop", "random", "randstart", "fixed"):
@@ -636,6 +809,7 @@ class SamplerEngine:
         path = slots[nxt]
         self.cfg.current_clip = path
         self._cmd_async("loadfile", path, "replace")
+        self._apply_clip_settings(path)
         self.in_pt, self.out_pt = 0.0, None
         self._apply_loop_mode()
         self._active_source = 'clip'
@@ -701,6 +875,7 @@ class SamplerEngine:
         clip = self.clips[self.idx]
         self.cfg.current_clip = clip
         self._cmd_async("loadfile", clip, "replace")
+        self._apply_clip_settings(clip)
         self.in_pt, self.out_pt = 0.0, None
         self._apply_loop_mode()
         self._active_source = 'clip'
@@ -725,6 +900,7 @@ class SamplerEngine:
             pass
         self.cfg.current_clip = path
         self._cmd_async("loadfile", path, "replace")
+        self._apply_clip_settings(path)
         self.in_pt, self.out_pt = 0.0, None
         self._apply_loop_mode()
         self._active_source = 'clip'

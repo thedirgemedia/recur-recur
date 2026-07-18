@@ -1,0 +1,64 @@
+{
+  "version": 3,
+  "mode": "SHADER",
+  "shader": null,
+  "params": {
+    "p1": 0.5,
+    "p2": 0.5,
+    "p3": 0.5,
+    "p4": 0.5,
+    "p5": 0.5,
+    "p6": 0.5,
+    "p7": 0.5,
+    "p8": 0.5,
+    "p9": 0.5,
+    "p10": 0.5
+  },
+  "shader_chain": [],
+  "shader_params_chain": [],
+  "shader_blend_chain": [],
+  "fx": "halftone.glsl",
+  "fx_chain": [
+    "halftone.glsl"
+  ],
+  "fx_params": {
+    "f1": 0.25,
+    "f2": 0.083,
+    "f3": 0.25,
+    "f4": 0.417,
+    "f5": 0.25,
+    "f6": 0.0,
+    "f7": 1.0,
+    "lfo_f1": 0,
+    "lfo_f2": 1,
+    "lfo_f4": 2,
+    "lfo_f5": 1
+  },
+  "fx_params_chain": [
+    {
+      "f1": 0.25,
+      "f2": 0.083,
+      "f3": 0.25,
+      "f4": 0.417,
+      "f5": 0.25,
+      "f6": 0.0,
+      "f7": 1.0,
+      "lfo_f1": 0,
+      "lfo_f2": 1,
+      "lfo_f4": 2,
+      "lfo_f5": 1
+    }
+  ],
+  "fx_blend_chain": [
+    {
+      "mode": "normal",
+      "amt": 1.0
+    }
+  ],
+  "shader_blend": true,
+  "shader_blend_mode": "darken",
+  "shader_blend_amount": 1.0,
+  "shader_blend_source": "clip",
+  "color_hue": 0.8199999999999996,
+  "color_sat": 1.15
+}
