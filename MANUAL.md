@@ -1,6 +1,6 @@
 # recur-recur — Operator Manual
 
-*Accurate as of 2026-07-16. Generated from the actual code paths — where the
+*Accurate as of 2026-07-19. Generated from the actual code paths — where the
 code and older docs disagreed, this manual follows the code.*
 
 ---
@@ -144,26 +144,31 @@ grids are tap-only and unchanged:
   **Hold** opens that FX's params screen, adding it to the chain first if it
   wasn't already there (without removing anything else already chained).
 - **SAMPLER** — the 6 clip slots (keys 4–9; assigned in the BROWSER menu
-  page). Tap triggers the clip; tapping the currently-playing clip's key
-  again drills into a **SPEED** params screen (playback speed + reverse)
-  instead of retriggering it.
+  page). **Tap** triggers the clip. **Hold** loads the clip and opens its
+  per-clip **CLIP settings** screen (rotation / zoom / speed / brightness /
+  contrast / trail — see *Parameter editing* → *CLIP settings*); tapping the
+  currently-playing clip's key again opens the same screen.
 - **LIVE** — the 6 preset slots (keys 4–9; assigned in the PRESETS menu
   page). Always loads immediately — presets are never staged.
 - **SETTINGS** — six cells (BROWSER / SHADERS / PRESETS / SETTINGS / MIDI /
   IMPORT) that jump straight into the matching menu page (see *Menu system*).
 
-### Tap vs. hold (SHADER and FX grids only)
+### Tap vs. hold (SHADER, FX, and SAMPLER grids)
 
 Release a grid key within ~0.4s and it's a **tap**; keep it held past that
 and it fires as a **hold** instead — the tap action never also fires
-afterwards. On the SHADER and FX grids, tap always toggles stack membership
-immediately — STAGED mode has no effect on either grid, only on SAMPLER clip
-picks (see the table above). Holding always activates the item first if it
-wasn't already (adds the shader / FX to its stack) and jumps to its params
-screen; holding to configure something is a workshop action, not a
-performance change. SAMPLER/LIVE/SETTINGS grids don't use hold at all —
-pressing those keys always dispatches immediately, regardless of how long
-you hold them. No top-row key (**.** included) uses hold.
+afterwards. On the SHADER and FX grids, tap toggles stack membership
+immediately (STAGED mode has no effect there, only on SAMPLER clip picks —
+see the table above) and hold activates the item first if it wasn't already
+(adds the shader / FX to its stack) then jumps to its params screen. On the
+SAMPLER grid, tap triggers the clip and hold loads it and opens its CLIP
+settings screen. Holding to configure something is a workshop action, not a
+performance change. LIVE/SETTINGS grids don't use hold — those keys always
+dispatch immediately, regardless of how long you hold them. No top-row key
+(**.** included) uses hold.
+
+> **Note:** because the SAMPLER grid now uses hold, a clip **triggers on key
+> release** (like the SHADER/FX grids), not on press.
 
 ### Record
 
@@ -176,9 +181,10 @@ HDMI output → `.mkv`).
 ## Parameter editing
 
 Each tab that has tunable parameters shows a second **params** screen — reach
-it via hold (SHADER/FX), by drilling into SPEED (SAMPLER), or by pressing
-that tab's own key again while its grid is showing. Params screens are
-**scrollable lists** (not capped at 9 rows) with two interaction modes:
+it via hold (SHADER/FX/SAMPLER), by tapping the playing clip's key again
+(SAMPLER → CLIP settings), or by pressing that tab's own key again while its
+grid is showing. Params screens are **scrollable lists** (not capped at 9
+rows) with two interaction modes:
 
 | Key | Outside edit mode | Inside edit mode |
 |---|---|---|
@@ -190,16 +196,22 @@ that tab's own key again while its grid is showing. Params screens are
 | **0** | toggle STAGED / LIVE | toggle STAGED / LIVE |
 | **000** | toggle the temporal trail | toggle the temporal trail |
 
-The header and the selected row turn amber while in edit mode, so it's
-visually obvious whether +/Bksp will move the selection or change a value.
+The selected row is **cyan**; entering edit mode turns the header and that
+row **amber**, so it's visually obvious whether +/Bksp will move the
+selection or change a value.
 
-**MIDI-assign (key 4)** — only on the SHADER and FX params screens (the layers
-with real shader params). Press **4** on the highlighted param, then either
-**move a MIDI knob** to learn its CC, or **type a CC number** and press
-**Enter**. Any other key cancels; pressing 4 again on a param already bound to
-that CC clears it. The grid cell shows `CC nn` when the selected param has a
-binding, `MIDI` otherwise. Bindings persist in `prefs.json` as
-`midi_target_cc` (shared with the MIDI settings page for p1–p4).
+**LFO / MIDI on CLIP settings** — the CLIP settings screen (see below) accepts
+LFO (1/2/3) and MIDI (4) assignment on its **ZOOM** and **SPEED** rows only;
+the other CLIP rows report *no LFO/MIDI here* if you try.
+
+**MIDI-assign (key 4)** — on the SHADER and FX params screens (the layers with
+real shader params) and on the CLIP settings ZOOM/SPEED rows. Press **4** on
+the highlighted param, then either **move a MIDI knob** to learn its CC, or
+**type a CC number** and press **Enter**. Any other key cancels; pressing 4
+again on a param already bound to that CC clears it. The grid cell shows
+`CC nn` when the selected param has a binding, `MIDI` otherwise. Bindings
+persist in `prefs.json` as `midi_target_cc` (shared with the MIDI settings
+page, which also lists `zoom` / `speed`).
 
 ### SHADER params — the edited stack slot's own p1–pN, plus blend mode/amount (slots 1+)
 
@@ -229,15 +241,41 @@ values. Scrolling means shaders with more than 9 params (currently only
 in `prefs.json` / presets as `shader_chain` / `shader_params_chain` /
 `shader_blend_chain`.
 
-### SAMPLER params — FX chain params, speed, and status
+### CLIP settings — per-clip orientation, playback, colour, and trail
 
-The SAMPLER tab's params screen shows the clip name, PLAY/OVL/TRL/REC status,
-the active FX chain, and the f1–f4 bars of the FX chain slot currently
-selected for editing (same data as the FX tab, read-only summary — not
-scrollable/editable from here), plus the clip timeline (playhead / IN / OUT
-ticks) at the bottom. Tapping the playing clip's key again on the grid
-screen instead opens a dedicated **SPEED** screen (nudge ±0.1, range
-0.1–4.0, plus a reverse toggle).
+**Hold** a clip on the SAMPLER grid (or tap the currently-playing clip's key
+again) to open its CLIP settings. Every clip remembers its own settings —
+they're keyed by clip path, applied automatically each time the clip loads,
+and persist in `prefs.json` under `clip_settings`. The rows, edited like any
+other params list (scroll with +/Bksp, **Enter** to edit, +/Bksp to change):
+
+| Row | Range | Meaning |
+|---|---|---|
+| `ROTATE` | 0 / 90 / 180 / 270° | rotation applied **on top of** the clip's own orientation — 0° already plays a portrait phone clip upright (its metadata rotation is honoured automatically) |
+| `ZOOM` | 1.00–4.00× | scale the picture up to fill the screen when its aspect ratio differs from the display (the overflow is cropped) |
+| `SPEED` | 0.10–4.00× | playback speed |
+| `DIR` | FWD / REV | play backwards |
+| `BRIGHT` | −100…+100 | brightness (0 = neutral) |
+| `CONTRAST` | −100…+100 | contrast (0 = neutral) |
+| `TRAIL` | ON / OFF | temporal echo trail on/off |
+| `TRL STEP` | 1–5 | number of echoes |
+| `TRL TIME` | 0.25–8.00s | delay to the furthest echo |
+| `TRL MODE` | screen / difference / … | how each echo blends (see `TRAIL_MODES`) |
+| `TRL BLEND` | 0.00–1.00 | per-echo blend opacity — lower it so brightening modes (screen/addition) don't accumulate to white |
+
+**ZOOM** and **SPEED** additionally take an **LFO** (keys 1/2/3) or a **MIDI**
+CC (key 4), assigned per clip — see *Parameter editing* above. Because zoom
+and speed aren't GPU shader params, a small CPU loop evaluates the LFO and
+drives them; the modulation runs whenever that clip is the live source.
+
+A trail is a **motion echo** — it's only visible on footage that moves. It
+uses mpv's frame-delay filter (not GPU feedback), so unlike a generative
+shader's trail it works in SAMPLER and LIVE.
+
+> **Note:** the SAMPLER tab's *other* params sub-screen (reached by pressing
+> the SAMPLER tab key again on the grid, without holding a clip) still shows
+> the read-only clip/FX/timeline status summary. CLIP settings are the
+> hold-to-open, per-clip editor described here.
 
 ### FX params — the selected FX chain slot's own f1–f4, plus its blend mode/amount
 
@@ -270,15 +308,19 @@ generative's own output), so this only matters in SAMPLER/LIVE.
 
 ### Not currently reachable from the numpad
 
-Global hue/saturation, the shader↔video and overlay blend
-**mode/amount/source** details, and the trail's **type/mode/delay/echo-count**
-are all still fully implemented in `engine/shader.py` / `main.py` and are
-still loaded/saved with presets and `prefs.json` — but no numpad key, grid
-cell, or SPI screen currently exposes them (the old Bksp-cycled
-COLOUR/BLEND/TRAIL layers were dropped when the tab/grid interface replaced
-the old scheme). See *Known issues*. Some of these remain reachable via MIDI
+Global hue/saturation and the shader↔video and overlay blend
+**mode/amount/source** details are still fully implemented in
+`engine/shader.py` / `main.py` and loaded/saved with presets and `prefs.json`
+— but no numpad key, grid cell, or SPI screen currently exposes them (the old
+Bksp-cycled COLOUR/BLEND layers were dropped when the tab/grid interface
+replaced the old scheme). See *Known issues*. Some remain reachable via MIDI
 CC (`blend_amt`, `ovl_opacity`, `trl_decay` are user-assignable targets) or
 via the SETTINGS menu's on/off toggles and FX/GEN cycle rows.
+
+The trail's **on/off, echo count, delay, blend mode and per-echo opacity** are
+no longer stranded — they're editable **per clip** on the CLIP settings screen
+(above). The old global `000`-key trail toggle still flips `trail_on` for the
+current source, but the per-clip screen is the real control now.
 
 Note: a generative shader's own **palette param (p4)** is *not* in this list
 — it's an ordinary shader parameter, so if the shader's source defines a
@@ -298,11 +340,11 @@ one you're on.
 fill for the active/loaded item, amber outline + tint for a staged (pending)
 pick, dim outline for an empty slot.
 
-**Params screens** — horizontal sliders (one per parameter, selected one
-highlighted) above a compact 3×3 selector grid mirroring the same layout;
-both scroll together, windowed around the selection, for lists longer than
-fit on screen. The header and selected row turn amber while in edit mode
-(see *Parameter editing*).
+**Params screens** — horizontal sliders (one per parameter, the selected one
+highlighted **cyan**) above a compact 3×3 selector grid mirroring the same
+layout; both scroll together, windowed around the selection, for lists longer
+than fit on screen. The header and selected row turn **amber** while in edit
+mode (see *Parameter editing*).
 
 **Footer** (bottom 22 px, every screen) — a pill on the left reading `LIVE`
 (green) or `STAGED` (amber, with an `ENTER → PUSH` hint on the right); the
@@ -513,12 +555,14 @@ Two independent recorders exist in the codebase, with two different outputs:
   *Known issues*.
 
 ### Echo trail
-Press **000** (works from any screen) to toggle the trail on/off — this is
-currently the *only* trail control reachable from the numpad. The trail's
-type/mode/delay/echo-count and the global hue/saturation and blend
-mode/amount/source details are still fully implemented (and still saved in
-`prefs.json` and presets) but have no live control surface right now besides
-MIDI CC (`blend_amt`, `ovl_opacity`, `trl_decay`) — see *Known issues*.
+Open a clip's **CLIP settings** (hold it on the SAMPLER grid) and set
+**TRAIL** on, then dial **TRL STEP** (echo count), **TRL TIME** (delay),
+**TRL MODE** (blend) and **TRL BLEND** (per-echo opacity). It's per clip, so
+each clip keeps its own trail. The old **000** key still toggles the current
+source's trail globally, but the CLIP screen is the real control now. The
+global hue/saturation and blend mode/amount/source details remain without a
+live surface besides MIDI CC (`blend_amt`, `ovl_opacity`, `trl_decay`) — see
+*Known issues*.
 
 ### Map a MIDI controller
 1. Plug in — connects automatically within 3 s.
@@ -536,34 +580,37 @@ auto-save.
 
 ## Effects reference
 
-### Trail — echo time delay (`000`)
-Works in all three modes; **000** is currently the only numpad control for it
-(on/off only — see *Known issues*). Two underlying types exist in
-`prefs.json`/presets (`trail_blend_type`), though neither the numpad nor the
-SETTINGS menu currently expose a way to switch between them live:
+### Trail — echo time delay
+Edited **per clip** on the CLIP settings screen (hold a clip): **TRL STEP**
+(echo count 1–5), **TRL TIME** (delay to the furthest echo), **TRL MODE**
+(blend mode) and **TRL BLEND** (per-echo opacity). The **000** key still
+toggles the current source's trail globally. Two underlying types exist in
+`prefs.json`/presets (`trail_blend_type`); the CLIP screen drives the **MODE**
+type — the OPACITY type is engine-only, not exposed live:
 
-**MODE** — `split → tpad(delay) → lagfun(decay) → blend` on the luma plane
-only (chroma passed through — no colour shifts). One continuous fading ghost.
-Blend modes: screen, difference, multiply, overlay, addition, subtract, lighten,
-darken, phoenix, negation, divide. Decay (`trail_decay`, 0.80–0.99) and blend
-mode (`trail_mode`) live in `prefs.json`/presets only right now.
+**MODE** (used by the CLIP screen) — `split → N×tpad(step×1…N) → chained
+blend` of N progressively-delayed echoes onto the live frame. Each echo blends
+at **TRL BLEND** (`trail_mode_opacity`, 0–1) so brightening modes don't
+accumulate to white. Blend modes: screen, difference, multiply, overlay,
+addition, subtract, lighten, darken, phoenix, negation, divide.
 
 **OPACITY** — `split → N×tpad(step×1…N) → mix=inputs=N+1:weights=…`.
 A weighted average of the live frame plus N progressively-delayed past echoes
 (N = `trail_echo_count`, 1–5), spaced `delay/N` apart (tail ≈1.7× the delay
 window). `mix` normalises by the weight sum, so brightness is preserved and
 identical static regions stay sharp — only moving content ghosts (no
-wash-out, no pre-echo). Layer weights tunable as `trail_step_weights` in
-`prefs.json` (live first, then N echoes); `trail_mode`/`trail_decay` have no
-effect in this type.
+wash-out, no pre-echo). Not selectable from the CLIP screen (which forces
+MODE); switch `trail_blend_type` in `prefs.json` to use it.
 
-**In SHADER mode the trail is unavailable.** The lavfi trail runs in the vf
-chain *before* the generative shader, which renders over it, so it never shows.
+**In pure SHADER mode the trail isn't visible.** The lavfi trail runs in the
+vf chain *before* the generative shader, which renders over it, so it never
+shows.
 A GLSL trail would need cross-frame feedback (this frame reading last frame's
 accumulator); the Pi 5 V3D / libplacebo renderer does not persist feedback
 textures between frames (verified with controlled render tests), so it cannot
-be done on this hardware. Toggling the trail in SHADER mode shows
-`TRAIL N/A IN SHADER` and does nothing. The trail is a SAMPLER / LIVE feature.
+be done on this hardware. The **000** key refuses in SHADER mode
+(`TRAIL N/A IN SHADER`); a per-clip trail can still be set there but stays
+hidden behind the shader. The trail is effectively a SAMPLER / LIVE feature.
 
 ### V-overlay — self-blend (SAMPLER/LIVE)
 `split → blend` of the current frame with itself on the luma plane (chroma
@@ -741,8 +788,10 @@ work unconfigured:
 | 80 / 82 / 83 | mode SAMPLER / SHADER / LIVE |
 | 81 | toggle trail |
 
-All targets, plus `BLD AMT` / `OVL OPC` / `TRL DEC` (no default CC), can be
-rebound from the MIDI menu page.
+All targets, plus `ZOOM` / `SPEED` (per-clip zoom 1–4× and speed 0.1–4× of
+the current clip) and `BLD AMT` / `OVL OPC` / `TRL DEC` (no default CC), can be
+rebound from the MIDI menu page. `ZOOM`/`SPEED` can also be bound straight from
+the CLIP settings screen (key **4** on the highlighted row).
 
 **Notes:** 120/122/123 set mode SAMPLER/SHADER/LIVE; any other note triggers
 clip slot `note % 10` (only 4–9 are real slots).
@@ -796,14 +845,16 @@ no live control path from the numpad:
   top-row keys only pick which *display tab* is showing. Mode changes only
   via the GPIO mode button (BCM 5), MIDI (CC 80/82/83, notes 120/122/123),
   the SETTINGS menu's `MODE` row, or loading a preset that specifies one.
-- **COLOUR / BLEND / TRAIL "layers" are unreachable.** `KeyboardController`
-  still has all the stepping logic for hue, saturation, trail
-  opacity/decay/delay/echo-count/type/mode, and shader/overlay blend
-  mode/amount/source (`control/keyboard.py` `_step_param`, layers 2–4), but
-  nothing ever selects those layers any more (no key sets `_param_layer` to
-  2, 3, or 4) and no SPI screen renders them. Only the plain on/off toggles
-  (SETTINGS menu's OVERLAY/BLEND rows, `000` for trail) and a few MIDI CC
-  targets (`blend_amt`, `ovl_opacity`, `trl_decay`) still work.
+- **COLOUR / BLEND "layers" are unreachable.** `KeyboardController` still has
+  the stepping logic for hue, saturation, and shader/overlay blend
+  mode/amount/source (`control/keyboard.py` `_step_param`, layers 2–3), but
+  nothing ever selects those layers (no key sets `_param_layer` to 2 or 3) and
+  no SPI screen renders them. Only the plain on/off toggles (SETTINGS menu's
+  OVERLAY/BLEND rows) and a few MIDI CC targets (`blend_amt`, `ovl_opacity`,
+  `trl_decay`) still work. **The old TRAIL layer (4) is likewise unreachable,
+  but its controls are no longer stranded** — trail on/off, echo count, delay,
+  blend mode and per-echo opacity are all on the per-clip CLIP settings screen
+  (layer 5), reached by holding a clip.
 - **IN/OUT clip points can't be set.** `SamplerEngine.set_in()`/`set_out()`
   are fully implemented and the clip timeline still draws them, but no key,
   menu action, MIDI CC, or GPIO button calls them.
@@ -813,7 +864,7 @@ no live control path from the numpad:
   GPIO REC button (BCM 13), which drives the separate HDMI kmsgrab recorder.
 - **The old hold-0-tap-`.` / hold-`/`-plus-slot combos are gone** — those
   specific bindings (from the pre-`recur-newgui` scheme) no longer exist.
-  Hold-to-configure now exists again, but only on the SHADER and FX grids
+  Hold-to-configure now exists again on the SHADER, FX, and SAMPLER grids
   (see *Numpad layout* → *Tap vs. hold*); it's a from-scratch mechanism
   (`control/keyboard.py` `_on_key_down`/`_on_key_up`/`_fire_hold`, a
   `threading.Timer` per keypress), not a revival of the old combos.
