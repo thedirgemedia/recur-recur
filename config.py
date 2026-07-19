@@ -38,6 +38,13 @@ class Config:
         # mpv IPC socket — how we drive the video player
         self.mpv_socket = "/tmp/recur-mpv.sock"
         self.fps        = 30
+        # Actual GPU render/refresh rate, discovered from mpv's display-fps at
+        # runtime (see ShaderEngine). mpv runs --video-sync=display-resample, so
+        # its `frame` uniform ticks once per DISPLAY refresh, not per video
+        # frame — the GPU LFOs must divide `frame` by THIS to keep real-time
+        # periods. None until queried; the LFO clock falls back to fps meanwhile.
+        # Runtime-only, never persisted.
+        self.render_fps = None
 
         # Numpad key-to-clip slot assignments.  Maps key number (4–9) to the
         # absolute path of the assigned clip, or None if the slot is empty.

@@ -120,9 +120,13 @@ def _lfo_preamble(cfg):
                        float(lfo.get("amp", 0.5)), float(lfo.get("offset", 0.0))))
     while len(rows) < _LFO_COUNT:                    # keep the array well-formed
         rows.append("vec4(0.0, 4.0, 0.0, 0.0)")
-    # mpv advances `frame` once per rendered frame, so seconds = frame / fps.
+    # mpv advances `frame` once per RENDERED frame, and --video-sync=display-
+    # resample renders at the display refresh rate — so seconds = frame /
+    # render_fps, NOT frame / video-fps. render_fps is mpv's real display-fps
+    # once discovered; until then fall back to the video fps.
+    rate = float(getattr(cfg, "render_fps", None) or getattr(cfg, "fps", 30))
     return _LFO_SRC % {"count": _LFO_COUNT, "rows": ", ".join(rows),
-                       "fps": max(1.0, float(getattr(cfg, "fps", 30)))}
+                       "fps": max(1.0, rate)}
 
 
 def _insert_preamble(src, code):
@@ -467,6 +471,7 @@ class ShaderEngine:
         self._label_cache    = {}  # {path: {p1:label, ...}} — avoid per-frame file reads
         self._fallback_label_path = None  # resolved fallback path when self.current is None
         self._gen_cache      = {}  # {basename: bool} — cached DESC scan results
+        self._render_fps_tries = 8       # bounded display-fps discovery (see _ensure_render_fps)
         self._sweep_stale_tmp_shaders()
 
     def _sweep_stale_tmp_shaders(self):
@@ -1065,6 +1070,13 @@ class ShaderEngine:
         except OSError as e:
             log.warning("can't read shader %s: %s", path, e)
             return None
+        # ascii's cell size is normally snapped to whole pixels (kills a static
+        # sub-pixel shimmer), but a snapped size STEPS in whole pixels when an
+        # LFO sweeps it — visibly jumpy. So when PARAM_1 (char size) is
+        # LFO-driven, turn the snap off and let the size vary continuously, the
+        # way recur-web does. The atlas exposes this as `#define ASCII_SNAP`.
+        if "ASCII_SNAP" in src and params.get("lfo_" + prefix + "1") is not None:
+            src = src.replace("#define ASCII_SNAP 1.0", "#define ASCII_SNAP 0.0", 1)
         if lfos_used:
             src = _insert_preamble(src, _lfo_preamble(self.cfg))
         if pre_process:
@@ -1268,7 +1280,31 @@ class ShaderEngine:
         with self._lock:
             self._apply_now_locked()
 
+    def _ensure_render_fps(self):
+        """Discover mpv's real display refresh once, for the GPU LFO clock.
+
+        With --video-sync=display-resample mpv renders (and ticks its `frame`
+        uniform) at the DISPLAY refresh, not the video fps — so recur_lfo must
+        divide by this to keep real-time periods. Queried lazily and cached on
+        cfg; a failed query (socket not up yet) leaves it None so the next
+        bake retries and the LFO clock falls back to cfg.fps meanwhile. Retries
+        are capped so a display with no reported fps can't tax every bake with a
+        blocking get — after that it just rides the cfg.fps fallback."""
+        if getattr(self.cfg, "render_fps", None) or self._render_fps_tries <= 0:
+            return
+        self._render_fps_tries -= 1
+        for prop in ("display-fps", "estimated-display-fps"):
+            try:
+                v = self.sampler._get_sync(prop)
+            except Exception:
+                v = None
+            if v and 20.0 <= float(v) <= 240.0:
+                self.cfg.render_fps = round(float(v), 3)
+                log.info("LFO clock: render_fps=%.3f (from %s)", self.cfg.render_fps, prop)
+                return
+
     def _apply_now_locked(self):
+        self._ensure_render_fps()
         chain = [name for name in self.cfg.shader_chain if name]
 
         # ── no generative shader: apply fx chain to video (SAMPLER/LIVE) ──
