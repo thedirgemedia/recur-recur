@@ -170,6 +170,10 @@ dispatch immediately, regardless of how long you hold them. No top-row key
 > **Note:** because the SAMPLER grid now uses hold, a clip **triggers on key
 > release** (like the SHADER/FX grids), not on press.
 
+Hold is also used *inside* a params screen: on the SHADER/FX/CLIP params
+screens, holding an **LFO cell (1/2/3)** opens that LFO's settings (a tap still
+just assigns the LFO) — see *Parameter editing* → *LFO settings screen*.
+
 ### Record
 
 Recording is not triggered from the numpad at all — see *Workflows* → *Record*
@@ -190,8 +194,10 @@ rows) with two interaction modes:
 |---|---|---|
 | **+** | scroll selection up the list | increase the selected parameter |
 | **Bksp** | scroll selection down the list | decrease the selected parameter |
-| **1 / 2 / 3** | assign **LFO 1/2/3** to the highlighted param (press again to clear) | *(no effect)* |
+| **1 / 2 / 3** (tap) | assign **LFO 1/2/3** to the highlighted param (tap again to clear) | *(no effect)* |
+| **1 / 2 / 3** (hold) | open that **LFO's settings** screen — SHADER/FX/CLIP screens only (see below) | *(no effect)* |
 | **4** | **MIDI-assign** the highlighted param (see below) | *(no effect)* |
+| **9** | **DEFAULT** — reset this screen's target to its authored defaults (see below) | *(no effect)* |
 | **Enter** | enter edit mode on the highlighted parameter | exit edit mode |
 | **0** | toggle STAGED / LIVE | toggle STAGED / LIVE |
 | **000** | toggle the temporal trail | toggle the temporal trail |
@@ -212,6 +218,32 @@ again on a param already bound to that CC clears it. The grid cell shows
 `CC nn` when the selected param has a binding, `MIDI` otherwise. Bindings
 persist in `prefs.json` as `midi_target_cc` (shared with the MIDI settings
 page, which also lists `zoom` / `speed`).
+
+**DEFAULT (key 9)** — the top-right action cell resets the current screen's
+target to its authored/built-in defaults, **leaving LFO and MIDI assignments in
+place**. On SHADER it reloads the edited slot's p-params, on FX the edited FX's
+f-params, on CLIP the clip's `CLIP_DEFAULTS` (orientation / playback / colour /
+trail), and on an LFO settings screen (below) that one LFO. The OSD confirms
+with `DEFAULT: <name>`.
+
+### LFO settings screen
+
+The three LFOs (assigned with keys 1/2/3) each carry their own shape, depth and
+rate. Edit one by **holding** its cell (1/2/3) on any SHADER, FX or CLIP params
+screen — that opens a five-row editor for that single LFO, driven like any
+params list (scroll with +/Bksp, **Enter** to edit, +/Bksp to change, key **9**
+= DEFAULT):
+
+| Row | Meaning |
+|---|---|
+| `SHAPE` | SINE / TRI / SAW / SQUARE / S&H |
+| `MIN` | 0–100 — the value the LFO falls to |
+| `MAX` | 0–100 — the value it rises to (MIN/MAX set the engine's `offset` and `amp`) |
+| `SPEED` | period in seconds, **+** = faster; when `SYNC` = BPM this is a musical division (1/8…16) locked to the tempo instead |
+| `SYNC` | SEC (free-running seconds) or BPM (locked to `lfo_bpm`) |
+
+Editing an LFO re-bakes the shader preamble immediately, so every param bound to
+it moves together. Persisted in `prefs.json` as `lfos` (and `lfo_bpm`).
 
 ### SHADER params — the edited stack slot's own p1–pN, plus blend mode/amount (slots 1+)
 
@@ -446,7 +478,8 @@ still adjust the highlighted value directly, in or out of edit mode.)
 | SHADERS | FX | cycle the FX chain's currently-edited slot to the next/previous FX shader |
 | SHADERS | GEN | cycle the active generative shader |
 | SYSTEM | SAVE PREFS | *(action)* write current state to `prefs.json` now |
-| SYSTEM | RESTART | *(action)* restart the application |
+| SYSTEM | RESTART | *(action)* restart into a **clean default state** (prefs are saved on the way out but not reloaded) |
+| SYSTEM | RESTART SAME | *(action)* restart and **resume the current state** (re-execs with `--resume`, reloading the just-saved `prefs.json`) |
 | SYSTEM | QUIT | *(action)* quit the application (a Pi poweroff would need root; the service can't escalate) |
 
 Note: this page has on/off toggles for OVERLAY and BLEND, and cycle actions
@@ -491,7 +524,9 @@ shows `RUN install-usb-import.sh`.
 3. Press **.** to back out to the SETTINGS grid, or another tab key to leave
    the menu entirely. The SAMPLER tab's grid now fires clips at keys 4–9 and
    the LIVE tab's grid fires presets at keys 4–9.
-4. SETTINGS page → **SAVE PREFS** to keep the assignments across restarts.
+4. SETTINGS page → **SAVE PREFS** to write the assignments to `prefs.json`.
+   Note a plain restart still boots to defaults — use SETTINGS → **RESTART
+   SAME** (or `--resume`) to bring the saved assignments back.
 
 ### Auto-playing set (playlist)
 1. Assign clips to slots (above).
@@ -571,10 +606,12 @@ live surface besides MIDI CC (`blend_amt`, `ovl_opacity`, `trl_decay`) — see
    → type the CC number → **Enter**. User overrides win over built-ins.
 
 ### Keep your setup
-Everything important (slots, effect states, modes, MIDI overrides, params) is
-written to `prefs.json` on clean shutdown, or on demand with SETTINGS page →
-**SAVE PREFS**. Prefer SAVE PREFS after big changes — a power-cut skips the
-auto-save.
+Everything important (slots, effect states, modes, MIDI overrides, LFOs,
+params) is written to `prefs.json` on clean shutdown, or on demand with SETTINGS
+page → **SAVE PREFS**. Prefer SAVE PREFS after big changes — a power-cut skips
+the auto-save. Saving only *stores* the state: boot always comes up on defaults,
+so reload a saved session with SETTINGS → **RESTART SAME** (see *State files* →
+*Boot is a clean default state*).
 
 ---
 
@@ -803,9 +840,16 @@ clip slot `note % 10` (only 4–9 are real slots).
 
 | File | Contents | Written |
 |---|---|---|
-| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count` | clean shutdown + SAVE PREFS |
+| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `lfos` / `lfo_bpm`, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count` | clean shutdown + SAVE PREFS |
 | `presets/NN.json` | shader + fx + params snapshot | via Python API only; loaded by MIDI program change |
 | `/tmp/recur_s*.glsl` | live shader temp files (unique path per recompile — mpv caches by path) | automatic |
+
+**Boot is a clean default state.** `prefs.json` is written on shutdown/SAVE PREFS
+but is **not** reloaded on boot — every field starts from its Config default (no
+shader/FX chain, neutral colour, empty slots refilled by the clip/shader scan),
+so the instrument always comes up the same way. Only SETTINGS → **RESTART SAME**
+reloads it (the process re-execs with `--resume`); a plain reboot or **RESTART**
+comes up on defaults.
 
 ---
 
