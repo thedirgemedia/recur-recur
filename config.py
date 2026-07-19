@@ -21,6 +21,10 @@ class Config:
         # output: 'hdmi' or 'composite'
         self.output      = getattr(args, "output", "hdmi")
         self.start_mode  = getattr(args, "mode", "SHADER")
+        # When True, load prefs.json on boot and resume the last session.
+        # Normally False → boot into a clean default state. Set only by the
+        # "restart in same state" path (main.py re-execs with --resume).
+        self.resume      = getattr(args, "resume", False)
         self.clips_dir   = _abs(getattr(args, "clips_dir",   "clips/"))
         self.shaders_dir = _abs(getattr(args, "shaders_dir", "shaders/"))
         self.presets_dir = _abs("presets/")

@@ -39,6 +39,7 @@ class RecurInstrument:
         self.cfg              = cfg
         self.running          = False
         self._restart_pending = False
+        self._restart_resume  = False
         self._mode            = "SAMPLER"
         self._lock   = threading.Lock()
 
@@ -64,12 +65,19 @@ class RecurInstrument:
         self.gpio    = GpioController(self)
         self.display = DisplayController(self)
 
-        cfg.load_prefs()
+        # Boot normally starts from a clean default state — prefs.json is NOT
+        # loaded, so every field keeps its Config default (no shader/FX chain,
+        # no blend/trail/overlay, neutral colour, empty slots → _auto_assign()
+        # refills them from the clip/shader scan, exactly like a fresh install).
+        # The one exception is a "restart in same state" (SETTINGS → RESTART
+        # SAME): that re-execs with --resume, which sets cfg.resume, so the
+        # session that was just saved on teardown is loaded back verbatim.
+        if getattr(cfg, "resume", False):
+            cfg.load_prefs()
 
         # Per-mode volatile state — saved before leaving a mode, restored on
-        # re-entry. Initialized from prefs so the first return to SHADER keeps
-        # whatever blend/fx-stack/generative-stack state was active at last
-        # shutdown.
+        # re-entry. Initialized from prefs when resuming, otherwise from Config
+        # defaults (a clean, effect-free first pass).
         self._mode_states = {
             "SHADER": {
                 "shader_blend":        getattr(cfg, "shader_blend",    False),
@@ -570,13 +578,23 @@ class RecurInstrument:
         finally:
             self._teardown()
             if self._restart_pending:
-                log.info("restarting…")
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                # _teardown() has just saved prefs.json. A plain restart drops
+                # --resume so the new process boots to defaults; "restart in
+                # same state" adds it so the saved session is loaded back.
+                argv = [a for a in sys.argv if a != "--resume"]
+                if self._restart_resume:
+                    argv.append("--resume")
+                log.info("restarting… (resume=%s)", self._restart_resume)
+                os.execv(sys.executable, [sys.executable] + argv)
 
     def _shutdown(self, *_):
         self.running = False
 
-    def restart(self):
+    def restart(self, resume=False):
+        """Re-exec the app. resume=False (default) boots to a clean default
+        state; resume=True reloads prefs.json so it comes back exactly as it
+        is now (state was saved on teardown)."""
+        self._restart_resume  = resume
         self._restart_pending = True
         self.running = False
 
@@ -612,6 +630,9 @@ def parse_args():
     p.add_argument("--resolution", default="1280x720")
     p.add_argument("--no-midi",    action="store_true")
     p.add_argument("--no-gpio",    action="store_true")
+    # Internal: set by "restart in same state" so the re-exec'd process loads
+    # prefs.json and resumes the session instead of booting to defaults.
+    p.add_argument("--resume",     action="store_true")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args()
 

@@ -164,6 +164,10 @@ _CLIPSET_LABELS = {"rotate": "ROTATE", "zoom": "ZOOM", "speed": "SPEED",
                    "trail_on": "TRAIL", "trail": "TRL STEP",
                    "trail_time": "TRL TIME", "trail_mode": "TRL MODE",
                    "trail_opc": "TRL BLEND"}
+_LFO_LABELS = {"shape": "SHAPE", "min": "MIN", "max": "MAX",
+               "speed": "SPEED", "sync": "SYNC"}
+# Rows of the LFO settings screen (long-press an LFO cell to reach it).
+_LFO_SLOTS = ("shape", "min", "max", "speed", "sync")
 
 
 class KeyboardController:
@@ -176,6 +180,14 @@ class KeyboardController:
         self._param_layer   = 0
         self._param_idx     = 0
         self._editing_param = False   # True while Enter has "entered" the highlighted param
+
+        # LFO settings screen: reached by long-pressing an LFO cell (key 1/2/3)
+        # on any params screen. It edits ONE LFO (min/max/speed/shape/sync) and
+        # is a self-contained sub-screen — flagged here rather than as a
+        # _param_layer so it never leaks into a tab's normal params view.
+        # _clear_param_edit() drops the flag on every navigation.
+        self._lfo_screen    = False
+        self._lfo_edit_idx  = 0       # which LFO (0-2) the screen edits
 
         # MIDI-assign sub-mode on the params screen (key 4). While active, the
         # highlighted param is waiting for a CC: move a knob to learn one, or
@@ -269,11 +281,21 @@ class KeyboardController:
         Every other key/context dispatches immediately, unchanged."""
         inst  = self.inst
         _disp = getattr(inst, "display", None)
-        uses_hold = (name in ("1", "2", "3", "4", "5", "6", "7", "8", "9")
-                     and not inst.menu.active
-                     and _disp is not None
-                     and _disp.is_grid_screen()
-                     and _disp._active_tab in _HOLD_TABS)
+        on_grid_hold = (name in ("1", "2", "3", "4", "5", "6", "7", "8", "9")
+                        and not inst.menu.active
+                        and _disp is not None
+                        and _disp.is_grid_screen()
+                        and _disp._active_tab in _HOLD_TABS)
+        # Long-press an LFO cell (key 1/2/3) on a params screen → open that
+        # LFO's settings screen. Tap still assigns the LFO to the highlighted
+        # param (handled in _dispatch_perform).
+        on_lfo_hold = (name in ("1", "2", "3")
+                       and not inst.menu.active
+                       and _disp is not None
+                       and not _disp.is_grid_screen()
+                       and not self._lfo_screen
+                       and self._param_layer in (0, 1, 5))
+        uses_hold = on_grid_hold or on_lfo_hold
         if uses_hold:
             timer = threading.Timer(HOLD_THRESHOLD, self._fire_hold, args=(name,))
             timer.daemon = True
@@ -295,8 +317,13 @@ class KeyboardController:
     def _fire_hold(self, name):
         self._hold_timers.pop(name, None)
         _disp = getattr(self.inst, "display", None)
-        if _disp is not None:
+        if _disp is None:
+            return
+        if _disp.is_grid_screen():
             self._grid_hold(name, _disp)
+        elif (name in ("1", "2", "3") and not self._lfo_screen
+              and self._param_layer in (0, 1, 5)):
+            self._open_lfo_settings(int(name) - 1, _disp)
 
     def _dot_press(self):
         """'.' — a single press whose meaning depends on how deep you are.
@@ -640,6 +667,11 @@ class KeyboardController:
         inst  = self.inst
         _disp = getattr(inst, "display", None)
 
+        # LFO settings screen has its own key map.
+        if self._lfo_screen:
+            self._dispatch_lfo(name)
+            return
+
         # MIDI-assign sub-mode swallows every key until it resolves.
         if self._midi_assign:
             self._midi_assign_key_press(name)
@@ -671,6 +703,10 @@ class KeyboardController:
             # Replaces the old param-jump quick-access on keys 4-9, which was
             # redundant with +/Bksp scrolling.
             self._begin_midi_assign()
+        elif name == "9":
+            # DEFAULT button (top-right action cell): reset the current control
+            # screen's target to its default values.
+            self._reset_current_layer()
         elif name == "0":
             if _disp:
                 staged = _disp.toggle_staged()
@@ -680,9 +716,149 @@ class KeyboardController:
         elif name == "REC":
             inst.record_toggle()
 
+    def _reset_current_layer(self):
+        """DEFAULT button: restore the current control screen's target to its
+        default values, leaving LFO/MIDI assignments in place.
+
+        SHDR  → the edited generative shader slot's authored PARAM_N defaults.
+        FX    → the edited FX shader's authored defaults.
+        CLIP  → the current clip's settings reset to CLIP_DEFAULTS.
+        (COLOUR/BLEND/TRAIL layers are not reachable from the numpad yet — the
+        DEFAULT cell only ever renders on the three screens above.)"""
+        inst = self.inst
+        cfg  = inst.cfg
+        layer = self._param_layer
+        if layer == 0:                     # SHDR — generative shader params
+            if not cfg.shader_chain:
+                inst.osd.show("NO SHADER")
+                return
+            inst.shader._read_shader_defaults(cfg.shader_edit_slot)
+            inst.shader.reapply()
+            name = (cfg.current_shader or "").replace(".glsl", "").upper()
+            inst.osd.show(f"DEFAULT: {name}" if name else "DEFAULTS RESET")
+        elif layer == 1:                   # FX — fx shader params
+            if not cfg.current_fx:
+                inst.osd.show("NO FX")
+                return
+            inst.shader._read_fx_defaults(cfg.current_fx)
+            inst.shader.reapply()
+            inst.osd.show(f"DEFAULT: {cfg.current_fx.replace('.glsl','').upper()}")
+        elif layer == 5:                   # CLIP — per-clip settings
+            path = cfg.current_clip
+            if not path:
+                inst.osd.show("NO CLIP")
+                return
+            # Reset the value keys only; keep any lfo_/cc assignments beside them.
+            cfg.clip_settings.setdefault(path, {}).update(cfg.CLIP_DEFAULTS)
+            inst.sampler._apply_clip_settings(path)
+            inst.sampler.refresh_trail()
+            inst.sampler.refresh_overlay()
+            import os
+            inst.osd.show(f"DEFAULT: {os.path.basename(path).upper()}")
+        else:
+            inst.osd.show("NO DEFAULT HERE")
+
+    # ── LFO settings screen ─────────────────────────────────────────────────
+    def _open_lfo_settings(self, idx, _disp):
+        """Open the settings screen for one LFO (long-press an LFO cell)."""
+        self._clear_param_edit()          # also drops any stale _lfo_screen
+        cfg = self.inst.cfg
+        self._lfo_edit_idx = max(0, min(int(idx), len(cfg.lfos) - 1))
+        self._lfo_screen   = True
+        self._param_idx    = 0
+        _disp.go_to_params_screen()
+        self.inst.osd.show(f"LFO {self._lfo_edit_idx + 1} SETTINGS")
+
+    def _dispatch_lfo(self, name):
+        """Keys on the LFO settings screen. ENTER toggles edit mode; outside it
+        +/Bksp scroll the rows and inside it they step the highlighted value;
+        key 9 resets the LFO to defaults."""
+        if name == "ENTER":
+            self._editing_param = not self._editing_param
+            return
+        if self._editing_param:
+            if name == "+":
+                self._step_lfo(+1)
+            elif name == "BKSP":
+                self._step_lfo(-1)
+            return
+        if name == "+":
+            self._scroll_param(-1)
+        elif name == "BKSP":
+            self._scroll_param(+1)
+        elif name == "9":
+            self._reset_lfo()
+
+    def _lfo_slots(self):
+        return _LFO_SLOTS
+
+    def _step_lfo(self, delta):
+        """Step the highlighted LFO setting. min = the value the LFO drops to,
+        max = the value it rises to (both 0..1 shown as 0..100); together they
+        set the engine's offset (=min) and amp (=max-min). speed changes the
+        period (or the beat when synced); + = faster."""
+        inst = self.inst
+        cfg  = inst.cfg
+        if not cfg.lfos:
+            return
+        L    = cfg.lfos[self._lfo_edit_idx % len(cfg.lfos)]
+        slot = self._lfo_slots()[self._param_idx % len(self._lfo_slots())]
+        d    = 1 if delta > 0 else -1
+        n    = self._lfo_edit_idx + 1
+        if slot == "shape":
+            shapes = cfg.LFO_SHAPES
+            L["shape"] = (int(float(L.get("shape", 0))) + d) % len(shapes)
+            inst.osd.show(f"LFO {n} SHAPE: {shapes[int(L['shape'])]}")
+        elif slot in ("min", "max"):
+            cur_min = float(L.get("offset", 0.0))
+            cur_max = cur_min + float(L.get("amp", 0.5))
+            if slot == "min":
+                new_min = round(max(0.0, min(cur_max, cur_min + d * 0.05)), 3)
+                L["offset"] = new_min
+                L["amp"]    = round(max(0.0, cur_max - new_min), 3)
+                inst.osd.show(f"LFO {n} MIN: {int(round(new_min * 100))}")
+            else:
+                new_max = round(max(cur_min, min(1.0, cur_max + d * 0.05)), 3)
+                L["amp"] = round(new_max - cur_min, 3)
+                inst.osd.show(f"LFO {n} MAX: {int(round(new_max * 100))}")
+        elif slot == "speed":
+            if L.get("bpm_sync"):
+                beats = list(cfg.LFO_BEATS)
+                cur   = float(L.get("beat", 1.0))
+                j     = beats.index(cur) if cur in beats else 3
+                # + = faster = shorter musical division = lower index
+                L["beat"] = beats[max(0, min(len(beats) - 1, j - d))]
+                lbl = (cfg.LFO_BEAT_LABELS[beats.index(L["beat"])]
+                       if L["beat"] in beats else f"{L['beat']:g}")
+                inst.osd.show(f"LFO {n} SPEED: {lbl} beat")
+            else:
+                cur = float(L.get("period", 4.0))
+                # + = faster = shorter period
+                L["period"] = round(max(0.05, min(60.0,
+                                    cur * (1 / 1.15 if d > 0 else 1.15))), 3)
+                inst.osd.show(f"LFO {n} SPEED: {L['period']:.2f}s")
+        elif slot == "sync":
+            L["bpm_sync"] = not L.get("bpm_sync", False)
+            inst.osd.show(f"LFO {n} SYNC: {'BPM' if L['bpm_sync'] else 'SEC'}")
+        inst.shader.reapply()   # re-bake the GLSL LFO preamble (CPU LFOs read live)
+
+    def _reset_lfo(self):
+        """DEFAULT on the LFO screen: restore this LFO to a neutral default."""
+        inst = self.inst
+        cfg  = inst.cfg
+        if not cfg.lfos:
+            return
+        cfg.lfos[self._lfo_edit_idx % len(cfg.lfos)].update(
+            {"shape": 0, "amp": 0.5, "offset": 0.0,
+             "period": 4.0, "bpm_sync": False, "beat": 1.0})
+        inst.shader.reapply()
+        inst.osd.show(f"LFO {self._lfo_edit_idx + 1} DEFAULT")
+
     def _current_row_keys(self):
         """Ordered row keys for whatever the active params layer shows —
         single source of truth shared with control/display.py rendering."""
+        if self._lfo_screen:
+            return list(self._lfo_slots())
         if self._param_layer == 1:
             return self.inst.shader.fx_row_keys()
         if self._param_layer == 2:
@@ -819,6 +995,7 @@ class KeyboardController:
         disarming any pending MIDI-learn. Called whenever navigation lands on
         or leaves a params screen so neither sub-mode leaks across contexts."""
         self._editing_param = False
+        self._lfo_screen    = False
         if self._midi_assign:
             self._cancel_midi_assign()
 

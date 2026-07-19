@@ -873,12 +873,19 @@ class Menu:
             adjust=lambda d: None,
             select=_do_save, group="SYSTEM", action=True))
         def _do_restart():
-            inst.osd.show("RESTARTING…")
-            inst.restart()
+            inst.osd.show("RESTART → DEFAULT")
+            inst.restart(resume=False)
         items.append(_Item(
-            "RESTART", lambda: "restart app ↺",
+            "RESTART", lambda: "→ default ↺",
             adjust=lambda d: None,
             select=_do_restart, group="SYSTEM", action=True))
+        def _do_restart_same():
+            inst.osd.show("RESTART → SAME STATE")
+            inst.restart(resume=True)
+        items.append(_Item(
+            "RESTART SAME", lambda: "keep state ↺",
+            adjust=lambda d: None,
+            select=_do_restart_same, group="SYSTEM", action=True))
         # Quits the application (prefs auto-save in teardown).  A true Pi
         # poweroff would need root; the service user can't escalate.
         items.append(_Item(

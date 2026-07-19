@@ -445,6 +445,11 @@ class DisplayController:
                         getattr(_kb, "_param_idx",   0),
                         getattr(_kb, "_param_layer", 0),
                         getattr(_kb, "_editing_param", False),
+                        getattr(_kb, "_lfo_screen",   False),
+                        getattr(_kb, "_lfo_edit_idx", 0),
+                        tuple(tuple(sorted(l.items()))
+                              for l in getattr(cfg, "lfos", [])),
+                        round(getattr(cfg, "lfo_bpm", 120.0), 2),
                         getattr(_kb, "_midi_assign", False),
                         getattr(_kb, "_midi_cc_buf", ""),
                         tuple(sorted(getattr(cfg, "midi_target_cc", {}).items())),
@@ -518,8 +523,13 @@ class DisplayController:
         tab         = TABS[self._active_tab]
         screen_name = _TAB_SCREENS[self._active_tab][self._tab_screen[self._active_tab]]
 
+        _kb = getattr(inst, "kb", None)
         if screen_name.endswith("_GRID"):
             self._render_tab_grid(d, font_md, font_sm, inst, cfg, tab)
+        elif getattr(_kb, "_lfo_screen", False):
+            # LFO settings screen — reachable from any tab's params view, so it
+            # is rendered here (before the tab-specific params screens).
+            self._render_lfo_settings(d, font_sm, inst, cfg, _kb)
         elif tab == "SHADER":
             self._render_shader_tab(d, font_lg, font_md, font_sm, inst, cfg)
         elif tab == "SAMPLER":
@@ -851,6 +861,16 @@ class DisplayController:
             x1 = x0 + cw
             y1 = y0 + ch
 
+            # Key 9 (top-right): DEFAULT — reset this control screen's target to
+            # its default values (generative-shader / FX authored defaults, or
+            # the clip's CLIP_DEFAULTS). Handled by _reset_current_layer().
+            if pos == 2:
+                d.rectangle([x0, y0, x1, y1], fill=(0x00, 0x06, 0x00))
+                d.rectangle([x0, y0, x1, y1], outline=C_ON, width=2)
+                d.text(((x0 + x1) // 2, (y0 + y1) // 2), "DEFAULT",
+                       font=font_sm, fill=C_ON, anchor="mm")
+                continue
+
             # The action grid now holds just two controls for the highlighted
             # param — LFO assign on the bottom row (keys 1/2/3) and MIDI assign
             # on key 4 — replacing the old param-jump quick-access on keys 4-9,
@@ -1027,6 +1047,62 @@ class DisplayController:
             lfo_of=lfo_of, cc_of=cc_of,
             midi_assign=(getattr(_kb, "_midi_assign", False),
                          getattr(_kb, "_midi_cc_buf", "")))
+
+    def _render_lfo_settings(self, d, font_sm, inst, cfg, _kb):
+        """LFO settings screen (long-press an LFO cell to reach it). Edits one
+        LFO: SHAPE, MIN (the value it drops to), MAX (the value it rises to,
+        both on a 0..100 scale) and SPEED (period, or beat when synced)."""
+        idx  = getattr(_kb, "_lfo_edit_idx", 0)
+        lfos = getattr(cfg, "lfos", [])
+        L    = lfos[idx] if 0 <= idx < len(lfos) else {}
+        slots  = ("shape", "min", "max", "speed", "sync")
+        labels = {"shape": "SHAPE", "min": "MIN", "max": "MAX",
+                  "speed": "SPEED", "sync": "SYNC"}
+        shapes = list(getattr(cfg, "LFO_SHAPES", ("SINE",)))
+        beats  = list(getattr(cfg, "LFO_BEATS", (1.0,)))
+        blabels = list(getattr(cfg, "LFO_BEAT_LABELS", ("1",)))
+
+        def _min(): return float(L.get("offset", 0.0))
+        def _max(): return _min() + float(L.get("amp", 0.5))
+        def _period(): return float(L.get("period", 4.0))
+
+        def get_val(k):   # normalised 0..1 for the slider fill
+            if k == "shape":
+                s = int(float(L.get("shape", 0)))
+                return (s / max(1, len(shapes) - 1))
+            if k == "min":   return max(0.0, min(1.0, _min()))
+            if k == "max":   return max(0.0, min(1.0, _max()))
+            if k == "speed":
+                if L.get("bpm_sync"):
+                    cur = float(L.get("beat", 1.0))
+                    j   = beats.index(cur) if cur in beats else 3
+                    # shorter beat = faster → fuller bar
+                    return 1.0 - j / max(1, len(beats) - 1)
+                # shorter period = faster → fuller bar (range ~0.1..16s)
+                return max(0.0, min(1.0, 1.0 - (_period() - 0.1) / 15.9))
+            if k == "sync":  return 1.0 if L.get("bpm_sync") else 0.0
+            return 0.0
+
+        def fmt_val(k, _v):
+            if k == "shape":
+                return shapes[int(float(L.get("shape", 0))) % len(shapes)]
+            if k == "min":   return str(int(round(_min() * 100)))
+            if k == "max":   return str(int(round(_max() * 100)))
+            if k == "speed":
+                if L.get("bpm_sync"):
+                    cur = float(L.get("beat", 1.0))
+                    lbl = blabels[beats.index(cur)] if cur in beats else f"{cur:g}"
+                    return f"{lbl} beat"
+                return f"{_period():.2f}s"
+            if k == "sync":  return "BPM" if L.get("bpm_sync") else "SEC"
+            return ""
+
+        name = f"LFO {idx + 1}"
+        self._render_params_screen(
+            d, font_sm, C_STAGED, name,
+            list(slots), lambda k: labels[k], get_val, fmt_val,
+            getattr(_kb, "_param_idx", 0),
+            editing=getattr(_kb, "_editing_param", False))
 
     def _render_sampler_tab(self, d, font_lg, font_md, font_sm, inst, cfg):
         _kb = getattr(inst, "kb", None)
