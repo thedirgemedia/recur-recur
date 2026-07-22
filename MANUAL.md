@@ -1,6 +1,6 @@
 # recur-recur — Operator Manual
 
-*Accurate as of 2026-07-19. Generated from the actual code paths — where the
+*Accurate as of 2026-07-23. Generated from the actual code paths — where the
 code and older docs disagreed, this manual follows the code.*
 
 ---
@@ -96,8 +96,17 @@ context (even while a menu page is open):
 
 Pressing Num/\//\*/- for the tab you're **already on** cycles that tab's
 sub-screens (a 3×3 slot **grid** first, then a **params** screen for tabs
-that have one). Pressing a *different* tab's key jumps straight to that
-tab's grid and closes any open menu page.
+that have one, then a **preset grid** on SHADER and FX). Pressing a
+*different* tab's key jumps straight to that tab's grid and closes any open
+menu page.
+
+| Tab | Sub-screens, in cycling order |
+|---|---|
+| **SHADER** | generative grid → params → **SHADER PRESETS** |
+| **FX** | FX grid → params → **FX PRESETS** |
+| **SAMPLER** | clip grid → params |
+| **LIVE** | **PRESETS** (whole state) |
+| **SETTINGS** | menu-page grid → BROWSER → MIDI |
 
 **.** is the odd one out — a single press whose meaning depends on how deep
 you currently are. At the **top level** (a grid screen, no menu open) it's
@@ -121,8 +130,8 @@ position (7 = top-left … 3 = bottom-right):
 | Key | Action |
 |---|---|
 | **1–9** | select that grid cell (see per-tab behaviour below) |
-| **+** | previous page (SHADER / FX grids only — they paginate 9 shaders at a time) |
-| **Bksp** | next page (SHADER / FX grids only) |
+| **+** | previous page (SHADER / FX grids and all three preset grids paginate 9 at a time) |
+| **Bksp** | next page (same screens) |
 | **0** | toggle **STAGED** mode (SAMPLER grid only) — footer pill shows amber `STAGED` (clip picks wait for **Enter**) vs. green `LIVE` (clip picks apply immediately). SHADER and FX grid taps always apply immediately regardless of this setting. Turning STAGED back off discards anything pending |
 | **Enter** | push all staged picks to the live output |
 | **000** | toggle the temporal trail (works from any screen) |
@@ -148,12 +157,13 @@ grids are tap-only and unchanged:
   per-clip **CLIP settings** screen (rotation / zoom / speed / brightness /
   contrast / trail — see *Parameter editing* → *CLIP settings*); tapping the
   currently-playing clip's key again opens the same screen.
-- **LIVE** — the 6 preset slots (keys 4–9; assigned in the PRESETS menu
-  page). Always loads immediately — presets are never staged.
-- **SETTINGS** — six cells (BROWSER / SHADERS / PRESETS / SETTINGS / MIDI /
-  IMPORT) that jump straight into the matching menu page (see *Menu system*).
+- **LIVE** — the whole-state **preset store** (see *Preset grids*). **Tap**
+  loads a preset immediately — presets are never staged. **Hold** an empty
+  cell to save the current state into it, or a filled one for its options.
+- **SETTINGS** — five cells (BROWSER / SHADERS / SETTINGS / MIDI / IMPORT)
+  that jump straight into the matching menu page (see *Menu system*).
 
-### Tap vs. hold (SHADER, FX, and SAMPLER grids)
+### Tap vs. hold (SHADER, FX, SAMPLER, and preset grids)
 
 Release a grid key within ~0.4s and it's a **tap**; keep it held past that
 and it fires as a **hold** instead — the tap action never also fires
@@ -162,10 +172,12 @@ immediately (STAGED mode has no effect there, only on SAMPLER clip picks —
 see the table above) and hold activates the item first if it wasn't already
 (adds the shader / FX to its stack) then jumps to its params screen. On the
 SAMPLER grid, tap triggers the clip and hold loads it and opens its CLIP
-settings screen. Holding to configure something is a workshop action, not a
-performance change. LIVE/SETTINGS grids don't use hold — those keys always
-dispatch immediately, regardless of how long you hold them. No top-row key
-(**.** included) uses hold.
+settings screen. On the three **preset grids**, tap loads and hold either
+saves into an empty cell or opens a filled cell's options. Holding to
+configure something is a workshop action, not a performance change. The
+SETTINGS grid doesn't use hold — those keys always dispatch immediately,
+regardless of how long you hold them. No top-row key (**.** included) uses
+hold.
 
 > **Note:** because the SAMPLER grid now uses hold, a clip **triggers on key
 > release** (like the SHADER/FX grids), not on press.
@@ -365,6 +377,52 @@ below). It's unrelated to the FX chain's per-layer `BLEND` row above.
 
 ---
 
+## Preset grids
+
+There are three preset stores. All three are **3×3 grids on their own tab**,
+reached by pressing that tab's key until you land on them — not menu pages.
+All three look and behave identically:
+
+| Store | Where | Saves | Files |
+|---|---|---|---|
+| **PRESETS** | LIVE tab | the whole instrument — mode, generative stack, FX stack, blends, colour | `presets/P*.json` |
+| **SHADER PRESETS** | SHADER tab, 3rd screen | the generative stack only: every layer, each layer's p1–p10, the blends between them, and how the stack sits over incoming video. No FX, no clip, no mode | `presets/shaders/S*.json` |
+| **FX PRESETS** | FX tab, 3rd screen | the FX stack only: every FX, each one's f1–f5, and the blends between them. No generative shader, no clip, no mode | `presets/fx/F*.json` |
+
+A preset's **grid position is its identity** — there is no naming step,
+because there is no text entry on a numpad. The cell at key 7 on page 1 is
+`P01`, key 8 is `P02`, … key 3 is `P09`; page 2 continues at `P10`. Gaps are
+fine: you can have `P01` and `P07` with nothing between them.
+
+| Key | Action |
+|---|---|
+| **1–9**, tap | load that preset (an empty cell says so — hold it instead) |
+| **1–9**, hold on an **empty** cell | save the current state into that cell |
+| **1–9**, hold on a **filled** cell | open its options: **OVERWRITE WITH CURRENT** / **DELETE** |
+| **+** / **Bksp** | previous / next page of 9 |
+
+Saving and placing are the same act, which is why these grids need no
+separate assign mode. The header shows how many of the visible nine are
+filled and which page you're on.
+
+**Options screen** — `+`/`Bksp` choose the action, **Enter** fires it, **.**
+backs out to the grid without doing anything.
+
+**Independence.** The two stack stores never touch each other or the rest of
+the instrument: load a shader preset and your FX chain is untouched; load an
+FX preset and your generative stack is untouched. Recall them in either order
+to combine any look with any treatment. An FX preset applies over whatever is
+on screen in **any** mode — SHADER, SAMPLER or LIVE — because FX are
+post-stage filters. A shader preset loaded while you're in SAMPLER or LIVE is
+stored and appears the next time you enter SHADER mode.
+
+**Global shortcut.** Hold **0** then a key 4–9 (any mode), and MIDI notes,
+still fire whole-state presets. These aren't looking at a screen, so they
+always address **page one**: key 7 = `P01`, key 3 = `P09`, matching where
+those keys sit on the LIVE grid.
+
+---
+
 ## SPI display
 
 **Tab bar** (top 42 px) — always visible: SHADER / FX / SAMPLER / LIVE /
@@ -386,8 +444,8 @@ mode (see *Parameter editing*).
 (green) or `STAGED` (amber, with an `ENTER → PUSH` hint on the right); the
 mode name is shown on the right when live.
 
-**Menu overlay** — when a menu page (BROWSER/SHADERS/PRESETS/SETTINGS/MIDI/
-IMPORT) is open it replaces the whole screen (tab bar and footer included)
+**Menu overlay** — when a menu page (BROWSER/SHADERS/SETTINGS/MIDI/IMPORT)
+is open it replaces the whole screen (tab bar and footer included)
 until you back out of it — see *Menu system*.
 
 There is **no touch input** — all control is numpad / MIDI / GPIO.
@@ -397,8 +455,10 @@ There is **no touch input** — all control is numpad / MIDI / GPIO.
 ## Menu system
 
 Menu pages are reached through the **SETTINGS tab** (key **.** from any grid
-screen): its grid has six cells — BROWSER, SHADERS, PRESETS, SETTINGS, MIDI,
-IMPORT — and pressing one jumps straight into that page. To back out of a
+screen): its grid has five cells — BROWSER (key **7**), SHADERS (**8**),
+SETTINGS (**9**), MIDI (**4**), IMPORT (**5**) — and pressing one jumps
+straight into that page. Presets are *not* here any more; they are grids on
+the SHADER, FX and LIVE tabs (see *Preset grids*). To back out of a
 page, press **.** again — this cancels any in-progress sub-action first
 (assign / CC-edit / confirm-delete / USB browse) if one's active, otherwise
 closes the page back to the SETTINGS grid; pressing any *other* tab key also
@@ -413,12 +473,12 @@ closes the page and jumps to that tab.
 | Key | Action in menu |
 |---|---|
 | **8 / 2** | selection up / down |
-| **4 / 6** | adjust value (SETTINGS, MIDI, PRESETS pages) |
-| **5** | primary action: load (BROWSER/SHADERS/PRESETS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT) |
-| **Enter** | SETTINGS: open the highlighted row for editing (or fire an action row); BROWSER/SHADERS/PRESETS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
+| **4 / 6** | adjust value (SETTINGS, MIDI pages) |
+| **5** | primary action: load (BROWSER/SHADERS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT) |
+| **Enter** | SETTINGS: open the highlighted row for editing (or fire an action row); BROWSER/SHADERS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
 | **7 / 9** | previous / next page (wraps) |
 | **+** | scroll up (alternative to 8) — steps the value instead while a SETTINGS row is in edit mode |
-| **Bksp** | scroll down (SETTINGS — steps the value instead while a row is in edit mode); reset CC (MIDI); eject (IMPORT); arm/confirm delete (BROWSER, PRESETS) |
+| **Bksp** | scroll down (SETTINGS — steps the value instead while a row is in edit mode); reset CC (MIDI); eject (IMPORT); arm/confirm delete (BROWSER) |
 
 While a menu page is open, every setting you change (overlay/blend toggles,
 FX/GEN cycling, params, MIDI CC bindings) applies to the live output
@@ -442,19 +502,12 @@ one; for clips from a mounted removable drive it shows a short drive label.
 
 ### SHADERS page
 Lists generative shaders and lets you assign one to a performance slot
-(4–9), same interaction as BROWSER. **Note:** unlike clip and preset slots,
+(4–9), same interaction as BROWSER. **Note:** unlike clip slots,
 the SHADER tab's own grid does not currently read this assignment — it just
 paginates every generative shader alphabetically, 9 per page — so slot
 assignments made here are saved but have no effect on what a numpad key
 loads. Use **5** to stage/load a shader here instead if you want a
 deterministic pick.
-
-### PRESETS page
-Lists saved presets (`presets/*.json` — shader + FX + params snapshots).
-- **5** — load the highlighted preset onto the live output immediately (not staged).
-- **6** — save the current live state as a new preset (auto-named `P01.json`, `P02.json`, …).
-- **Enter, then a key 4–9** — assign the highlighted preset to that key (loaded from the LIVE tab's grid).
-- **Bksp, then Bksp again** — delete the highlighted preset file (same arm/confirm pattern as BROWSER).
 
 ### SETTINGS page
 
@@ -519,18 +572,21 @@ shows `RUN install-usb-import.sh`.
 ### Build a performance set
 1. Press **.** (SETTINGS tab) → tap the **BROWSER** cell. Highlight a clip,
    press **Enter**, then press the slot key (4–9) to assign it.
-2. Repeat for up to six clips; press **9** to page forward to **PRESETS** and
-   assign saved look snapshots to slots the same way — these two (clips,
-   presets) are true slot assignments. (SHADERS also lets you assign a
-   generative shader to a slot, but nothing currently reads that assignment
-   back — see the SHADERS page note above; use its own **5** to stage/load
-   a shader by hand instead.)
+2. Repeat for up to six clips. (SHADERS also lets you assign a generative
+   shader to a slot, but nothing currently reads that assignment back — see
+   the SHADERS page note above; use its own **5** to stage/load a shader by
+   hand instead.)
 3. Press **.** to back out to the SETTINGS grid, or another tab key to leave
-   the menu entirely. The SAMPLER tab's grid now fires clips at keys 4–9 and
-   the LIVE tab's grid fires presets at keys 4–9.
-4. SETTINGS page → **SAVE PREFS** to write the assignments to `prefs.json`.
+   the menu entirely. The SAMPLER tab's grid now fires clips at keys 4–9.
+4. Build a look, then press **-** (LIVE tab) and **hold** an empty cell to
+   save it as a preset there. Repeat for each look you want on hand; tapping
+   a cell recalls it. For looks you want to recombine, save the generative
+   stack and the FX treatment separately instead — SHADER tab and FX tab,
+   third screen each (see *Preset grids*).
+5. SETTINGS page → **SAVE PREFS** to write the assignments to `prefs.json`.
    Note a plain restart still boots to defaults — use SETTINGS → **RESTART
-   SAME** (or `--resume`) to bring the saved assignments back.
+   SAME** (or `--resume`) to bring the saved assignments back. Presets are
+   separate files and survive a restart regardless.
 
 ### Auto-playing set (playlist)
 1. Assign clips to slots (above).
@@ -862,8 +918,10 @@ clip slot `note % 10` (only 4–9 are real slots).
 
 | File | Contents | Written |
 |---|---|---|
-| `prefs.json` | slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `lfos` / `lfo_bpm`, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count` | clean shutdown + SAVE PREFS |
-| `presets/NN.json` | shader + fx + params snapshot | via Python API only; loaded by MIDI program change |
+| `prefs.json` | clip/shader slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `lfos` / `lfo_bpm`, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count` | clean shutdown + SAVE PREFS |
+| `presets/P*.json` | whole-instrument snapshot — mode, both stacks, blends, colour | hold an empty cell on the LIVE tab's grid |
+| `presets/shaders/S*.json` | generative stack only (layers, params, blends) | hold an empty cell on the SHADER tab's preset grid |
+| `presets/fx/F*.json` | FX stack only (layers, params, blends) | hold an empty cell on the FX tab's preset grid |
 | `/tmp/recur_s*.glsl` | live shader temp files (unique path per recompile — mpv caches by path) | automatic |
 
 **Boot is a clean default state.** `prefs.json` is written on shutdown/SAVE PREFS
@@ -930,15 +988,16 @@ no live control path from the numpad:
   GPIO REC button (BCM 13), which drives the separate HDMI kmsgrab recorder.
 - **The old hold-0-tap-`.` / hold-`/`-plus-slot combos are gone** — those
   specific bindings (from the pre-`recur-newgui` scheme) no longer exist.
-  Hold-to-configure now exists again on the SHADER, FX, and SAMPLER grids
-  (see *Numpad layout* → *Tap vs. hold*); it's a from-scratch mechanism
+  Hold-to-configure now exists again on the SHADER, FX, SAMPLER and preset
+  grids (see *Numpad layout* → *Tap vs. hold*); it's a from-scratch mechanism
   (`control/keyboard.py` `_on_key_down`/`_on_key_up`/`_fire_hold`, a
   `threading.Timer` per keypress), not a revival of the old combos.
 - **`cfg.shader_slots` (SHADERS menu page slot assignment) is vestigial.**
   The SHADER tab's grid doesn't consult it — it just paginates every
-  generative shader alphabetically, 9 per page. Only clip slots
-  (`clip_slots`, SAMPLER tab) and preset slots (`preset_slots`, LIVE tab)
-  are true persistent per-key assignments today.
+  generative shader alphabetically, 9 per page. Clip slots (`clip_slots`,
+  SAMPLER tab) are now the only true per-key assignments — presets dropped
+  theirs when the preset grids made a preset's position its identity
+  (see *Preset grids*).
 - **OSD toast messages are silent.** `control/osd.py`'s `show()` only logs
   at debug level — the many `inst.osd.show(...)` calls throughout the
   codebase (staged-pick confirmations, param names, etc.) produce no visible
