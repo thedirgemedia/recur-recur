@@ -20,7 +20,7 @@ to recur-recur's modes and engines. Four pages cycled with 7 / 9:
 
 Navigation (logical key names, mapped in keyboard.py for both NumLock states):
   + / BKSP   move selection up / down the list (BKSP is page-specific on
-             BROWSER/PRESETS/MIDI — see handle())
+             BROWSER/MIDI — see handle())
   8 / 2      move selection up / down
   4 / 6      adjust selected value (left / right)
   5 / ENTER  select / activate (the "■" action)
@@ -52,7 +52,14 @@ def _local_ip():
 
 log = logging.getLogger("menu")
 
-PAGES = ("BROWSER", "SHADERS", "PRESETS", "SETTINGS", "MIDI", "IMPORT")
+# Order matters: the SETTINGS grid maps these to numpad keys positionally
+# (7 8 9 / 4 5 6 / 1 2 3), and both control/display.py and control/keyboard.py
+# import this tuple rather than keeping their own copy.
+#
+# Presets are NOT here: all three stores are grid screens on their own tabs
+# (SHADER → SHADER PRESETS, FX → FX PRESETS, LIVE → PRESETS), reached with the
+# tab key. They were menu list-pages until the grids replaced them.
+PAGES = ("BROWSER", "SHADERS", "SETTINGS", "MIDI", "IMPORT")
 
 
 def _drive_label(path):
@@ -82,7 +89,7 @@ class Menu:
         self._settings_editing = False # True while +/BKSP change the highlighted
                                        # SETTINGS value instead of scrolling
         self._assigning      = False   # True while waiting for a slot key (BROWSER/SHADERS)
-        self._confirm_delete = False   # True after one BKSP in BROWSER/PRESETS (arm delete)
+        self._confirm_delete = False   # True after one BKSP in BROWSER (arm delete)
         # Staged selections applied to the live output when the menu closes
         # (the menu never changes the HDMI output while it is open).
         self._pending_clip_idx = None
@@ -147,7 +154,7 @@ class Menu:
     def handle(self, name):
         """Route a logical key while the menu is active.
 
-        Navigation: + = scroll up,  BKSP = scroll down (or, on BROWSER/PRESETS/
+        Navigation: + = scroll up,  BKSP = scroll down (or, on BROWSER and
         MIDI, that page's delete/clear action).
         """
         try:
@@ -198,14 +205,11 @@ class Menu:
                 page = PAGES[self.page]
                 if page == "MIDI":
                     self._midi_clear()
-                elif page in ("BROWSER", "PRESETS"):
+                elif page == "BROWSER":
                     # First BKSP arms delete, second executes it.
                     if self._confirm_delete:
                         self._confirm_delete = False
-                        if page == "BROWSER":
-                            self._browser_delete()
-                        else:
-                            self._preset_delete()
+                        self._browser_delete()
                     else:
                         self._confirm_delete = True
                 else:
@@ -227,8 +231,6 @@ class Menu:
             return max(1, len(self._browser_list()))
         if page == "SHADERS":
             return max(1, len(self._shader_list()))
-        if page == "PRESETS":
-            return max(1, len(self._presets_list()))
         if page == "MIDI":
             return len(MIDI_TARGETS)
         if page == "IMPORT":
@@ -244,7 +246,7 @@ class Menu:
         self.sel = max(0, min(n - 1, self.sel + d))
 
     def _adjust(self, d):
-        """4/6: adjust the selected value. 6 (d>0) on PRESETS saves a new preset."""
+        """4/6: adjust the selected value."""
         page = PAGES[self.page]
         if page == "SETTINGS":
             items = self._settings()
@@ -252,19 +254,15 @@ class Menu:
                 items[self.sel].adjust(d)
         elif page == "MIDI":
             self._midi_adjust(d)
-        elif page == "PRESETS" and d > 0:
-            self._preset_save()
         # BROWSER / SHADERS: slot assignment is via ENTER + slot key, not 4/6
 
     def _action_primary(self):
-        """5: load in BROWSER/SHADERS/PRESETS; select in SETTINGS; edit CC in MIDI."""
+        """5: load in BROWSER/SHADERS; select in SETTINGS; edit CC in MIDI."""
         page = PAGES[self.page]
         if page == "BROWSER":
             self._browser_load()
         elif page == "SHADERS":
             self._shader_browser_load()
-        elif page == "PRESETS":
-            self._preset_load()
         elif page == "SETTINGS":
             items = self._settings()
             if 0 <= self.sel < len(items):
@@ -275,10 +273,10 @@ class Menu:
             self._usb_action()
 
     def _action_enter(self):
-        """ENTER: enter slot-assign mode for BROWSER/SHADERS/PRESETS; eject
+        """ENTER: enter slot-assign mode for BROWSER/SHADERS; eject
         IMPORT; on SETTINGS fire an action row or open value-edit mode."""
         page = PAGES[self.page]
-        if page in ("BROWSER", "SHADERS", "PRESETS"):
+        if page in ("BROWSER", "SHADERS"):
             self._assigning = True
         elif page == "IMPORT":
             self._usb_eject()
@@ -332,15 +330,6 @@ class Menu:
                             cfg.shader_slots[k] = None
                     cfg.shader_slots[slot] = shader
                     log.info("shader slot %d → %s", slot, shader)
-            elif page == "PRESETS":
-                presets = self._presets_list()
-                if 0 <= self.sel < len(presets):
-                    preset = presets[self.sel]
-                    for k in cfg.preset_slots:
-                        if cfg.preset_slots[k] == preset:
-                            cfg.preset_slots[k] = None
-                    cfg.preset_slots[slot] = preset
-                    log.info("preset slot %d → %s", slot, preset)
         # All keys exit assign mode (whether a valid slot was pressed or not)
         self._assigning = False
 
@@ -405,64 +394,6 @@ class Menu:
         self._pending_shader = name
         self.inst.cfg.current_shader = name   # so the ▶ marker tracks the pick
         log.info("staged shader → %s", name)
-
-    # ───────────────────────────────────────────────────────── PRESETS
-    def _presets_list(self):
-        """Sorted list of .json preset filenames from the presets directory."""
-        d = self.inst.cfg.presets_dir
-        if not os.path.isdir(d):
-            return []
-        return sorted(f for f in os.listdir(d) if f.endswith(".json"))
-
-    def _preset_next_name(self):
-        """Return the next available auto-increment name: P01.json, P02.json…"""
-        existing = {f.upper() for f in self._presets_list()}
-        for n in range(1, 100):
-            name = f"P{n:02d}.json"
-            if name.upper() not in existing:
-                return name
-        return "PRESET.json"
-
-    def _preset_load(self):
-        presets = self._presets_list()
-        if not presets or self.sel >= len(presets):
-            return
-        name = presets[self.sel]
-        data = self.inst.cfg.load_preset(name)
-        if data:
-            self.inst.apply_preset(data)
-            self.inst.osd.show(f"PRESET: {name.replace('.json', '')}")
-            log.info("preset loaded: %s", name)
-
-    def _preset_save(self):
-        name = self._preset_next_name()
-        ok   = self.inst.cfg.save_preset(name)
-        if ok:
-            self.inst.osd.show(f"SAVED: {name.replace('.json', '')}")
-            presets = self._presets_list()
-            if name in presets:
-                self.sel = presets.index(name)
-        else:
-            self.inst.osd.show("SAVE FAILED")
-
-    def _preset_delete(self):
-        presets = self._presets_list()
-        if not presets or self.sel >= len(presets):
-            return
-        name = presets[self.sel]
-        path = os.path.join(self.inst.cfg.presets_dir, name)
-        cfg = self.inst.cfg
-        for k in list(cfg.preset_slots):
-            if cfg.preset_slots[k] == name:
-                cfg.preset_slots[k] = None
-        try:
-            os.remove(path)
-            self.inst.osd.show(f"DELETED {name[:18]}")
-            self.sel = max(0, min(self.sel, len(self._presets_list()) - 1))
-            log.info("preset deleted: %s", name)
-        except OSError as e:
-            log.warning("preset delete %s: %s", name, e)
-            self.inst.osd.show("DELETE FAILED")
 
     # ───────────────────────────────────────────────────────── IMPORT (USB → internal)
     def _usb_enter(self):
@@ -964,28 +895,6 @@ class Menu:
                 sn    = name_to_slot.get(name)
                 label = ("▶ " if name == cur_shader else "  ") + name.replace('.glsl', '')[:26]
                 rows.append((label, str(sn) if sn is not None else "–"))
-            if not rows:
-                rows = [("  (none)", "")]
-            self._render_kv(draw, font_sm, W, H, palette, rows, y0=66)
-
-        elif page == "PRESETS":
-            if self._confirm_delete:
-                draw.text((10, 44), "BKSP again = DELETE   other = cancel",
-                          font=font_sm, fill=C_HL)
-            elif self._assigning:
-                draw.text((10, 44), "press 4–9 to assign slot   other = cancel",
-                          font=font_sm, fill=C_HL)
-            else:
-                draw.text((10, 44), "5 load  6 save new  ENTER assign slot  BKSP del",
-                          font=font_sm, fill=C_DIM)
-            cfg     = self.inst.cfg
-            presets = self._presets_list()
-            name_to_slot = {v: k for k, v in cfg.preset_slots.items() if v}
-            rows = []
-            for p in presets:
-                sn = name_to_slot.get(p)
-                rows.append(("  " + p.replace(".json", ""),
-                             str(sn) if sn is not None else "–"))
             if not rows:
                 rows = [("  (none)", "")]
             self._render_kv(draw, font_sm, W, H, palette, rows, y0=66)

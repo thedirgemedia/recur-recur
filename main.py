@@ -281,17 +281,28 @@ class RecurInstrument:
 
     # ------------------------------------------------------------------ presets
     def load_preset_slot(self, slot: int):
-        """Load the preset assigned to numpad/note key `slot` (PRESETS menu).
-        Shared by keyboard.py (hold-0+4-9 any mode, plain 4-9 in LIVE) and
-        midi.py (notes, in LIVE mode)."""
-        pname = self.cfg.preset_slots.get(slot)
-        if pname:
-            data = self.cfg.load_preset(pname)
-            if data:
-                self.apply_preset(data)
-                self.osd.show(f"P{slot}: {pname.replace('.json', '').upper()}")
-        else:
-            self.osd.show(f"PRESET {slot}: EMPTY")
+        """Load the whole-state preset on numpad/note key `slot`.
+
+        The global shortcuts — hold-0 + 4-9 in any mode, and MIDI notes — are
+        not looking at a screen, so they always address PAGE ONE of the preset
+        store: key 7 is the first preset, key 3 the ninth, matching where those
+        keys sit on the LIVE grid. Presets past the first nine are reachable by
+        paging that grid.
+        """
+        from control.display import _GRID_SLOTS
+        try:
+            index = _GRID_SLOTS.index(slot)
+        except ValueError:
+            return
+        cfg = self.cfg
+        name = cfg.preset_name("whole", index)[:-5]
+        if not cfg.preset_exists("whole", index):
+            self.osd.show(f"{name}: EMPTY")
+            return
+        data = cfg.load_preset_at("whole", index)
+        if data:
+            self.apply_preset(data)
+            self.osd.show(f"PRESET: {name}")
 
     def apply_preset(self, data: dict):
         """Apply a loaded preset dict to the live instrument state.
@@ -344,6 +355,45 @@ class RecurInstrument:
             hue=data.get("color_hue", cfg.color_hue),
             sat=data.get("color_sat", cfg.color_sat))
         log.info("preset applied: mode=%s shader=%s", target_mode, data.get("shader", "—"))
+
+    def apply_shader_preset(self, data: dict):
+        """Push a loaded generative-stack preset onto the live output.
+
+        cfg.load_shader_preset() has already written the chain into cfg; this
+        only decides how to get it on screen. The stack is what SHADER mode
+        draws, so — exactly as apply_preset() does — the SHADER mode-state
+        cache is primed first, otherwise _restore_mode_state() would overwrite
+        the preset with the stale cached stack next time SHADER is entered.
+        Never touches the FX chain.
+        """
+        cfg = self.cfg
+        ms  = self._mode_states.setdefault("SHADER", {})
+        ms["shader_chain"]        = list(cfg.shader_chain)
+        ms["shader_params_chain"] = [dict(p) for p in cfg.shader_params_chain]
+        ms["shader_blend_chain"]  = [dict(b) for b in cfg.shader_blend_chain]
+        ms["shader_edit_slot"]    = cfg.shader_edit_slot
+        if data.get("shader_blend") is not None:
+            ms["shader_blend"] = data["shader_blend"]
+        if self.mode == "SHADER":
+            self.shader.reapply()
+        log.info("shader preset applied: %d layers", len(cfg.shader_chain))
+
+    def apply_fx_preset(self, data: dict):
+        """Push a loaded FX-stack preset onto the live output.
+
+        FX are post-stage filters over whatever is on screen, so this applies
+        in every mode (SHADER / SAMPLER / LIVE) and needs no mode-state
+        priming. Never touches the generative stack.
+        """
+        cfg = self.cfg
+        if cfg.fx_chain:
+            slot = min(cfg.fx_edit_slot, len(cfg.fx_chain) - 1)
+            try:
+                self.shader._read_fx_defaults(cfg.fx_chain[slot])
+            except Exception as e:
+                log.warning("fx preset defaults: %s", e)
+        self.shader.reapply()
+        log.info("fx preset applied: %d layers", len(cfg.fx_chain))
 
     # ------------------------------------------------------------------ shader blend (SHADER mode)
     def shader_blend_toggle(self):

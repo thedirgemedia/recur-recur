@@ -85,12 +85,25 @@ C_STAGED = (0xff, 0x88, 0x00)         # amber — staged mode indicator
 # Names ending in _GRID render the 3×3 slot-grid view.
 # Names that match a menu.PAGES entry activate the full-screen menu renderer.
 _TAB_SCREENS = {
-    0: ("SHADER_GRID",   "SHADER"),
-    1: ("FX_GRID",       "FX"),
+    0: ("SHADER_GRID",   "SHADER",  "SHADER_PRESET_GRID"),
+    1: ("FX_GRID",       "FX",      "FX_PRESET_GRID"),
     2: ("SAMPLER_GRID",  "SAMPLER"),
     3: ("LIVE_GRID",     "LIVE"),
     4: ("SETTINGS_GRID", "BROWSER", "MIDI"),
 }
+
+# Grid screens that browse a preset store rather than a shader/clip list.
+# Named *_GRID so they inherit grid semantics (1-9 select, hold, +/Bksp page)
+# from is_grid_screen(); the store here is what makes them act on presets.
+_PRESET_SCREENS = {
+    "SHADER_PRESET_GRID": "shader",
+    "FX_PRESET_GRID":     "fx",
+    "LIVE_GRID":          "whole",
+}
+
+# Actions on the preset options screen (hold a filled preset cell).
+_PRESET_OPTS = (("overwrite", "OVERWRITE WITH CURRENT"),
+                ("delete",    "DELETE"))
 
 # Grid slot display order: matches numpad spatial layout.
 # Position 0 (top-left) = key 7, position 8 (bottom-right) = key 3.
@@ -294,6 +307,8 @@ class DisplayController:
         self._grid_pending   = [None, None, None, None, None]  # staged slot per tab
         self._fx_grid_offset     = 0   # first index of the visible FX page
         self._shader_grid_offset = 0   # first index of the visible shader page
+        # First slot index of the visible page, per preset store.
+        self._preset_offset = {"whole": 0, "shader": 0, "fx": 0}
         self._cached_ip   = "…"
         self._ip_ts       = 0.0
 
@@ -346,6 +361,23 @@ class DisplayController:
     def shader_grid_page(self, direction):
         """Advance the shader grid by ±9 items (clamp at boundaries)."""
         self._shader_grid_offset = max(0, self._shader_grid_offset + direction * 9)
+
+    def preset_store(self):
+        """The preset store the current screen browses, or None if it isn't a
+        preset grid. This is what tells the key handlers to act on presets."""
+        return _PRESET_SCREENS.get(
+            _TAB_SCREENS[self._active_tab][self._tab_screen[self._active_tab]])
+
+    def preset_grid_page(self, direction):
+        """Advance the current preset grid by ±9 slots (clamp at zero)."""
+        store = self.preset_store()
+        if store is None:
+            return
+        self._preset_offset[store] = max(
+            0, self._preset_offset[store] + direction * 9)
+
+    def preset_offset(self, store):
+        return self._preset_offset.get(store, 0)
 
     def _activate_screen(self, tab, screen):
         """Open or close the menu renderer depending on the target sub-screen."""
@@ -472,7 +504,10 @@ class DisplayController:
                         self._staged,
                         tuple(cfg.shader_slots.get(k) for k in _GRID_SLOTS),
                         tuple(cfg.clip_slots.get(k) for k in _GRID_SLOTS),
-                        tuple(getattr(cfg, "preset_slots", {}).get(k) for k in _GRID_SLOTS),
+                        getattr(cfg, "preset_gen", 0),
+                        tuple(sorted(self._preset_offset.items())),
+                        getattr(_kb, "_preset_opts", None),
+                        getattr(_kb, "_preset_opt_idx", 0),
                         tuple(self._grid_pending),
                         self._fx_grid_offset,
                         self._shader_grid_offset,
@@ -525,7 +560,11 @@ class DisplayController:
 
         _kb = getattr(inst, "kb", None)
         if screen_name.endswith("_GRID"):
-            self._render_tab_grid(d, font_md, font_sm, inst, cfg, tab)
+            self._render_tab_grid(d, font_md, font_sm, inst, cfg, tab, screen_name)
+        elif getattr(_kb, "_preset_opts", None) is not None:
+            # Preset options screen — opened by holding a filled preset cell,
+            # so like the LFO screen it is rendered before the tab's own params.
+            self._render_preset_opts(d, font_md, font_sm, inst, cfg, _kb)
         elif getattr(_kb, "_lfo_screen", False):
             # LFO settings screen — reachable from any tab's params view, so it
             # is rendered here (before the tab-specific params screens).
@@ -546,15 +585,19 @@ class DisplayController:
 
     # ── Grid screen ──────────────────────────────────────────────────────────
 
-    def _render_tab_grid(self, d, font_md, font_sm, inst, cfg, tab):
-        """Render the 3×3 slot-grid first screen for any tab."""
+    def _render_tab_grid(self, d, font_md, font_sm, inst, cfg, tab, screen_name):
+        """Render a 3×3 grid screen. Dispatches on the SCREEN, not the tab —
+        SHADER and FX each have two grid screens now (their item grid and their
+        preset store)."""
         col = TAB_COL[tab]
+        store = _PRESET_SCREENS.get(screen_name)
+        if store is not None:
+            self._render_preset_grid(d, font_md, font_sm, inst, cfg, col, store)
+            return
         if tab == "SHADER":
             self._render_shader_grid(d, font_md, font_sm, inst, cfg, col)
         elif tab == "SAMPLER":
             self._render_sampler_grid(d, font_md, font_sm, inst, cfg, col)
-        elif tab == "LIVE":
-            self._render_live_grid(d, font_md, font_sm, inst, cfg, col)
         elif tab == "FX":
             self._render_fx_grid(d, font_md, font_sm, inst, cfg, col)
         else:
@@ -673,19 +716,25 @@ class DisplayController:
                 cells.append({"label": f"[{slot}]", "empty": True})
         self._draw_grid(d, font_md, font_sm, "CLIP SLOTS", cells, col)
 
-    def _render_live_grid(self, d, font_md, font_sm, inst, cfg, col):
-        slots   = getattr(cfg, "preset_slots", {})
-        pending = self._grid_pending[2]
-        cells   = []
-        for slot in _GRID_SLOTS:
-            name = slots.get(slot)
+    def _render_preset_grid(self, d, font_md, font_sm, inst, cfg, col, store):
+        """Render one page of a preset store. Shared by all three stores, so
+        PRESETS / SHADER PRESETS / FX PRESETS are the same screen with a
+        different source — an empty cell shows its key, and holding it saves."""
+        from config import PRESET_STORES
+        offset = self._preset_offset.get(store, 0)
+        names  = cfg.preset_page(store, offset)
+        cells  = []
+        for pos, name in enumerate(names):
             if name:
-                label = name.replace(".json", "").upper()
-                cells.append({"label": label[:14], "active": False,
-                              "pending": slot == pending})
+                cells.append({"label": name.replace(".json", "").upper()[:14]})
             else:
-                cells.append({"label": f"[{slot}]", "empty": True})
-        self._draw_grid(d, font_md, font_sm, "PRESETS", cells, col)
+                cells.append({"label": f"[{_GRID_SLOTS[pos]}]", "empty": True})
+        total  = max(1, (max(cfg.preset_count(store), offset + 1) + 8) // 9)
+        page   = offset // 9 + 1
+        used   = sum(1 for n in names if n)
+        label  = PRESET_STORES[store]["label"]
+        section = f"{label} ({used})  {page}/{total}"
+        self._draw_grid(d, font_md, font_sm, section, cells, col)
 
     def _render_fx_grid(self, d, font_md, font_sm, inst, cfg, col):
         fx_list  = inst.shader.list_shaders(kind="fx")
@@ -712,7 +761,7 @@ class DisplayController:
         self._draw_grid(d, font_md, font_sm, section, cells, col)
 
     def _render_settings_grid(self, d, font_md, font_sm, inst, cfg, col):
-        _labels = ("BROWSER", "SHADERS", "PRESETS", "SETTINGS", "MIDI", "IMPORT")
+        from control.menu import PAGES as _labels
         cells = []
         for i, slot in enumerate(_GRID_SLOTS):
             if i < len(_labels):
@@ -1047,6 +1096,43 @@ class DisplayController:
             lfo_of=lfo_of, cc_of=cc_of,
             midi_assign=(getattr(_kb, "_midi_assign", False),
                          getattr(_kb, "_midi_cc_buf", "")))
+
+    def _render_preset_opts(self, d, font_md, font_sm, inst, cfg, _kb):
+        """Options for one saved preset (hold a filled preset cell to reach it).
+
+        Deliberately not the arm-then-confirm pattern the old menu used for
+        delete: holding to configure a thing is already the gesture everywhere
+        else, and it lands you here where the action is named rather than
+        being a second press of a scroll key.
+        """
+        from config import PRESET_STORES
+        store, index = _kb._preset_opts
+        name  = cfg.preset_name(store, index).replace(".json", "")
+        label = PRESET_STORES[store]["label"]
+        key   = _GRID_SLOTS[index % 9]
+        sel   = getattr(_kb, "_preset_opt_idx", 0)
+
+        d.text((10, TAB_H + 6), label, font=font_sm, fill=C_STAGED)
+        d.line([0, TAB_H + 22, FB_W, TAB_H + 22], fill=C_DIVIDER, width=1)
+        d.text((FB_W // 2, TAB_H + 44), name, font=font_md, fill=C_ON,
+               anchor="mm")
+        d.text((FB_W // 2, TAB_H + 66), f"page {index // 9 + 1}  ·  key {key}",
+               font=font_sm, fill=C_HINT, anchor="mm")
+
+        rows = _PRESET_OPTS
+        y0   = TAB_H + 92
+        rh   = 30
+        for i, (_, text) in enumerate(rows):
+            y   = y0 + i * rh
+            on  = (i == sel)
+            if on:
+                d.rectangle([20, y, FB_W - 20, y + rh - 6],
+                            fill=(0x00, 0x22, 0x00), outline=C_ON, width=2)
+            d.text((FB_W // 2, y + (rh - 6) // 2), text, font=font_sm,
+                   fill=C_ON if on else C_LABEL, anchor="mm")
+
+        d.text((FB_W // 2, FB_H - 14), "+/Bksp choose   ENTER do   . back",
+               font=font_sm, fill=C_HINT, anchor="mm")
 
     def _render_lfo_settings(self, d, font_sm, inst, cfg, _kb):
         """LFO settings screen (long-press an LFO cell to reach it). Edits one

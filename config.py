@@ -16,6 +16,20 @@ def _abs(path: str) -> str:
     return path if os.path.isabs(path) else os.path.join(_PROJECT_ROOT, path)
 
 
+# The three preset stores. "whole" snapshots the entire instrument; the other
+# two store one stack each, so a generative look and an FX treatment can be
+# recalled independently. All three are addressed by grid position — see
+# Config.preset_name() — and all three render and behave identically.
+PRESET_STORES = {
+    "whole":  {"dir": "presets_dir",        "prefix": "P",
+               "label": "PRESETS",        "tag": "P"},
+    "shader": {"dir": "shader_presets_dir", "prefix": "S",
+               "label": "SHADER PRESETS", "tag": "SHDR"},
+    "fx":     {"dir": "fx_presets_dir",     "prefix": "F",
+               "label": "FX PRESETS",     "tag": "FX"},
+}
+
+
 class Config:
     def __init__(self, args=None):
         # output: 'hdmi' or 'composite'
@@ -28,6 +42,11 @@ class Config:
         self.clips_dir   = _abs(getattr(args, "clips_dir",   "clips/"))
         self.shaders_dir = _abs(getattr(args, "shaders_dir", "shaders/"))
         self.presets_dir = _abs("presets/")
+        # Partial-preset stores, kept in subdirectories of presets/ so the
+        # whole-state PRESETS page (which lists *.json in presets/ itself)
+        # never sees them.
+        self.shader_presets_dir = _abs("presets/shaders/")
+        self.fx_presets_dir     = _abs("presets/fx/")
 
         res = getattr(args, "resolution", "1280x720")
         self.width, self.height = (int(x) for x in res.split("x"))
@@ -58,11 +77,15 @@ class Config:
         # Used by SHADER mode keys 4-9.
         self.shader_slots = {4: None, 5: None, 6: None, 7: None, 8: None, 9: None}
 
-        # Numpad key-to-preset slot assignments.  Maps key number (4–9) to the
-        # preset filename (.json), or None if empty.
-        # Assigned from the PRESETS menu page (ENTER, then a slot key 4–9).
-        # Loaded by hold-0 + key 4-9 in any mode.
-        self.preset_slots = {4: None, 5: None, 6: None, 7: None, 8: None, 9: None}
+        # (There is no preset_slots here any more. Presets used to be assigned
+        # to keys from a menu page; now a preset's grid position IS its
+        # identity — see preset_name() — so there is nothing to assign.)
+
+        # Bumped whenever a preset file is written or removed. The display
+        # caches its rendered frame against a state tuple; without this it
+        # would have to stat every visible slot every frame to notice a save.
+        # Runtime-only, never persisted.
+        self.preset_gen = 0
 
         # Camera capture resolution.  The IMX708 has one native low-res sensor
         # mode (1536×864); the ISP then scales down to whatever we request here.
@@ -412,8 +435,6 @@ class Config:
             self.clip_slots = {int(k): v for k, v in data['clip_slots'].items()}
         if 'shader_slots' in data:
             self.shader_slots = {int(k): v for k, v in data['shader_slots'].items()}
-        if 'preset_slots' in data:
-            self.preset_slots = {int(k): v for k, v in data['preset_slots'].items()}
         if 'sampler_mode' in data:
             self._prefs_sampler_mode = data['sampler_mode']
         log.info("prefs loaded from %s", self.PREFS_PATH)
@@ -430,7 +451,6 @@ class Config:
         data['fx_blend_chain']  = [dict(b) for b in self.fx_blend_chain]
         data['clip_slots']    = {str(k): v for k, v in self.clip_slots.items()}
         data['shader_slots']  = {str(k): v for k, v in self.shader_slots.items()}
-        data['preset_slots']  = {str(k): v for k, v in self.preset_slots.items()}
         if sampler_mode is not None:
             data['sampler_mode'] = sampler_mode
         try:
@@ -443,7 +463,8 @@ class Config:
             return False
 
     def _validate(self):
-        for d in (self.clips_dir, self.shaders_dir, self.presets_dir):
+        for d in (self.clips_dir, self.shaders_dir, self.presets_dir,
+                  self.shader_presets_dir, self.fx_presets_dir):
             os.makedirs(d, exist_ok=True)
 
     # -------------------------------------------------- presets (recur-style)
@@ -533,3 +554,173 @@ class Config:
         except Exception as e:
             log.warning("preset save error %s: %s", name, e)
             return False
+
+    # ------------------------------------------------ position-addressed stores
+    # Presets are addressed by their POSITION in the grid, not by a name the
+    # user has to invent — there is no text entry on a numpad. Index 0 is the
+    # first cell of page 1, and the filename follows from it: P01, P02, … So
+    # "the preset on key 7" is a stable, meaningful thing, and holding an empty
+    # cell to save has an obvious destination. Holes are allowed (P01 and P07
+    # can exist with nothing between them).
+    def preset_name(self, store: str, index: int) -> str:
+        return f"{PRESET_STORES[store]['prefix']}{index + 1:02d}.json"
+
+    def preset_path(self, store: str, index: int) -> str:
+        return os.path.join(getattr(self, PRESET_STORES[store]["dir"]),
+                            self.preset_name(store, index))
+
+    def preset_exists(self, store: str, index: int) -> bool:
+        return os.path.exists(self.preset_path(store, index))
+
+    def preset_page(self, store: str, offset: int, count: int = 9):
+        """Names for `count` consecutive slots from `offset`, None where empty.
+        Drives the grid render — one stat per cell, no directory listing."""
+        return [self.preset_name(store, offset + i)
+                if self.preset_exists(store, offset + i) else None
+                for i in range(count)]
+
+    def preset_count(self, store: str, limit: int = 900) -> int:
+        """Index just past the last occupied slot — used to size the paging."""
+        last = 0
+        for i in range(limit):
+            if self.preset_exists(store, i):
+                last = i + 1
+        return last
+
+    def save_preset_at(self, store: str, index: int) -> bool:
+        name = self.preset_name(store, index)
+        ok = {"whole":  self.save_preset,
+              "shader": self.save_shader_preset,
+              "fx":     self.save_fx_preset}[store](name)
+        if ok:
+            self.preset_gen += 1
+        return ok
+
+    def load_preset_at(self, store: str, index: int) -> dict:
+        name = self.preset_name(store, index)
+        return {"whole":  self.load_preset,
+                "shader": self.load_shader_preset,
+                "fx":     self.load_fx_preset}[store](name)
+
+    def delete_preset_at(self, store: str, index: int) -> bool:
+        try:
+            os.remove(self.preset_path(store, index))
+            self.preset_gen += 1
+            log.info("deleted %s", self.preset_name(store, index))
+            return True
+        except OSError as e:
+            log.warning("delete %s: %s", self.preset_name(store, index), e)
+            return False
+
+    # ------------------------------------------- partial presets (stack stores)
+    # Unlike save_preset() above — which snapshots the whole instrument — these
+    # store ONE stack each, so a generative look and an FX treatment can be
+    # recalled independently of each other and of the current mode.
+    def _read_json(self, path, what):
+        if not os.path.exists(path):
+            log.warning("%s not found: %s", what, path)
+            return {}
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception as e:
+            log.warning("%s load error %s: %s", what, path, e)
+            return {}
+
+    def _write_json(self, path, data, what):
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+            log.info("saved %s %s", what, os.path.basename(path))
+            return True
+        except Exception as e:
+            log.warning("%s save error %s: %s", what, path, e)
+            return False
+
+    def save_shader_preset(self, name: str):
+        """Snapshot the generative stack only — no FX, no clip, no mode.
+
+        Includes each layer's own params and its blend against the layer below
+        (shader_blend_chain), plus how the finished stack blends over incoming
+        video (shader_blend*), since that is part of the look.
+        """
+        return self._write_json(
+            os.path.join(self.shader_presets_dir, name),
+            {
+                "version": 1,
+                "kind":    "shader",
+                "shader_chain":        list(self.shader_chain),
+                "shader_params_chain": [dict(p) for p in self.shader_params_chain],
+                "shader_blend_chain":  [dict(b) for b in self.shader_blend_chain],
+                "shader_blend":        getattr(self, "shader_blend", None),
+                "shader_blend_mode":   getattr(self, "shader_blend_mode", None),
+                "shader_blend_amount": getattr(self, "shader_blend_amount", None),
+                "shader_blend_source": getattr(self, "shader_blend_source", None),
+            },
+            "shader preset")
+
+    def load_shader_preset(self, name: str) -> dict:
+        """Load a generative stack into cfg. Leaves the FX chain untouched."""
+        data = self._read_json(
+            os.path.join(self.shader_presets_dir, name), "shader preset")
+        if not data:
+            return {}
+        chain = data.get("shader_chain")
+        if not isinstance(chain, list):
+            log.warning("shader preset %s has no shader_chain", name)
+            return {}
+        self.shader_chain = list(chain)
+        p = data.get("shader_params_chain")
+        self.shader_params_chain = ([dict(x) for x in p] if isinstance(p, list)
+                                    else [{f"p{i}": 0.5 for i in range(1, 11)}
+                                          for _ in chain])
+        b = data.get("shader_blend_chain")
+        self.shader_blend_chain = ([dict(x) for x in b] if isinstance(b, list)
+                                   else [{"mode": "normal", "amt": 1.0}
+                                         for _ in chain])
+        self.shader_edit_slot = 0
+        for key in ("shader_blend", "shader_blend_mode",
+                    "shader_blend_amount", "shader_blend_source"):
+            if data.get(key) is not None:
+                setattr(self, key, data[key])
+        self._sync_shader_compat()
+        log.info("loaded shader preset %s (%d layers)", name, len(chain))
+        return data
+
+    def save_fx_preset(self, name: str):
+        """Snapshot the FX stack only — applies over whatever is on screen, so
+        it is deliberately mode-agnostic (SHADER, SAMPLER or LIVE)."""
+        return self._write_json(
+            os.path.join(self.fx_presets_dir, name),
+            {
+                "version": 1,
+                "kind":    "fx",
+                "fx_chain":        list(self.fx_chain),
+                "fx_params_chain": [dict(p) for p in self.fx_params_chain],
+                "fx_blend_chain":  [dict(b) for b in self.fx_blend_chain],
+            },
+            "fx preset")
+
+    def load_fx_preset(self, name: str) -> dict:
+        """Load an FX stack into cfg. Leaves the generative stack untouched."""
+        data = self._read_json(
+            os.path.join(self.fx_presets_dir, name), "fx preset")
+        if not data:
+            return {}
+        chain = data.get("fx_chain")
+        if not isinstance(chain, list):
+            log.warning("fx preset %s has no fx_chain", name)
+            return {}
+        self.fx_chain = list(chain)
+        p = data.get("fx_params_chain")
+        _def = {"f1": 0.5, "f2": 0.5, "f3": 0.5, "f4": 0.5, "f5": 0.5}
+        self.fx_params_chain = ([dict(x) for x in p] if isinstance(p, list)
+                                else [dict(_def) for _ in chain])
+        b = data.get("fx_blend_chain")
+        self.fx_blend_chain = ([dict(x) for x in b] if isinstance(b, list)
+                               else [{"mode": "normal", "amt": 1.0} for _ in chain])
+        self.fx_edit_slot   = 0
+        self.shader_fx_stack = bool(chain)
+        self._sync_fx_compat()
+        log.info("loaded fx preset %s (%d layers)", name, len(chain))
+        return data

@@ -129,7 +129,8 @@ SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 # How long a grid key must be held before it's treated as a hold rather than
 # a tap (SHADER/FX grids only — see _HOLD_TABS).
 HOLD_THRESHOLD = 0.4   # seconds
-_HOLD_TABS = (0, 1, 2)   # SHADER, FX, SAMPLER — grids with tap/hold semantics
+_HOLD_TABS = (0, 1, 2, 3)   # every tab whose grids have tap/hold semantics
+                            # (LIVE joined when its grid became a preset store)
                          # (SAMPLER hold opens a clip's per-clip settings)
 
 # Display tab → instrument mode, for the 000 key. FX (1) and SETTINGS (4) are
@@ -188,6 +189,13 @@ class KeyboardController:
         # _clear_param_edit() drops the flag on every navigation.
         self._lfo_screen    = False
         self._lfo_edit_idx  = 0       # which LFO (0-2) the screen edits
+
+        # Preset options screen — opened by holding a FILLED cell on any of the
+        # three preset grids. (store, index) while open, None otherwise. Like
+        # _lfo_screen it borrows the params sub-screen slot rather than being a
+        # _param_layer, so it never leaks into a tab's normal params view.
+        self._preset_opts    = None
+        self._preset_opt_idx = 0
 
         # MIDI-assign sub-mode on the params screen (key 4). While active, the
         # highlighted param is waiting for a CC: move a knob to learn one, or
@@ -355,6 +363,11 @@ class KeyboardController:
             self._clear_param_edit()
             return
 
+        # Back out of the preset options screen to the grid it was opened from.
+        if self._preset_opts is not None:
+            self._close_preset_opts(_disp)
+            return
+
         if _disp and not _disp.is_grid_screen():
             _disp.go_to_grid_screen()
             return
@@ -431,17 +444,14 @@ class KeyboardController:
             # moves up/back through the list and BKSP moves down/forward. The
             # grid used to be reversed (+ = next), which read as opposite to the
             # menus on the same numpad.
-            if name == "+":
-                if tab == 1:
-                    _disp.fx_grid_page(-1)
+            if name in ("+", "BKSP"):
+                step = -1 if name == "+" else +1
+                if _disp.preset_store() is not None:
+                    _disp.preset_grid_page(step)
+                elif tab == 1:
+                    _disp.fx_grid_page(step)
                 elif tab == 0:
-                    _disp.shader_grid_page(-1)
-                return
-            if name == "BKSP":
-                if tab == 1:
-                    _disp.fx_grid_page(+1)
-                elif tab == 0:
-                    _disp.shader_grid_page(+1)
+                    _disp.shader_grid_page(step)
                 return
             if name == "ENTER":
                 # Staged picks waiting: push them (that's what staging is for).
@@ -476,6 +486,13 @@ class KeyboardController:
         inst = self.inst
         tab  = _disp._active_tab
 
+        # Preset grids: tap loads. Empty cells say so rather than doing
+        # nothing silently — holding one is how you fill it.
+        store = _disp.preset_store()
+        if store is not None:
+            self._preset_grid_tap(store, slot, _disp)
+            return
+
         if tab in (0, 1):   # SHADER_GRID / FX_GRID: tap ONLY toggles stack
                             # membership — never changes screens. Opening
                             # params is hold's job (see _grid_hold), even for
@@ -498,7 +515,7 @@ class KeyboardController:
             return
 
         if tab == 4:   # SETTINGS_GRID: open menu page
-            _SETTINGS_PAGES = ("BROWSER", "SHADERS", "PRESETS", "SETTINGS", "MIDI", "IMPORT")
+            from control.menu import PAGES as _SETTINGS_PAGES
             from control.display import _GRID_SLOTS as _GS
             try:
                 pos = _GS.index(slot)
@@ -531,6 +548,93 @@ class KeyboardController:
 
         # LIVE mode: load immediately.
         self._load_slot(tab, slot, inst)
+
+    # ------------------------------------------------------------- preset grids
+    def _preset_index(self, store, slot, _disp):
+        """Slot key → absolute preset index on the current page, or None."""
+        from control.display import _GRID_SLOTS as _GS
+        try:
+            pos = _GS.index(slot)
+        except ValueError:
+            return None
+        return _disp.preset_offset(store) + pos
+
+    def _preset_grid_tap(self, store, slot, _disp):
+        from config import PRESET_STORES
+        inst  = self.inst
+        index = self._preset_index(store, slot, _disp)
+        if index is None:
+            return
+        cfg = inst.cfg
+        tag = PRESET_STORES[store]["tag"]
+        if not cfg.preset_exists(store, index):
+            inst.osd.show(f"{tag} {cfg.preset_name(store, index)[:-5]}: EMPTY"
+                          "  (hold to save)")
+            return
+        data = cfg.load_preset_at(store, index)
+        if not data:
+            inst.osd.show("LOAD FAILED")
+            return
+        {"whole":  inst.apply_preset,
+         "shader": inst.apply_shader_preset,
+         "fx":     inst.apply_fx_preset}[store](data)
+        inst.osd.show(f"{tag}: {cfg.preset_name(store, index)[:-5]}")
+
+    def _preset_grid_hold(self, store, slot, _disp):
+        from config import PRESET_STORES
+        inst  = self.inst
+        index = self._preset_index(store, slot, _disp)
+        if index is None:
+            return
+        cfg = inst.cfg
+        if cfg.preset_exists(store, index):
+            self._open_preset_opts(store, index, _disp)
+            return
+        name = cfg.preset_name(store, index)[:-5]
+        if cfg.save_preset_at(store, index):
+            inst.osd.show(f"SAVED {PRESET_STORES[store]['tag']}: {name}")
+        else:
+            inst.osd.show("SAVE FAILED")
+
+    def _open_preset_opts(self, store, index, _disp):
+        """Open the options screen for a saved preset (hold a filled cell)."""
+        self._clear_param_edit()
+        self._preset_opts    = (store, index)
+        self._preset_opt_idx = 0
+        _disp.go_to_params_screen()
+
+    def _close_preset_opts(self, _disp=None):
+        self._preset_opts    = None
+        self._preset_opt_idx = 0
+        if _disp is not None:
+            _disp.go_to_grid_screen()
+
+    def _dispatch_preset_opts(self, name):
+        """Keys on the preset options screen: +/Bksp choose, ENTER/5 fire."""
+        from control.display import _PRESET_OPTS
+        from config import PRESET_STORES
+        inst  = self.inst
+        _disp = getattr(inst, "display", None)
+        if name in ("+", "8"):
+            self._preset_opt_idx = max(0, self._preset_opt_idx - 1)
+            return
+        if name in ("BKSP", "2"):
+            self._preset_opt_idx = min(len(_PRESET_OPTS) - 1,
+                                       self._preset_opt_idx + 1)
+            return
+        if name not in ("ENTER", "5"):
+            return
+        store, index = self._preset_opts
+        action = _PRESET_OPTS[self._preset_opt_idx][0]
+        cfg    = inst.cfg
+        label  = cfg.preset_name(store, index)[:-5]
+        if action == "overwrite":
+            ok = cfg.save_preset_at(store, index)
+            inst.osd.show(f"{'SAVED' if ok else 'SAVE FAILED'} {label}")
+        elif action == "delete":
+            ok = cfg.delete_preset_at(store, index)
+            inst.osd.show(f"{'DELETED' if ok else 'DELETE FAILED'} {label}")
+        self._close_preset_opts(_disp)
 
     def _resolve_grid_item(self, slot, _disp, kind, offset_attr):
         """Map a numpad key on a paginated grid (SHADER or FX) to the shader
@@ -565,6 +669,14 @@ class KeyboardController:
         slot = int(key)
         inst = self.inst
         tab  = _disp._active_tab
+
+        # Preset grids: hold an empty cell to save the current state into it,
+        # or a filled one to open its options. Saving and placing are the same
+        # act here, which is why these grids need no separate assign mode.
+        store = _disp.preset_store()
+        if store is not None:
+            self._preset_grid_hold(store, slot, _disp)
+            return
 
         # SAMPLER: hold a clip to load it and open its per-clip settings.
         if tab == 2:
@@ -666,6 +778,11 @@ class KeyboardController:
         """
         inst  = self.inst
         _disp = getattr(inst, "display", None)
+
+        # Preset options screen has its own key map.
+        if self._preset_opts is not None:
+            self._dispatch_preset_opts(name)
+            return
 
         # LFO settings screen has its own key map.
         if self._lfo_screen:
@@ -994,8 +1111,10 @@ class KeyboardController:
         """Leave both params-screen sub-modes (value-edit and MIDI-assign),
         disarming any pending MIDI-learn. Called whenever navigation lands on
         or leaves a params screen so neither sub-mode leaks across contexts."""
-        self._editing_param = False
-        self._lfo_screen    = False
+        self._editing_param  = False
+        self._lfo_screen     = False
+        self._preset_opts    = None
+        self._preset_opt_idx = 0
         if self._midi_assign:
             self._cancel_midi_assign()
 
