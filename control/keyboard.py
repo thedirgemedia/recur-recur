@@ -80,6 +80,7 @@ binds it, so it just toggles STAGED an odd number of times.
 """
 
 import logging
+import selectors
 import threading
 import time
 
@@ -123,6 +124,56 @@ NUMPAD_MAP = {
 # This numpad's 000 key has no keycode of its own: it fires three rapid KEY_KP0
 # presses (measured 16ms down-to-down), so it arrives as three plain "0"s and is
 # not usable as a distinct key without coalescing them. Nothing binds it.
+
+# NUMPAD_MAP resolved to integer evdev keycodes — the built-in DEFAULT used when
+# cfg.keymap has no entry for a code, so a plain USB numpad works with zero
+# config. cfg.keymap (set on the INPUT page) overrides this per-code.
+DEFAULT_MAP = {}
+if HAVE_EVDEV:
+    for _codename, _logical in NUMPAD_MAP.items():
+        _c = getattr(ecodes, _codename, None)
+        if isinstance(_c, int):
+            DEFAULT_MAP[_c] = _logical
+
+
+def _dev_vidpid(dev):
+    """'vvvv:pppp' (lowercase hex) for an evdev device — the stable identity we
+    match a chosen primary against (a pad exposes several nodes under one)."""
+    try:
+        i = dev.info
+        return f"{i.vendor:04x}:{i.product:04x}"
+    except Exception:
+        return "0000:0000"
+
+
+def _is_keyboard(dev):
+    """True for a USB key-sending node — the pad and any attached keyboards.
+
+    Filters to BUS_USB so the non-USB CEC/power-button nodes never qualify, and
+    requires an ENTER key so mice (buttons only, no ENTER) are excluded. A pad's
+    two keyboard nodes both pass; we read all of them and dedupe by vid:pid."""
+    try:
+        if dev.info.bustype != ecodes.BUS_USB:
+            return False
+        keys = dev.capabilities().get(ecodes.EV_KEY, [])
+    except Exception:
+        return False
+    return bool(keys) and (ecodes.KEY_ENTER in keys or ecodes.KEY_KPENTER in keys)
+
+
+# USB ids of recognized macropads. A pad advertises a full HID keymap (so its
+# real key-count can't distinguish it from a full keyboard), so we recognize it
+# by identity: it becomes the auto-primary and is offered the boot calibration
+# wizard. Extend as pads are added; the "sayo" name match catches re-badged
+# SayoDevice units sold unbranded.
+KNOWN_PADS = {"8089:0008"}
+
+
+def _is_pad(dev):
+    """True for a recognized macropad (by USB id or a SayoDevice name)."""
+    return _dev_vidpid(dev) in KNOWN_PADS or "sayo" in (dev.name or "").lower()
+
+
 PARAM_STEP = 0.05
 SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 
@@ -176,7 +227,9 @@ class KeyboardController:
         self.inst   = inst
         self._stop  = threading.Event()
         self._thread= None
-        self.dev    = None
+        self._primary_logged  = None   # last vid:pid we logged as primary
+        self._primary_present = False  # is the chosen primary attached right now?
+                                       # (False ⇒ the source filter is dropped)
 
         self._param_layer   = 0
         self._param_idx     = 0
@@ -220,67 +273,212 @@ class KeyboardController:
     def stop(self):
         self._stop.set()
 
-    def _find_numpad(self):
-        """Find a device that has the KP* keycodes. Prefer SIGMACHIP
-        (common USB numpad chipset) then 'pad'/'numeric' in the name,
-        otherwise fall through to the last candidate (newest USB)."""
-        candidates = []
+    def list_keyboards(self):
+        """One entry per physical keyboard (deduped by vid:pid) for the INPUT
+        page's device picker: [{'vidpid': 'vvvv:pppp', 'name': str}, …].
+        Opens each node briefly and closes it — safe to call off-thread."""
+        if not HAVE_EVDEV:
+            return []
+        seen = {}
         for path in list_devices():
             try:
                 d = InputDevice(path)
             except Exception:
                 continue
-            caps = d.capabilities()
-            keys = caps.get(ecodes.EV_KEY, [])
-            if ecodes.KEY_KP5 in keys and ecodes.KEY_KPENTER in keys:
-                candidates.append(d)
-        if not candidates:
-            return None
-        for d in candidates:
-            if "sigmachip" in (d.name or "").lower():
-                return d
-        for d in candidates:
-            n = (d.name or "").lower()
-            if "pad" in n or "numeric" in n:
-                return d
-        return candidates[-1]
-    # ------------------------------------------------------------- main loop
-    def _loop(self):
-        while not self._stop.is_set():
-            if self.dev is None:
-                self.dev = self._find_numpad()
-                if not self.dev:
-                    time.sleep(2)
-                    continue
-                log.info("numpad connected: %s (%s)", self.dev.path, self.dev.name)
             try:
-                for event in self.dev.read_loop():
-                    if self._stop.is_set():
-                        return
-                    if event.type != ecodes.EV_KEY:
-                        continue
-                    key = categorize(event)
-                    code = key.keycode if isinstance(key.keycode, str) \
-                                       else key.keycode[0]
-                    name = NUMPAD_MAP.get(code)
-                    if name is None:
-                        continue
-
-                    if key.keystate == key.key_down:
-                        self._on_key_down(name)
-                    elif key.keystate == key.key_up:
-                        self._on_key_up(name)
-                    # key.key_hold (OS auto-repeat while held) is ignored —
-                    # hold detection uses our own timer, not repeat events.
-
-            except OSError as e:
-                log.warning("numpad disconnected (%s) — will reconnect", e)
+                if _is_keyboard(d):
+                    seen.setdefault(_dev_vidpid(d), d.name)
+            finally:
                 try:
-                    self.dev.close()
+                    d.close()
                 except Exception:
                     pass
-                self.dev = None
-                time.sleep(1)   # brief pause before scanning for reconnect
+        return [{"vidpid": vp, "name": nm} for vp, nm in seen.items()]
+
+    def detect_pad(self):
+        """Return {'vidpid','name'} for an attached recognized macropad, else
+        None. Used by the boot calibration offer (control/menu) — a pad is
+        recognized by USB identity because it advertises a full HID keymap and
+        so looks like any other keyboard to a capability scan."""
+        if not HAVE_EVDEV:
+            return None
+        for path in list_devices():
+            try:
+                d = InputDevice(path)
+            except Exception:
+                continue
+            try:
+                if _is_keyboard(d) and _is_pad(d):
+                    return {"vidpid": _dev_vidpid(d), "name": d.name or "pad"}
+            finally:
+                try:
+                    d.close()
+                except Exception:
+                    pass
+        return None
+
+    # ------------------------------------------------------ keymap / dispatch
+    def _resolve(self, code):
+        """Integer evdev keycode → logical key name. cfg.keymap (set on the
+        INPUT page) wins; otherwise the built-in numpad DEFAULT_MAP. Returns
+        None for a code nothing binds."""
+        km = self.inst.cfg.keymap
+        if km:
+            n = km.get(str(code))
+            if n is not None:
+                return n
+        return DEFAULT_MAP.get(code)
+
+    def _handle_event(self, dev, ev):
+        """Process one EV_KEY event from any keyboard node."""
+        if ev.value == 2:        # OS auto-repeat while held — hold uses our timer
+            return
+        menu = self.inst.menu
+
+        # INPUT-page LEARN: consume the raw key-down to bind it, never dispatch.
+        # Works even on a code nothing maps yet (that's the point of learning).
+        # menu._learn_dev narrows capture to one device: the calibration wizard
+        # sets it to the pad being calibrated, so keys from a second keyboard
+        # fall through to normal dispatch and can still skip/cancel the walk.
+        # EDIT KEYS leaves it None — capture from whatever you press.
+        if ev.value == 1 and getattr(menu, "_input_learn", False):
+            want = getattr(menu, "_learn_dev", None)
+            if want is None or _dev_vidpid(dev) == want:
+                menu.learn_key(ev.code, _dev_vidpid(dev))
+                return
+
+        name = self._resolve(ev.code)
+        if name is None:
+            return
+
+        # Source filter: during play only the chosen primary drives the
+        # instrument, so other attached keyboards never touch the output. While
+        # a menu page is open, ANY keyboard may navigate it — the bootstrap
+        # valve that lets you configure an as-yet-unmapped pad from a spare
+        # keyboard. An empty primary means auto (any keyboard drives play).
+        #
+        # If the chosen primary is not currently attached the filter is dropped
+        # and any keyboard drives play: otherwise unplugging the pad (or booting
+        # without it) would leave no key able to even open the menu and pick
+        # another device — a lockout with no way out but editing prefs.json.
+        if not menu.active:
+            primary = self.inst.cfg.input_primary
+            if primary and self._primary_present and _dev_vidpid(dev) != primary:
+                return
+
+        if ev.value == 1:
+            self._on_key_down(name)
+        elif ev.value == 0:
+            self._on_key_up(name)
+
+    # ------------------------------------------------------------- main loop
+    def _loop(self):
+        """Read every USB keyboard node at once via a selector, re-scanning on
+        a ~2s cadence for hotplug. No exclusive grab, so many nodes coexist and
+        the keys also still reach the console (unchanged from the old numpad)."""
+        sel      = selectors.DefaultSelector()
+        open_devs = {}          # path -> InputDevice
+        last_scan = 0.0
+
+        def _drop(path):
+            d = open_devs.pop(path, None)
+            if d is None:
+                return
+            try:
+                sel.unregister(d)
+            except Exception:
+                pass
+            try:
+                d.close()
+            except Exception:
+                pass
+
+        def _rescan():
+            new_pad = False
+            present = set(list_devices())
+            for path in list(open_devs):
+                if path not in present:
+                    log.info("input node gone: %s", path)
+                    _drop(path)
+            for path in present:
+                if path in open_devs:
+                    continue
+                try:
+                    d = InputDevice(path)
+                except Exception:
+                    continue
+                if _is_keyboard(d):
+                    try:
+                        sel.register(d, selectors.EVENT_READ)
+                        open_devs[path] = d
+                        new_pad = new_pad or _is_pad(d)
+                        log.info("input node: %s (%s %s)",
+                                 path, _dev_vidpid(d), d.name)
+                    except Exception:
+                        try:
+                            d.close()
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        d.close()
+                    except Exception:
+                        pass
+
+            # A pad just appeared: re-offer calibration if it still needs it.
+            # This is the way back in after a missed/timed-out offer — on a rig
+            # where the unmapped pad is the only input, replugging it is the
+            # only gesture available. The menu decides whether to actually show
+            # anything (already calibrated / menu busy → no-op).
+            if new_pad:
+                try:
+                    self.inst.menu.maybe_offer_calibration()
+                except Exception as e:
+                    log.warning("calibration re-offer: %s", e)
+
+        while not self._stop.is_set():
+            now = time.monotonic()
+            if not open_devs or now - last_scan > 2.0:
+                _rescan()
+                self._log_primary(open_devs)
+                last_scan = now
+            if not open_devs:
+                time.sleep(1)
+                continue
+            for key, _mask in sel.select(timeout=1.0):
+                if self._stop.is_set():
+                    return
+                d = key.fileobj
+                try:
+                    events = list(d.read())
+                except BlockingIOError:
+                    continue
+                except OSError as e:
+                    log.warning("input node read error %s (%s) — dropping",
+                                d.path, e)
+                    _drop(d.path)
+                    continue
+                for ev in events:
+                    if ev.type == ecodes.EV_KEY:
+                        self._handle_event(d, ev)
+
+    def _log_primary(self, open_devs):
+        """Track whether the chosen primary is attached (the source filter in
+        _handle_event keys off it) and log the choice whenever it changes —
+        the line to check after a restart."""
+        primary = self.inst.cfg.input_primary
+        if not primary:
+            self._primary_present = False
+            state = "auto"
+        else:
+            match = [d.name for d in open_devs.values()
+                     if _dev_vidpid(d) == primary]
+            self._primary_present = bool(match)
+            state = (f"{primary} {match[0]}" if match else
+                     f"{primary} (not attached — any keyboard drives play)")
+        if state != self._primary_logged:
+            self._primary_logged = state
+            log.info("primary input: %s", state)
 
     # --------------------------------------------------------- hold vs tap
     def _on_key_down(self, name):
@@ -349,6 +547,13 @@ class KeyboardController:
         if menu.active:
             if menu._midi_editing or menu._assigning or menu._confirm_delete:
                 menu._cancel_edits()
+                return
+            # INPUT sub-view (DEVICES / LEARN / WIZARD): back out one level
+            # rather than closing the whole menu. (While LEARN is ARMED the
+            # keyboard loop consumes '.' to bind it, so this only fires when
+            # picking — or, in the wizard, from a non-pad keyboard.)
+            if getattr(menu, "_input_view", "MENU") != "MENU":
+                menu._input_back()
                 return
             from control.menu import PAGES
             if menu.page == PAGES.index("IMPORT") and menu._usb_dev:

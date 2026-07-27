@@ -75,6 +75,12 @@ class RecurInstrument:
         if getattr(cfg, "resume", False):
             cfg.load_prefs()
 
+        # …with one standing exception: the input-device config (which keyboard
+        # is the primary controller, and its learned keymap) is a property of
+        # the rig, not of the session, so it loads on EVERY boot. Without this
+        # a calibrated macropad would come up unmapped after every power-cut.
+        cfg.load_input_prefs()
+
         # Per-mode volatile state — saved before leaving a mode, restored on
         # re-entry. Initialized from prefs when resuming, otherwise from Config
         # defaults (a clean, effect-free first pass).
@@ -617,6 +623,11 @@ class RecurInstrument:
 
         self.sampler.apply_video_scale()
         self.sampler.apply_video_zoom()
+
+        # A recognized macropad with no keymap can't drive anything yet — and
+        # can't be configured by its own keys either. Offer the calibration
+        # walk on the SPI display, which any pad key can accept.
+        self.menu.maybe_offer_calibration()
 
         log.info("ready. numpad ENTER puts the active tab's mode on screen, "
                  "'.' opens SETTINGS.")

@@ -59,7 +59,40 @@ log = logging.getLogger("menu")
 # Presets are NOT here: all three stores are grid screens on their own tabs
 # (SHADER → SHADER PRESETS, FX → FX PRESETS, LIVE → PRESETS), reached with the
 # tab key. They were menu list-pages until the grids replaced them.
-PAGES = ("BROWSER", "SHADERS", "SETTINGS", "MIDI", "IMPORT")
+PAGES = ("BROWSER", "SHADERS", "SETTINGS", "MIDI", "IMPORT", "INPUT")
+
+
+# INPUT page — the actions a pad key can be bound to. `name` is exactly the
+# logical key string control/keyboard._dispatch switches on, so binding a pad
+# key to one of these makes it behave like that numpad key everywhere. Phase 1
+# reproduces the existing controls; direct toggles come in Phase 2. The final
+# "unbind" entry (name None) clears a key.
+INPUT_ACTIONS = [
+    ("SHADER TAB",   "NUM"),
+    ("FX TAB",       "/"),
+    ("SAMPLER TAB",  "*"),
+    ("LIVE TAB",     "-"),
+    ("SLOT 1", "1"), ("SLOT 2", "2"), ("SLOT 3", "3"),
+    ("SLOT 4", "4"), ("SLOT 5", "5"), ("SLOT 6", "6"),
+    ("SLOT 7", "7"), ("SLOT 8", "8"), ("SLOT 9", "9"),
+    ("PAGE +",        "+"),
+    ("PAGE - / BKSP", "BKSP"),
+    ("ENTER",         "ENTER"),
+    ("BACK ( . )",    "."),
+    ("STAGED ( 0 )",  "0"),
+    ("— unbind —",    None),
+]
+
+# The calibration wizard walks these in order, asking for a key per action —
+# the inverse of EDIT KEYS (key first, then pick its action). Action-first is
+# the right way round for a first-run walk: it terminates, it covers every
+# control exactly once, and it can't leave you with a half-playable pad because
+# you forgot which keys you'd already done. EDIT KEYS stays key-first, which is
+# the right way round for fixing one key later.
+WIZARD_STEPS = [(lbl, nm) for lbl, nm in INPUT_ACTIONS if nm is not None]
+
+WIZARD_OFFER_TIMEOUT = 60.0   # dismiss an unanswered offer (re-offered on replug)
+WIZARD_STEP_TIMEOUT  = 45.0   # abandon a walk nobody is answering
 
 
 def _drive_label(path):
@@ -103,6 +136,20 @@ class Menu:
         self._usb_import_busy = False # True while a copy/transcode thread is running
         self._usb_cancel      = threading.Event()  # set to abort in-progress import
         self._lfo_taps        = []    # monotonic times of recent TAP presses
+        # INPUT page (USB keyboard config).
+        self._input_view   = "MENU"   # "MENU" (rows) | "DEVICES" | "LEARN" | "WIZARD"
+        self._input_devs   = []       # cached keyboard list for the picker
+        self._input_learn  = False    # True while ARMED to capture the next key-down
+        self._learn_code   = None     # captured raw keycode awaiting an action pick
+        self._learn_status = ""       # transient result line ("SLOT 7 ← key 96")
+        self._learn_timer  = None     # arm-timeout, so an unused arm self-clears
+        self._learn_dev    = None     # vid:pid to capture from (None = any device)
+        self._learn_dev_seen = None   # vid:pid the last learned key came FROM
+        # Calibration wizard (WIZARD view) — see _wizard_* below.
+        self._wiz_phase    = ""       # "OFFER" | "WALK" | "DONE"
+        self._wiz_pad      = None     # {'vidpid','name'} being calibrated
+        self._wiz_step     = 0        # index into WIZARD_STEPS
+        self._wiz_bound    = 0        # keys actually bound this run
 
     def open_page(self, page_name):
         """Open a menu page by name, running its leave/enter hooks.
@@ -121,6 +168,7 @@ class Menu:
         self.sel    = 0
         self.active = True
         self._cancel_edits()
+        self._reset_input()
         if page_name == "BROWSER":
             threading.Thread(
                 target=self.inst.sampler.rescan_clips, daemon=True).start()
@@ -148,6 +196,7 @@ class Menu:
             self.inst.apply_menu_selection(clip_idx=self._pending_clip_idx,
                                            gen_shader=self._pending_shader)
         self._cancel_edits()
+        self._reset_input()
         log.info("menu -> %s", "ON" if self.active else "OFF")
 
     # ───────────────────────────────────────────────────────── input
@@ -179,6 +228,12 @@ class Menu:
             # so 7/9 can't page out mid-edit).
             if self._settings_editing:
                 self._handle_settings_edit(name)
+                return
+
+            # INPUT sub-views (DEVICES picker / LEARN) own their keys entirely —
+            # checked before page navigation so 7/9 can't page out mid-config.
+            if PAGES[self.page] == "INPUT" and self._input_view != "MENU":
+                self._handle_input_sub(name)
                 return
 
             # Page navigation (only reached when no edit mode is active).
@@ -236,6 +291,14 @@ class Menu:
         if page == "IMPORT":
             lst = self._usb_files if self._usb_dev else self._usb_drives
             return max(1, len(lst))
+        if page == "INPUT":
+            if self._input_view == "DEVICES":
+                return max(1, len(self._input_devs))
+            if self._input_view == "LEARN":
+                return len(INPUT_ACTIONS)
+            if self._input_view == "WIZARD":
+                return 1          # no list — the walk owns the screen
+            return len(self._input_menu_items())
         # SETTINGS: param count is dynamic (depends on loaded shader), so compute live.
         return len(self._settings())
 
@@ -254,6 +317,8 @@ class Menu:
                 items[self.sel].adjust(d)
         elif page == "MIDI":
             self._midi_adjust(d)
+        elif page == "INPUT" and self._input_view == "MENU":
+            self._input_adjust(d)
         # BROWSER / SHADERS: slot assignment is via ENTER + slot key, not 4/6
 
     def _action_primary(self):
@@ -271,6 +336,8 @@ class Menu:
             self._midi_begin_edit()
         elif page == "IMPORT":
             self._usb_action()
+        elif page == "INPUT":
+            self._input_activate_row()
 
     def _action_enter(self):
         """ENTER: enter slot-assign mode for BROWSER/SHADERS; eject
@@ -831,6 +898,384 @@ class Menu:
         if self.inst.cfg.overlay_on != state:
             self.inst.overlay_toggle()
 
+    # ───────────────────────────────────────────────────────── INPUT page
+    # A USB keyboard config surface: pick the primary controller, set the pad's
+    # used grid, and press-to-learn each key to an action. The pad is a
+    # programmable macropad emitting arbitrary codes, so binding is by capturing
+    # a real key press (learn_key, fed raw by control/keyboard._handle_event)
+    # rather than assuming numpad keycodes. Three sub-views on self._input_view:
+    # MENU (the rows below) → DEVICES (primary picker) / LEARN (key→action).
+
+    def _reset_input(self):
+        """Drop any INPUT sub-view back to the row list and disarm learning.
+        Called on every page open/close so learn mode never leaks."""
+        self._input_view  = "MENU"
+        self._input_learn = False
+        self._learn_code  = None
+        self._learn_dev   = None
+        self._wiz_phase   = ""
+        self._wiz_pad     = None
+        self._wiz_step    = 0
+        self._cancel_learn_timer()
+
+    def _cancel_learn_timer(self):
+        t = self._learn_timer
+        self._learn_timer = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    def _save_prefs(self):
+        """Persist immediately after an INPUT change (device / keymap / grid) so
+        a learned mapping survives a restart without a manual SAVE PREFS."""
+        try:
+            self.inst.cfg.save_prefs(sampler_mode=self.inst.sampler.mode)
+        except Exception as e:
+            log.warning("input save_prefs: %s", e)
+
+    def _input_menu_items(self):
+        """(id, label, value) for the INPUT row list."""
+        cfg = self.inst.cfg
+        return [
+            ("device", "PRIMARY DEVICE", cfg.input_primary or "auto (any)"),
+            ("cols",   "COLS",           str(cfg.pad_cols)),
+            ("rows",   "ROWS",           str(cfg.pad_rows)),
+            ("wizard", "CALIBRATE PAD",  f"{len(WIZARD_STEPS)} steps ■"),
+            ("edit",   "EDIT KEYS",      f"{len(cfg.keymap)} mapped ■"),
+            ("clear",  "CLEAR MAP",      "reset ■"),
+        ]
+
+    def _input_adjust(self, d):
+        """4/6 on the INPUT row list: step COLS / ROWS (1..12)."""
+        items = self._input_menu_items()
+        if not (0 <= self.sel < len(items)):
+            return
+        rid = items[self.sel][0]
+        cfg = self.inst.cfg
+        if rid == "cols":
+            cfg.pad_cols = max(1, min(12, cfg.pad_cols + d))
+            self._save_prefs()
+        elif rid == "rows":
+            cfg.pad_rows = max(1, min(12, cfg.pad_rows + d))
+            self._save_prefs()
+
+    def _input_activate_row(self):
+        """5 / ENTER on the INPUT row list."""
+        items = self._input_menu_items()
+        if not (0 <= self.sel < len(items)):
+            return
+        rid = items[self.sel][0]
+        if rid == "device":
+            self._input_devs = [{"vidpid": "", "name": "AUTO (any keyboard)"}]
+            self._input_devs += self.inst.kb.list_keyboards()
+            self._input_view = "DEVICES"
+            self.sel = 0
+        elif rid == "wizard":
+            # Calibrate a recognized pad if one is attached, else whatever is
+            # currently primary (so the walk also works for an ordinary
+            # keyboard you want to re-map wholesale).
+            pad = self.inst.kb.detect_pad()
+            if pad is None and self.inst.cfg.input_primary:
+                pad = next((d for d in self.inst.kb.list_keyboards()
+                            if d["vidpid"] == self.inst.cfg.input_primary), None)
+            if pad is None:
+                self.inst.osd.show("NO PAD DETECTED — set PRIMARY first")
+                return
+            self.start_calibration(pad, offer=False)
+        elif rid == "edit":
+            self._input_view = "LEARN"
+            self.sel = 0
+            self._learn_status = ""
+            self._arm_learn()
+        elif rid == "clear":
+            # Also drop the ownership record, so an attached pad is offered the
+            # calibration walk again on the next boot.
+            self.inst.cfg.keymap     = {}
+            self.inst.cfg.keymap_dev = ""
+            self._save_prefs()
+            self.inst.osd.show("KEYMAP CLEARED")
+        # cols/rows are adjusted with 4/6, not activated
+
+    # ── DEVICES picker ──────────────────────────────────────────────────────
+    def _input_pick_device(self):
+        devs = self._input_devs
+        if 0 <= self.sel < len(devs):
+            vp = devs[self.sel]["vidpid"]
+            self.inst.cfg.input_primary = vp
+            self._save_prefs()
+            self.inst.osd.show(f"PRIMARY: {devs[self.sel]['name'][:18]}")
+        self._input_view = "MENU"
+        self.sel = 0
+
+    # ── LEARN (press-to-learn) ──────────────────────────────────────────────
+    def _arm_learn(self, dev=None, timeout=8.0):
+        """Arm capture of the next physical key-down.
+
+        `dev` restricts capture to one vid:pid (the wizard, so a second
+        keyboard can still drive the menu); None captures from any keyboard.
+        A timeout self-clears an unused arm — the only escape when capture is
+        unrestricted, since then every key-down is consumed for binding (see
+        control/keyboard._handle_event).
+        """
+        self._input_learn = True
+        self._learn_code  = None
+        self._learn_dev   = dev
+        self._cancel_learn_timer()
+        self._learn_timer = threading.Timer(timeout, self._learn_timeout)
+        self._learn_timer.daemon = True
+        self._learn_timer.start()
+
+    def _learn_timeout(self):
+        # Fired off-thread; only act if still armed on an INPUT capture view.
+        if not (self.active and self._input_learn):
+            return
+        if self._input_view == "WIZARD":
+            if self._wiz_phase == "OFFER":
+                self._wizard_close("")              # nobody answered — just go
+            else:
+                self._wizard_abort("CALIBRATION: timed out")
+        elif self._input_view == "LEARN":
+            self._reset_input()
+            try:
+                self.inst.osd.show("LEARN: timed out")
+            except Exception:
+                pass
+
+    def learn_key(self, code, vidpid=None):
+        """Called by the keyboard thread with the raw keycode of the pressed
+        pad key while armed (and the device it came from). In the wizard the
+        key binds straight to the step being asked for; in EDIT KEYS it
+        switches to picking an action."""
+        self._cancel_learn_timer()
+        if self._input_view == "WIZARD":
+            self._wizard_key(code)
+            return
+        self._learn_dev_seen = vidpid
+        self._learn_code  = code
+        self._input_learn = False        # now pick an action for this key
+        self.sel          = 0
+        self._learn_status = f"key {code}: pick action"
+
+    def _input_bind_action(self):
+        """ENTER on the action list: bind (or unbind) the captured key, then
+        re-arm for the next key."""
+        if self._learn_code is None:
+            return
+        label, name = INPUT_ACTIONS[self.sel]
+        km  = self.inst.cfg.keymap
+        key = str(self._learn_code)
+        if name is None:
+            km.pop(key, None)
+            self._learn_status = f"unbound key {self._learn_code}"
+        else:
+            km[key] = name
+            self._learn_status = f"{label} ← key {self._learn_code}"
+            # The map now belongs to whichever device taught this key — so a
+            # pad tweaked here is not re-offered the wizard, and a key learned
+            # from a different keyboard moves ownership honestly.
+            if self._learn_dev_seen:
+                self.inst.cfg.keymap_dev = self._learn_dev_seen
+        self._save_prefs()
+        self._learn_code = None
+        self._arm_learn()               # ready for the next key
+
+    # ── WIZARD (first-run pad calibration) ──────────────────────────────────
+    # An unmapped macropad is a chicken-and-egg problem: it can't drive the
+    # instrument, and it can't be configured by its own keys either, so on a rig
+    # with nothing else plugged in there is no way in. The wizard is the way in
+    # — the one interaction an unmapped pad CAN perform is "a key went down", so
+    # that alone accepts the offer and answers every step of the walk. It ends
+    # by making the pad primary, which is only safe to do once it's mapped (a
+    # primary with an empty keymap is exactly the lockout this avoids).
+
+    def maybe_offer_calibration(self):
+        """Offer the walk when a recognized pad is attached and the stored
+        keymap wasn't learned on THAT pad. Called at boot (main.run) and again
+        whenever a pad is hotplugged (control/keyboard._rescan) — so a missed
+        or timed-out offer is always one unplug/replug away, which matters on a
+        rig where the unmapped pad is the ONLY input device.
+
+        Keyed on cfg.keymap_dev, not on "is the keymap empty": a couple of keys
+        learned from some other keyboard must not count as a configured pad,
+        and swapping in a different pad should offer to calibrate the new one.
+        Once the walk completes, keymap_dev is the pad, so it never fires again
+        (input prefs load on every boot, so this survives power-cuts)."""
+        try:
+            cfg = self.inst.cfg
+            # Never hijack a menu the user is already using (and never restart
+            # an offer/walk that's already on screen — a pad presents two nodes,
+            # so a single replug calls this twice).
+            if self.active:
+                return
+            pad = self.inst.kb.detect_pad()
+            if not pad:
+                return
+            if cfg.keymap and cfg.keymap_dev == pad["vidpid"]:
+                return
+            log.info("pad detected with no keymap: %s %s — offering calibration",
+                     pad["vidpid"], pad["name"])
+            self.start_calibration(pad, offer=True)
+        except Exception as e:
+            log.warning("calibration offer: %s", e)
+
+    def start_calibration(self, pad, offer=False):
+        """Open the INPUT page on the wizard. offer=True asks first (the boot
+        path); False starts the walk immediately (the CALIBRATE PAD row)."""
+        self._wiz_pad   = pad
+        self._wiz_step  = 0
+        self._wiz_bound = 0
+        self._learn_status = ""
+        self.page   = PAGES.index("INPUT")
+        self.sel    = 0
+        self._pending_clip_idx = None
+        self._pending_shader   = None
+        self._cancel_edits()
+        self.active      = True
+        self._input_view = "WIZARD"
+        if offer:
+            self._wiz_phase = "OFFER"
+            self._arm_learn(dev=pad["vidpid"], timeout=WIZARD_OFFER_TIMEOUT)
+        else:
+            self._wizard_begin()
+
+    def _wizard_begin(self):
+        self._wiz_phase = "WALK"
+        self._wiz_step  = 0
+        self._wiz_bound = 0
+        self._learn_status = ""
+        self._arm_learn(dev=self._wiz_pad["vidpid"], timeout=WIZARD_STEP_TIMEOUT)
+
+    def _wizard_key(self, code):
+        """A key-down from the pad being calibrated (routed by learn_key)."""
+        if self._wiz_phase == "OFFER":
+            self._wizard_begin()
+            return
+        if self._wiz_phase != "WALK":
+            return
+        label, name = WIZARD_STEPS[self._wiz_step]
+        km   = self.inst.cfg.keymap
+        key  = str(code)
+        prev = km.get(key)
+        km[key] = name
+        # Reusing a key you already answered with silently drops the earlier
+        # action, so say which one — the walk can't detect the intent, but the
+        # user can see it and fix it with EDIT KEYS afterwards.
+        self._learn_status = (f"{label} ← key {code}" if prev in (None, name)
+                              else f"{label} ← key {code}  (took it from {prev})")
+        self._wiz_bound += 1
+        self._save_prefs()
+        self._wizard_advance()
+
+    def _wizard_advance(self, skip=False):
+        if skip:
+            self._learn_status = f"skipped {WIZARD_STEPS[self._wiz_step][0]}"
+        self._wiz_step += 1
+        if self._wiz_step >= len(WIZARD_STEPS):
+            self._wizard_done()
+        else:
+            self._arm_learn(dev=self._wiz_pad["vidpid"],
+                            timeout=WIZARD_STEP_TIMEOUT)
+
+    def _wizard_done(self):
+        """Walk complete: the pad is mapped, so make it the primary device —
+        now that it can actually drive everything, restricting play to it is
+        what the user wanted all along."""
+        cfg = self.inst.cfg
+        self._input_learn = False
+        self._learn_dev   = None
+        self._cancel_learn_timer()
+        if self._wiz_pad:
+            cfg.input_primary = self._wiz_pad["vidpid"]
+            cfg.keymap_dev    = self._wiz_pad["vidpid"]
+        self._wiz_phase = "DONE"
+        self._save_prefs()
+        log.info("pad calibrated: %s — %d keys mapped, now primary",
+                 (self._wiz_pad or {}).get("name", "?"), len(cfg.keymap))
+
+    def _wizard_abort(self, msg="CALIBRATION CANCELLED"):
+        """Leave the walk early, KEEPING whatever was bound so far (a partial
+        map is still useful, and EDIT KEYS can finish it). The primary is left
+        alone — promoting a half-mapped pad is the lockout we're avoiding."""
+        bound = self._wiz_bound
+        self._wizard_close(f"{msg} ({bound} bound)" if bound else msg)
+
+    def _wizard_close(self, msg=""):
+        """Drop the wizard and close the menu (it opened itself, so leaving it
+        open on the row list would be a surprise)."""
+        self._reset_input()
+        self.sel = 0
+        if msg:
+            try:
+                self.inst.osd.show(msg)
+            except Exception:
+                pass
+        if self.active:
+            self.toggle()
+
+    def _handle_wizard(self, name):
+        """Keys reaching the wizard from a NON-pad keyboard (the pad's own
+        key-downs are consumed by learn_key). This is the second-keyboard
+        escape hatch: skip a step, or stop the walk."""
+        if self._wiz_phase == "OFFER":
+            if name in ("5", "ENTER"):
+                self._wizard_begin()
+            elif name in ("BKSP", "7", "9", "0"):
+                self._wizard_close("")
+            return
+        if self._wiz_phase == "DONE":
+            self._wizard_close("")
+            return
+        if name == "BKSP":
+            self._wizard_advance(skip=True)
+        elif name in ("5", "ENTER"):
+            self._wizard_abort()
+
+    def _input_back(self):
+        """'.' while in an INPUT sub-view (see control/keyboard._dot_press).
+        From picking an action → back to armed; otherwise → the row list."""
+        if self._input_view == "WIZARD":
+            if self._wiz_phase == "WALK":
+                self._wizard_abort()
+            else:
+                self._wizard_close("")
+            return
+        if self._input_view == "LEARN" and self._learn_code is not None:
+            self._learn_code = None
+            self._arm_learn()
+            return
+        self._reset_input()
+        self.sel = 0
+
+    def _handle_input_sub(self, name):
+        """Keys while a DEVICES / LEARN sub-view is open (routed from handle()).
+        7/9 do NOT page here — the sub-view owns every key."""
+        view = self._input_view
+        if view == "WIZARD":
+            self._handle_wizard(name)
+            return
+        if view == "DEVICES":
+            if name in ("+", "8"):
+                self._move(-1)
+            elif name in ("BKSP", "2"):
+                self._move(+1)
+            elif name in ("5", "ENTER"):
+                self._input_pick_device()
+            return
+        if view == "LEARN":
+            # Armed: keydowns are consumed by the keyboard thread (learn_key),
+            # so a key reaching here is a key_up or a non-mapping key — ignore.
+            if self._learn_code is None:
+                return
+            if name in ("+", "8"):
+                self._move(-1)
+            elif name in ("BKSP", "2"):
+                self._move(+1)
+            elif name in ("5", "ENTER"):
+                self._input_bind_action()
+            return
+
     # ───────────────────────────────────────────────────────── rendering
     def render(self, img, draw, font_lg, font_md, font_sm, W, H, palette):
         """Draw the active menu page onto the PIL image."""
@@ -968,6 +1413,43 @@ class Menu:
                 draw.text((W // 2, H - 32), self._usb_status[:36],
                           font=font_sm, fill=C_HL, anchor="mm")
 
+        elif page == "INPUT":
+            cfg  = self.inst.cfg
+            view = self._input_view
+            if view == "WIZARD":
+                self._render_wizard(draw, font_lg, font_md, font_sm,
+                                    W, H, palette)
+            elif view == "DEVICES":
+                draw.text((10, 44), "5/ENTER select   . back",
+                          font=font_sm, fill=C_DIM)
+                rows = []
+                for dv in self._input_devs:
+                    mark = "▸ " if dv["vidpid"] == cfg.input_primary else "  "
+                    rows.append((mark + dv["name"][:22], dv["vidpid"] or "auto"))
+                if not rows:
+                    rows = [("  (no keyboards)", "")]
+                self._render_kv(draw, font_sm, W, H, palette, rows, y0=66)
+            elif view == "LEARN":
+                if self._learn_code is None:
+                    draw.text((10, 44), "PRESS A KEY ON THE PAD   (wait = exit)",
+                              font=font_sm, fill=C_HL)
+                else:
+                    draw.text((10, 44),
+                              f"key {self._learn_code}: pick action  ENTER bind",
+                              font=font_sm, fill=C_EDIT)
+                cur  = (cfg.keymap.get(str(self._learn_code))
+                        if self._learn_code is not None else None)
+                rows = [(lbl, nm == cur) for lbl, nm in INPUT_ACTIONS]
+                self._render_list(draw, font_sm, W, H - 24, palette, rows, y0=64)
+                if self._learn_status:
+                    draw.text((W // 2, H - 32), self._learn_status[:40],
+                              font=font_sm, fill=C_ACCENT, anchor="mm")
+            else:  # MENU
+                draw.text((10, 44), "5/ENTER open   4/6 cols·rows   . back",
+                          font=font_sm, fill=C_DIM)
+                rows = [(lbl, val) for _id, lbl, val in self._input_menu_items()]
+                self._render_kv(draw, font_sm, W, H, palette, rows, y0=66)
+
         else:  # SETTINGS
             if self._settings_editing:
                 draw.text((10, 44), "+/BKSP change value    ENTER done",
@@ -978,13 +1460,79 @@ class Menu:
 
         # footer hint
         draw.line([0, H - 22, W, H - 22], fill=C_DIM, width=1)
-        if page == "SETTINGS":
+        if page == "INPUT" and self._input_view == "WIZARD":
+            hint = {"OFFER": "any pad key start   ENTER start   . skip",
+                    "WALK":  "press the pad key   BKSP skip   . stop",
+                    "DONE":  "ENTER close"}.get(self._wiz_phase, "")
+        elif page == "SETTINGS":
             hint = ("+/BKSP change value   ENTER done"
                     if self._settings_editing else
                     "+/BKSP scroll   ENTER edit/do   7/9 page")
         else:
             hint = "+/BKSP scroll   4/6 adjust   5 ok   ENTER action   7/9 page"
         draw.text((W // 2, H - 11), hint, font=font_sm, fill=C_DIM, anchor="mm")
+
+    def _render_wizard(self, draw, font_lg, font_md, font_sm, W, H, palette):
+        """The calibration walk owns the whole screen — one instruction, large,
+        readable from playing distance. No list: at any moment there is exactly
+        one thing to do, and the pad can only do one thing (press a key)."""
+        C_BG, C_HL, C_LABEL, C_VALUE, C_DIM, C_ACCENT, C_EDIT = palette
+        cx   = W // 2
+        name = (self._wiz_pad or {}).get("name", "pad")
+
+        if self._wiz_phase == "OFFER":
+            draw.text((cx, 62),  "PAD DETECTED", font=font_md, fill=C_ACCENT,
+                      anchor="mm")
+            draw.text((cx, 92),  name[:30], font=font_sm, fill=C_VALUE,
+                      anchor="mm")
+            draw.text((cx, 140), "NOT MAPPED YET", font=font_sm, fill=C_DIM,
+                      anchor="mm")
+            draw.text((cx, 178), "PRESS ANY KEY ON THE PAD",
+                      font=font_md, fill=C_HL, anchor="mm")
+            draw.text((cx, 206), "to teach it the controls",
+                      font=font_sm, fill=C_DIM, anchor="mm")
+            draw.text((cx, 246), f"{len(WIZARD_STEPS)} keys, one prompt each",
+                      font=font_sm, fill=C_DIM, anchor="mm")
+            return
+
+        if self._wiz_phase == "DONE":
+            draw.text((cx, 76),  "PAD CALIBRATED", font=font_md, fill=C_ACCENT,
+                      anchor="mm")
+            draw.text((cx, 116), f"{len(self.inst.cfg.keymap)} keys mapped",
+                      font=font_md, fill=C_HL, anchor="mm")
+            draw.text((cx, 158), "PRIMARY DEVICE:", font=font_sm, fill=C_DIM,
+                      anchor="mm")
+            draw.text((cx, 180), name[:30], font=font_sm, fill=C_VALUE,
+                      anchor="mm")
+            draw.text((cx, 224), "the pad now drives the instrument",
+                      font=font_sm, fill=C_DIM, anchor="mm")
+            draw.text((cx, 246), "fix single keys with EDIT KEYS",
+                      font=font_sm, fill=C_DIM, anchor="mm")
+            return
+
+        # WALK — progress, then the one action being asked for.
+        total = len(WIZARD_STEPS)
+        step  = min(self._wiz_step, total - 1)
+        label = WIZARD_STEPS[step][0]
+        draw.text((10, 44), f"CALIBRATE {name[:16]}", font=font_sm, fill=C_DIM)
+        draw.text((W - 10, 44), f"{step + 1} / {total}", font=font_sm,
+                  fill=C_DIM, anchor="rt")
+
+        bx0, bx1, by = 10, W - 10, 68
+        draw.rectangle([bx0, by, bx1, by + 6], outline=C_DIM, width=1)
+        fill_w = int((bx1 - bx0 - 2) * step / max(1, total))
+        if fill_w > 0:
+            draw.rectangle([bx0 + 1, by + 1, bx0 + 1 + fill_w, by + 5],
+                           fill=C_ACCENT)
+
+        draw.text((cx, 118), "PRESS THE KEY FOR", font=font_sm, fill=C_DIM,
+                  anchor="mm")
+        draw.text((cx, 158), label[:18], font=font_lg, fill=C_HL, anchor="mm")
+        if self._learn_status:
+            draw.text((cx, 214), self._learn_status[:44], font=font_sm,
+                      fill=C_ACCENT, anchor="mm")
+        draw.text((cx, 246), "a key you've already used gets reassigned",
+                  font=font_sm, fill=C_DIM, anchor="mm")
 
     def _render_settings_list(self, draw, font, W, H, palette, y0=62):
         """SETTINGS as a plain scrolling list, grouped under headers.

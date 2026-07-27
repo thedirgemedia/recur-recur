@@ -81,6 +81,33 @@ class Config:
         # to keys from a menu page; now a preset's grid position IS its
         # identity — see preset_name() — so there is nothing to assign.)
 
+        # Input-device / keymap config — driven by the USB INPUT menu page.
+        #   input_primary : "vid:pid" (hex) of the chosen performance controller,
+        #                   or "" for auto (any USB keyboard drives play). Only
+        #                   the primary's keys reach the instrument during play,
+        #                   so other attached keyboards never disturb the output.
+        #   keymap        : { str(evdev_keycode): logical_action } overriding the
+        #                   built-in numpad map (control/keyboard.py NUMPAD_MAP).
+        #                   Empty ⇒ use the default map, so a plain USB numpad
+        #                   still works with no configuration. Keys are str so the
+        #                   dict round-trips to prefs.json unchanged.
+        #   pad_cols/rows : the pad's used grid size (the LEARN grid view).
+        #                   Orientation needs no setting — press-to-learn binds
+        #                   whatever key you press, so you hold the pad the way
+        #                   you'll use it and press in reading order.
+        #   keymap_dev    : "vid:pid" of the device the keymap was learned on,
+        #                   written by the wizard and by every EDIT KEYS bind.
+        #                   A keymap is only meaningful for the device it was
+        #                   taught on, so this is what decides whether an
+        #                   attached pad still needs calibrating — a stray key
+        #                   or two learned from some other keyboard must not
+        #                   count as "this pad is configured".
+        self.input_primary = ""
+        self.keymap        = {}
+        self.keymap_dev    = ""
+        self.pad_cols      = 6
+        self.pad_rows      = 4
+
         # Bumped whenever a preset file is written or removed. The display
         # caches its rendered frame against a state tuple; without this it
         # would have to stat every visible slot every frame to notice a save.
@@ -299,7 +326,21 @@ class Config:
         'video_scale_mode', 'clip_settings',
         'midi_target_cc',
         'lfos', 'lfo_bpm',
+        # USB INPUT page — keymap is a str→str dict, so it round-trips here
+        # with the scalars; no special handling needed. Also listed in
+        # _INPUT_ATTRS, which is loaded on every boot (see load_input_prefs).
+        'input_primary', 'keymap', 'keymap_dev', 'pad_cols', 'pad_rows',
     ]
+
+    # The input fields are DEVICE config, not session state: which keyboard
+    # drives the instrument and what its keys mean are properties of the rig,
+    # not of the patch you were last playing. A plain boot deliberately skips
+    # load_prefs() (see main.py) so every session starts clean — but skipping
+    # these too would drop a calibrated pad back to unmapped on every power-up,
+    # which would make the whole INPUT page pointless. So they are loaded
+    # separately and unconditionally, by load_input_prefs().
+    _INPUT_ATTRS = ['input_primary', 'keymap', 'keymap_dev',
+                    'pad_cols', 'pad_rows']
 
     # -------------------------------------------------- per-clip settings
     # Neutral defaults for a clip with nothing stored yet. bright/contrast are
@@ -438,6 +479,36 @@ class Config:
         if 'sampler_mode' in data:
             self._prefs_sampler_mode = data['sampler_mode']
         log.info("prefs loaded from %s", self.PREFS_PATH)
+
+    def load_input_prefs(self):
+        """Load ONLY the input-device fields from prefs.json.
+
+        Called on every boot, resume or not, so a calibrated pad keeps working
+        across power-ups while the rest of the session still starts clean.
+        Harmless after load_prefs() (it sets the same values from the same
+        file). Missing file / missing keys leave the Config defaults, which are
+        auto-primary + the built-in numpad map.
+        """
+        try:
+            with open(self.PREFS_PATH) as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            log.warning("input prefs load failed: %s", e)
+            return
+        for key in self._INPUT_ATTRS:
+            if data.get(key) is not None:
+                setattr(self, key, data[key])
+        # Keycodes are dict keys, so JSON has already stringified them; coerce
+        # anyway in case prefs.json was hand-edited with int keys.
+        if isinstance(self.keymap, dict):
+            self.keymap = {str(k): v for k, v in self.keymap.items()}
+        else:
+            self.keymap = {}
+        log.info("input prefs: primary=%s, %d keys mapped (learned on %s)",
+                 self.input_primary or "auto", len(self.keymap),
+                 self.keymap_dev or "—")
 
     def save_prefs(self, sampler_mode=None):
         data = {key: getattr(self, key, None) for key in self._PREFS_ATTRS}

@@ -455,9 +455,9 @@ There is **no touch input** — all control is numpad / MIDI / GPIO.
 ## Menu system
 
 Menu pages are reached through the **SETTINGS tab** (key **.** from any grid
-screen): its grid has five cells — BROWSER (key **7**), SHADERS (**8**),
-SETTINGS (**9**), MIDI (**4**), IMPORT (**5**) — and pressing one jumps
-straight into that page. Presets are *not* here any more; they are grids on
+screen): its grid has six cells — BROWSER (key **7**), SHADERS (**8**),
+SETTINGS (**9**), MIDI (**4**), IMPORT (**5**), INPUT (**6**) — and pressing
+one jumps straight into that page. Presets are *not* here any more; they are grids on
 the SHADER, FX and LIVE tabs (see *Preset grids*). To back out of a
 page, press **.** again — this cancels any in-progress sub-action first
 (assign / CC-edit / confirm-delete / USB browse) if one's active, otherwise
@@ -473,8 +473,8 @@ closes the page and jumps to that tab.
 | Key | Action in menu |
 |---|---|
 | **8 / 2** | selection up / down |
-| **4 / 6** | adjust value (SETTINGS, MIDI pages) |
-| **5** | primary action: load (BROWSER/SHADERS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT) |
+| **4 / 6** | adjust value (SETTINGS, MIDI pages; INPUT cols/rows) |
+| **5** | primary action: load (BROWSER/SHADERS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT), open row/pick (INPUT) |
 | **Enter** | SETTINGS: open the highlighted row for editing (or fire an action row); BROWSER/SHADERS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
 | **7 / 9** | previous / next page (wraps) |
 | **+** | scroll up (alternative to 8) — steps the value instead while a SETTINGS row is in edit mode |
@@ -564,6 +564,74 @@ shows `RUN install-usb-import.sh`.
   are rescanned immediately, so they appear in BROWSER right away.
 - **Enter** (or **Bksp**) ejects the drive and returns to the drive list.
 - The drive is always unmounted when you leave the page or close the menu.
+
+### INPUT page (USB keyboard config)
+Choose which attached keyboard drives the instrument and, for a programmable
+macropad, teach each of its keys an action. recur reads **every** attached USB
+keyboard at once, so you can configure a still-unmapped pad using a spare
+keyboard plugged in alongside it.
+
+**First run — the calibration walk.** When a recognized macropad is plugged in
+and hasn't been taught this rig's controls yet, recur says so on the SPI display
+at boot: `PAD DETECTED / PRESS ANY KEY ON THE PAD`. Pressing any pad key starts
+a guided walk that asks for one control at a time — `PRESS THE KEY FOR:
+SHADER TAB`, then `FX TAB`, and so on through all 18 — and you answer each by
+pressing the key you want it on. You choose the physical layout; the walk just
+makes sure nothing is missed. At the end the pad is mapped **and made the
+primary device**, so only it drives the live output.
+
+- The walk asks *action → key*; **EDIT KEYS** (below) asks *key → action*.
+  Use the walk for a new pad, EDIT KEYS to fix one key afterwards.
+- Pressing a key you've already used reassigns it — the screen says which
+  action it was taken from, so you can put that one somewhere else.
+- With a second keyboard plugged in, **BKSP** skips a step and **.** stops the
+  walk. Bindings made so far are kept; the pad is *not* promoted to primary
+  from a stopped walk, so you can't strand yourself on a half-mapped pad.
+- If nobody answers, the offer clears itself after ~15 s and a walk in progress
+  after ~45 s per step.
+- **CALIBRATE PAD** on the INPUT page runs the same walk on demand.
+- The offer only appears once: recur records which device the keymap was
+  learned on. **CLEAR MAP** brings it back.
+- Set each pad key to a **single, unmodified** keystroke in the pad's own
+  configuration software. A key that sends a combo (Ctrl+Shift+X) or a macro
+  will bind whichever keystroke lands first, which may not be the one you want.
+
+The page opens on a short row list:
+- **PRIMARY DEVICE** — **5/Enter** opens a picker of every detected keyboard
+  (shown by name + `vid:pid`). Pick one and only *that* device drives the live
+  output during play — other keyboards are ignored, so a mouse-keyboard or a
+  laptop keyboard left plugged in can't disturb a performance. The first entry,
+  **AUTO (any keyboard)**, is the default: with no primary set, any keyboard
+  drives play (handy before you've configured anything). If the chosen primary
+  isn't plugged in, recur falls back to accepting any keyboard rather than
+  going deaf — so unplugging the pad can never lock you out of the menu.
+- **COLS / ROWS** — **4/6** set the pad's used grid size (default 6 × 4). This
+  is just for the on-screen layout; you don't set orientation separately —
+  press-to-learn binds whatever key you press, so you hold the pad the way
+  you'll use it and press keys in reading order.
+- **CALIBRATE PAD** — **5/Enter** runs the full 18-step walk described above.
+- **EDIT KEYS** — **5/Enter** starts **press-to-learn** (below).
+- **CLEAR MAP** — **5/Enter** wipes all learned bindings, falling back to the
+  built-in numpad map (so a plain USB numpad works again with no config). It
+  also forgets which pad was calibrated, so the boot offer returns.
+
+**Press-to-learn.** After EDIT KEYS the screen prompts `PRESS A KEY ON THE PAD`.
+Press a physical key → its action list appears; scroll with **+/Bksp** and press
+**Enter** to bind that key to the highlighted action (tab select, grid slot 1–9,
+`+`/`Bksp`, `Enter`, `.` back, `0` staged, or **— unbind —**). It then re-arms
+for the next key, so you can walk the whole pad: *press key → pick action →
+press key → pick action*. **.** steps back (from picking → back to armed; from
+armed → out to the row list). An armed prompt with no key pressed times out
+after ~8 s and returns to the row list. Every bind saves to `prefs.json`
+immediately, so a learned layout survives a restart.
+
+> The keymap and chosen device live in `prefs.json` (`keymap`, `keymap_dev`,
+> `input_primary`, `pad_cols`, `pad_rows`). An empty `keymap` means the
+> built-in numpad map is used, so nothing is required for a standard numpad.
+> Unlike every other setting, these are **loaded on every boot** — a normal
+> boot otherwise starts from defaults (see *Boot state*), but your controller
+> and its layout are properties of the rig, not of the session, so they
+> persist without needing RESTART SAME.
 
 ---
 
@@ -918,7 +986,7 @@ clip slot `note % 10` (only 4–9 are real slots).
 
 | File | Contents | Written |
 |---|---|---|
-| `prefs.json` | clip/shader slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `lfos` / `lfo_bpm`, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count` | clean shutdown + SAVE PREFS |
+| `prefs.json` | clip/shader slots, effect states/modes, current clip/shader/fx, params, play mode, camera res, MIDI overrides, `lfos` / `lfo_bpm`, `trail_delay_s`, `trail_blend_type`, `trail_step_weights`, `trail_mode_opacity`, `trail_echo_count`; plus the input config, which is the only part reloaded on a normal boot | clean shutdown + SAVE PREFS; the INPUT page saves immediately |
 | `presets/P*.json` | whole-instrument snapshot — mode, both stacks, blends, colour | hold an empty cell on the LIVE tab's grid |
 | `presets/shaders/S*.json` | generative stack only (layers, params, blends) | hold an empty cell on the SHADER tab's preset grid |
 | `presets/fx/F*.json` | FX stack only (layers, params, blends) | hold an empty cell on the FX tab's preset grid |
@@ -931,6 +999,13 @@ so the instrument always comes up the same way. Only SETTINGS → **RESTART SAME
 reloads it (the process re-execs with `--resume`); a plain reboot or **RESTART**
 comes up on defaults.
 
+**The one exception is the input config** — `input_primary`, `keymap`,
+`keymap_dev`, `pad_cols`, `pad_rows` are read out of `prefs.json` on *every*
+boot. Which keyboard drives the instrument and what its keys mean describe the
+rig, not the session; if they reset with everything else, a calibrated macropad
+would come up unmapped after every power-cut. Log line to confirm:
+`[config] input prefs: primary=… , N keys mapped`.
+
 ---
 
 ## Troubleshooting
@@ -938,7 +1013,8 @@ comes up on defaults.
 | Symptom | Check |
 |---|---|
 | Black HDMI output | `journalctl -u recur -n 50`; `/tmp/mpv.err`; both HDMI DRM connectors need `hdmi_force_hotplug=1` in `/boot/firmware/config.txt` |
-| Numpad dead | unplug/replug — the controller rescans every 2 s; check `journalctl` for "numpad connected" |
+| Numpad / pad dead | unplug/replug — the controller rescans every 2 s; check `journalctl` for `[kbd] input node:` (each keyboard it opened) and `[kbd] primary input:` (which one drives play). If the primary named there isn't the device in your hands, set it on the INPUT page |
+| Pad presses do nothing but the menu still works | the pad has no keymap — INPUT → **CALIBRATE PAD**, or unplug/replug to get the boot offer |
 | Shader doesn't change | mpv caches by path — the engine writes unique temp paths; if stuck, restart the service |
 | Recording produces no file | `/tmp/ffmpeg-rec.err`; the service unit needs `CAP_SYS_ADMIN` (rerun `install-service.sh`) |
 | Camera won't start in LIVE | `/tmp/rpicam.err`; CSI camera must be detected by `rpicam-vid`; USB cams must be plain V4L2 capture nodes |
