@@ -16,15 +16,17 @@ to recur-recur's modes and engines. Four pages cycled with 7 / 9:
              highlighted row for editing (+/BKSP then step its value, ENTER
              closes); rows flagged action=True fire on ENTER instead.
   MIDI     — per-target CC overrides; 4/6 step ±5, 5 = numeric entry,
-             BKSP = reset to built-in default
+             0 = reset to built-in default
 
-Navigation (logical key names, mapped in keyboard.py for both NumLock states):
-  + / BKSP   move selection up / down the list (BKSP is page-specific on
-             BROWSER/MIDI — see handle())
-  8 / 2      move selection up / down
+Navigation (logical key names, mapped in keyboard.py for both NumLock states).
+These are the SAME on every page — no page redefines one, because a pad has no
+key legends to read and a key that changes meaning per page can only be learned
+by trial:
+  + / BKSP   move selection up / down the list ("+" and "−")
   4 / 6      adjust selected value (left / right)
   5 / ENTER  select / activate (the "■" action)
   7 / 9      previous / next page (loops)
+  0         delete / reset the highlighted row (BROWSER, MIDI)
   .          back out one level / close the menu (handled in keyboard.py)
 
 While the menu is active, NONE of these keys reach the perform handlers, so the
@@ -75,13 +77,26 @@ INPUT_ACTIONS = [
     ("SLOT 1", "1"), ("SLOT 2", "2"), ("SLOT 3", "3"),
     ("SLOT 4", "4"), ("SLOT 5", "5"), ("SLOT 6", "6"),
     ("SLOT 7", "7"), ("SLOT 8", "8"), ("SLOT 9", "9"),
-    ("PAGE +",        "+"),
-    ("PAGE - / BKSP", "BKSP"),
-    ("ENTER",         "ENTER"),
-    ("BACK ( . )",    "."),
-    ("STAGED ( 0 )",  "0"),
-    ("— unbind —",    None),
+    ("SCROLL UP  +",   "+"),
+    ("SCROLL DOWN  −", "BKSP"),
+    ("CONFIRM",        "ENTER"),
+    ("BACK",           "."),
+    ("STAGED / DELETE", "0"),
+    ("SETTINGS TAB",   "SET"),
+    ("— unbind —",     None),
 ]
+
+# Controls the walk asks for but does NOT require. A 17-key numpad has no key
+# to spare, so every mandatory step must fit on one; a 24-key pad has room for
+# a dedicated SETTINGS key and is better for having one, because without it
+# SETTINGS shares the BACK key and you can only reach it from the top level.
+# Optional steps self-skip if nobody answers, and never count as a gap in
+# FIX MISSING — an unbound optional control is a choice, not a fault.
+OPTIONAL_ACTIONS = {"SET"}
+# Labels describe what the control DOES, not which numpad key it came from:
+# a macropad has blank keycaps, so "BKSP" or "( . )" names nothing the user can
+# see. The internal action names are unchanged — they are the values stored in
+# prefs.json keymaps, and renaming them would invalidate every calibrated pad.
 
 # The calibration wizard walks these in order, asking for a key per action —
 # the inverse of EDIT KEYS (key first, then pick its action). Action-first is
@@ -91,8 +106,24 @@ INPUT_ACTIONS = [
 # the right way round for fixing one key later.
 WIZARD_STEPS = [(lbl, nm) for lbl, nm in INPUT_ACTIONS if nm is not None]
 
+# The controls without which the menus cannot be driven AT ALL. Scrolling has
+# exactly one key each way, so those groups have exactly one member; CONFIRM
+# still accepts either 5 or ENTER (see Menu._action_primary / _action_enter).
+# A map that satisfies none of a group is a lockout, not a gap: you can open
+# the menu and then not move through it, so FIX MISSING is unreachable and the
+# only way back in is the panic hold, a power-cycle or editing prefs.json.
+# That is what makes this worth checking at boot rather than leaving to the
+# user to notice. Ordered worst-first for the message on the offer screen.
+ESSENTIAL_GROUPS = (
+    ("SCROLL DOWN", ("BKSP",)),
+    ("SCROLL UP",   ("+",)),
+    ("CONFIRM",     ("ENTER", "5")),
+    ("BACK",        (".",)),
+)
+
 WIZARD_OFFER_TIMEOUT = 60.0   # dismiss an unanswered offer (re-offered on replug)
 WIZARD_STEP_TIMEOUT  = 45.0   # abandon a walk nobody is answering
+WIZARD_OPTIONAL_TIMEOUT = 12.0  # decline an optional step by waiting it out
 
 
 def _drive_label(path):
@@ -153,6 +184,7 @@ class Menu:
         self._wiz_steps    = WIZARD_STEPS   # the walk (all controls, or just gaps)
         self._wiz_title    = "CALIBRATE"
         self._wiz_promote  = True     # make the pad primary when the walk finishes
+        self._wiz_reason   = ""       # why the offer appeared, shown on it
 
     def open_page(self, page_name):
         """Open a menu page by name, running its leave/enter hooks.
@@ -206,12 +238,16 @@ class Menu:
     def handle(self, name):
         """Route a logical key while the menu is active.
 
-        Navigation: + = scroll up,  BKSP = scroll down (or, on BROWSER and
-        MIDI, that page's delete/clear action).
+        Navigation is the SAME on every page: + scrolls up, BKSP (the '−' of
+        the pair) scrolls down. Nothing else scrolls, and no page takes those
+        keys over for its own action — BROWSER's delete and MIDI's reset live
+        on 0 for exactly that reason. A pad has no key legends to read, so a
+        key that means different things on different pages can only be learned
+        by trial.
         """
         try:
-            # Any key other than BKSP cancels an armed BROWSER delete.
-            if name != "BKSP":
+            # Any key other than 0 cancels an armed BROWSER delete.
+            if name != "0":
                 self._confirm_delete = False
 
             # Slot-assign: 4–9 assign the slot (7 and 9 are valid slots here),
@@ -246,32 +282,34 @@ class Menu:
                 self.open_page(PAGES[(self.page + step) % len(PAGES)])
                 return
 
-            # + = scroll up
+            # +/BKSP = scroll up/down. Unconditional, on every page.
             if name == "+":
                 self._move(-1)
                 return
+            if name == "BKSP":
+                self._move(+1)
+                return
 
-            if name in ("8", "2"):
-                self._move(-1 if name == "8" else +1)
-            elif name in ("4", "6"):
+            if name in ("4", "6"):
                 self._adjust(-1 if name == "4" else +1)
             elif name == "5":
                 self._action_primary()
             elif name == "ENTER":
                 self._action_enter()
-            elif name == "BKSP":
+            elif name == "0":
+                # The destructive row action, on the one key no page uses for
+                # anything else. Kept off the scroll keys so that scrolling is
+                # never the thing that deletes a clip.
                 page = PAGES[self.page]
                 if page == "MIDI":
                     self._midi_clear()
                 elif page == "BROWSER":
-                    # First BKSP arms delete, second executes it.
+                    # First press arms delete, second executes it.
                     if self._confirm_delete:
                         self._confirm_delete = False
                         self._browser_delete()
                     else:
                         self._confirm_delete = True
-                else:
-                    self._move(+1)   # SETTINGS / SHADERS / IMPORT: scroll down
         except Exception as e:
             log.warning("menu handle %r: %s", name, e)
 
@@ -922,6 +960,7 @@ class Menu:
         self._wiz_steps   = WIZARD_STEPS
         self._wiz_title   = "CALIBRATE"
         self._wiz_promote = True
+        self._wiz_reason  = ""
         self._cancel_learn_timer()
 
     def _cancel_learn_timer(self):
@@ -954,7 +993,35 @@ class Menu:
         if not km:
             return []
         bound = set(km.values())
-        return [(lbl, nm) for lbl, nm in WIZARD_STEPS if nm not in bound]
+        return [(lbl, nm) for lbl, nm in WIZARD_STEPS
+                if nm not in bound and nm not in OPTIONAL_ACTIONS]
+
+    def _duplicate_actions(self):
+        """action name -> how many keys hold it, for actions on more than one.
+
+        EDIT KEYS is key-first, so binding a key can leave an action on two
+        keys without anything saying so. The wizard now prevents this, but a
+        map made before that (or edited deliberately) can still carry one.
+        """
+        km = self.inst.cfg.keymap
+        counts = {}
+        for v in km.values():
+            counts[v] = counts.get(v, 0) + 1
+        return {a: c for a, c in counts.items() if c > 1}
+
+    def _unnavigable(self):
+        """Labels of the ESSENTIAL_GROUPS with nothing bound — i.e. the ways in
+        which this keymap is a lockout rather than merely incomplete.
+
+        Empty with no keymap at all: the built-in numpad DEFAULT_MAP is in force
+        then (see control/keyboard._resolve) and satisfies every group.
+        """
+        km = self.inst.cfg.keymap
+        if not km:
+            return []
+        bound = set(km.values())
+        return [lbl for lbl, alts in ESSENTIAL_GROUPS
+                if not any(a in bound for a in alts)]
 
     def _input_menu_items(self):
         """(id, label, value) for the INPUT row list."""
@@ -1083,6 +1150,11 @@ class Menu:
         if self._input_view == "WIZARD":
             if self._wiz_phase == "OFFER":
                 self._wizard_close("")              # nobody answered — just go
+            elif self._wiz_optional():
+                # An optional step is how a pad with no spare key says "not
+                # this one" — waiting is the skip, since from the pad itself
+                # every key-down would bind rather than pass.
+                self._wizard_advance(skip=True)
             else:
                 self._wizard_abort("CALIBRATION: timed out")
         elif self._input_view == "LEARN":
@@ -1150,7 +1222,16 @@ class Menu:
         learned from some other keyboard must not count as a configured pad,
         and swapping in a different pad should offer to calibrate the new one.
         Once the walk completes, keymap_dev is the pad, so it never fires again
-        (input prefs load on every boot, so this survives power-cuts)."""
+        (input prefs load on every boot, so this survives power-cuts).
+
+        ALSO offered — regardless of keymap_dev — when the map is a lockout by
+        _unnavigable()'s definition. A pad you calibrated yourself and then
+        broke in EDIT KEYS is 'calibrated' as far as keymap_dev is concerned, so
+        without this the one recovery that needs no working keys would never
+        appear for the case most likely to need it. This is why the offer is
+        answerable by any key-down: it is the whole recovery path, and a
+        power-cycle is a gesture that survives any keymap.
+        """
         try:
             cfg = self.inst.cfg
             # Never hijack a menu the user is already using (and never restart
@@ -1158,31 +1239,48 @@ class Menu:
             # so a single replug calls this twice).
             if self.active:
                 return
+            stranded = self._unnavigable()
             pad = self.inst.kb.detect_pad()
-            if not pad:
+            if pad is None and stranded:
+                # A lockout is a property of the map, not of the pad, so fall
+                # back to whatever device that map was learned on / drives play.
+                pad = self._wizard_target()
+            if pad is None:
                 return
-            if cfg.keymap and cfg.keymap_dev == pad["vidpid"]:
+            calibrated = bool(cfg.keymap) and cfg.keymap_dev == pad["vidpid"]
+            if calibrated and not stranded:
                 return
-            log.info("pad detected with no keymap: %s %s — offering calibration",
-                     pad["vidpid"], pad["name"])
-            self.start_calibration(pad, offer=True)
+            if stranded:
+                reason = "NO KEY FOR: " + ", ".join(stranded)
+                log.warning("keymap is a lockout on %s %s (%s) — offering "
+                            "calibration", pad["vidpid"], pad["name"],
+                            ", ".join(stranded))
+            else:
+                reason = "NOT MAPPED YET"
+                log.info("pad detected with no keymap: %s %s — offering "
+                         "calibration", pad["vidpid"], pad["name"])
+            self.start_calibration(pad, offer=True, reason=reason)
         except Exception as e:
             log.warning("calibration offer: %s", e)
 
     def start_calibration(self, pad, offer=False, steps=None,
-                          title="CALIBRATE", promote=True):
+                          title="CALIBRATE", promote=True,
+                          reason="NOT MAPPED YET"):
         """Open the INPUT page on the wizard. offer=True asks first (the boot
         path); False starts the walk immediately (the CALIBRATE PAD row).
 
         `steps` defaults to every control; FIX MISSING passes just the unbound
         ones and promote=False, since repairing a gap shouldn't quietly change
-        which device is primary."""
+        which device is primary. `reason` is the line the OFFER screen shows —
+        an unmapped pad and a pad whose map locked you out need the same walk
+        but are not the same situation, and only one of them is your own doing."""
         self._wiz_pad     = pad
         self._wiz_step    = 0
         self._wiz_bound   = 0
         self._wiz_steps   = steps if steps else WIZARD_STEPS
         self._wiz_title   = title
         self._wiz_promote = promote
+        self._wiz_reason  = reason
         self._learn_status = ""
         self.page   = PAGES.index("INPUT")
         self.sel    = 0
@@ -1202,7 +1300,9 @@ class Menu:
         self._wiz_step  = 0
         self._wiz_bound = 0
         self._learn_status = ""
-        self._arm_learn(dev=self._wiz_pad["vidpid"], timeout=WIZARD_STEP_TIMEOUT)
+        self._arm_learn(dev=self._wiz_pad["vidpid"],
+                        timeout=(WIZARD_OPTIONAL_TIMEOUT if self._wiz_optional()
+                                 else WIZARD_STEP_TIMEOUT))
 
     def _wizard_key(self, code):
         """A key-down from the pad being calibrated (routed by learn_key)."""
@@ -1216,14 +1316,31 @@ class Menu:
         key  = str(code)
         prev = km.get(key)
         km[key] = name
+        # ONE KEY PER ACTION. The walk asks for each action exactly once, so a
+        # key that held this action before is by definition superseded — drop
+        # it. Without this a stray binding is permanent: it survives every
+        # subsequent walk, because each walk only ever ADDS the key you press.
+        # That is how one action ended up on two keys and stayed there.
+        stale = [k for k, v in km.items() if v == name and k != key]
+        for k in stale:
+            km.pop(k, None)
         # Reusing a key you already answered with silently drops the earlier
         # action, so say which one — the walk can't detect the intent, but the
         # user can see it and fix it with EDIT KEYS afterwards.
         self._learn_status = (f"{label} ← key {code}" if prev in (None, name)
                               else f"{label} ← key {code}  (took it from {prev})")
+        if stale:
+            self._learn_status += f"  (freed {', '.join(sorted(stale))})"
         self._wiz_bound += 1
         self._save_prefs()
         self._wizard_advance()
+
+    def _wiz_optional(self, step=None):
+        """Is the step being asked for one of OPTIONAL_ACTIONS?"""
+        i = self._wiz_step if step is None else step
+        if not (0 <= i < len(self._wiz_steps)):
+            return False
+        return self._wiz_steps[i][1] in OPTIONAL_ACTIONS
 
     def _wizard_advance(self, skip=False):
         if skip:
@@ -1232,8 +1349,12 @@ class Menu:
         if self._wiz_step >= len(self._wiz_steps):
             self._wizard_done()
         else:
+            # Optional steps wait a shorter time, because waiting them out is
+            # the normal way to decline one rather than an error.
             self._arm_learn(dev=self._wiz_pad["vidpid"],
-                            timeout=WIZARD_STEP_TIMEOUT)
+                            timeout=(WIZARD_OPTIONAL_TIMEOUT
+                                     if self._wiz_optional()
+                                     else WIZARD_STEP_TIMEOUT))
 
     def _wizard_done(self):
         """Walk complete: the pad is mapped, so make it the primary device —
@@ -1314,9 +1435,9 @@ class Menu:
             self._handle_wizard(name)
             return
         if view == "DEVICES":
-            if name in ("+", "8"):
+            if name == "+":
                 self._move(-1)
-            elif name in ("BKSP", "2"):
+            elif name == "BKSP":
                 self._move(+1)
             elif name in ("5", "ENTER"):
                 self._input_pick_device()
@@ -1326,9 +1447,9 @@ class Menu:
             # so a key reaching here is a key_up or a non-mapping key — ignore.
             if self._learn_code is None:
                 return
-            if name in ("+", "8"):
+            if name == "+":
                 self._move(-1)
-            elif name in ("BKSP", "2"):
+            elif name == "BKSP":
                 self._move(+1)
             elif name in ("5", "ENTER"):
                 self._input_bind_action()
@@ -1350,13 +1471,13 @@ class Menu:
 
         if page == "BROWSER":
             if self._confirm_delete:
-                draw.text((10, 44), "BKSP again = DELETE FILE   other = cancel",
+                draw.text((10, 44), "0 again = DELETE FILE   other = cancel",
                           font=font_sm, fill=C_HL)
             elif self._assigning:
                 draw.text((10, 44), "press 4–9 to assign slot   other = cancel",
                           font=font_sm, fill=C_HL)
             else:
-                draw.text((10, 44), "ENTER assign   5 pick   BKSP delete",
+                draw.text((10, 44), "ENTER assign   5 pick   0 delete",
                           font=font_sm, fill=C_DIM)
             cfg            = self.inst.cfg
             clips_full     = self.inst.sampler.clips
@@ -1386,7 +1507,7 @@ class Menu:
                 draw.text((10, 44), "press 4–9 to assign slot   other = cancel",
                           font=font_sm, fill=C_HL)
             else:
-                draw.text((10, 44), "ENTER assign slot   5 pick   8/2 scroll",
+                draw.text((10, 44), "ENTER assign slot   5 pick",
                           font=font_sm, fill=C_DIM)
             cfg          = self.inst.cfg
             slots        = getattr(cfg, 'shader_slots', {})
@@ -1404,10 +1525,10 @@ class Menu:
 
         elif page == "MIDI":
             if self._midi_editing:
-                draw.text((10, 44), "type 0–127   ENTER confirm   BKSP del",
+                draw.text((10, 44), "type 0–127   ENTER confirm   − del",
                           font=font_sm, fill=C_HL)
             else:
-                draw.text((10, 44), "5 edit CC   4/6 ±5   BKSP reset",
+                draw.text((10, 44), "5 edit CC   4/6 ±5   0 reset",
                           font=font_sm, fill=C_DIM)
             cfg      = self.inst.cfg
             user_map = getattr(cfg, 'midi_target_cc', {})
@@ -1450,7 +1571,7 @@ class Menu:
         elif page == "IMPORT":
             mgr = getattr(self.inst, "usb", None)
             if self._usb_dev:
-                draw.text((10, 44), "5 copy to internal   ENTER eject   8/2 scroll",
+                draw.text((10, 44), "5 copy to internal   ENTER eject",
                           font=font_sm, fill=C_DIM)
                 rows = []
                 for f in self._usb_files:
@@ -1459,7 +1580,7 @@ class Menu:
                 if not rows:
                     rows = [("  (no videos on drive)", "")]
             else:
-                draw.text((10, 44), "5 mount & browse   8/2 scroll",
+                draw.text((10, 44), "5 mount & browse",
                           font=font_sm, fill=C_DIM)
                 rows = [(f"  {d['label']}", f"{d['fstype']} {d['size']}")
                         for d in self._usb_drives]
@@ -1497,11 +1618,18 @@ class Menu:
                               font=font_sm, fill=C_EDIT)
                 cur  = (cfg.keymap.get(str(self._learn_code))
                         if self._learn_code is not None else None)
-                # Flag controls that currently have NO key at all, so a gap is
-                # visible at the moment you're choosing what to bind.
+                # Flag controls with NO key, and controls sitting on MORE than
+                # one, so both kinds of fault are visible at the moment you're
+                # choosing what to bind.
                 gaps = {nm for _l, nm in self._missing_actions()}
-                rows = [(lbl + ("   · no key" if nm in gaps else ""),
-                         nm == cur) for lbl, nm in INPUT_ACTIONS]
+                dups = self._duplicate_actions()
+                def _flag(nm):
+                    if nm in gaps:
+                        return "   · no key"
+                    if nm in dups:
+                        return f"   · {dups[nm]} keys"
+                    return ""
+                rows = [(lbl + _flag(nm), nm == cur) for lbl, nm in INPUT_ACTIONS]
                 self._render_list(draw, font_sm, W, H - 24, palette, rows, y0=64)
                 if self._learn_status:
                     draw.text((W // 2, H - 32), self._learn_status[:40],
@@ -1514,7 +1642,7 @@ class Menu:
 
         else:  # SETTINGS
             if self._settings_editing:
-                draw.text((10, 44), "+/BKSP change value    ENTER done",
+                draw.text((10, 44), "+/− change value    ENTER done",
                           font=font_sm, fill=C_EDIT)
             else:
                 draw.text((10, 44), f"ip  {_local_ip()}", font=font_sm, fill=C_DIM)
@@ -1539,39 +1667,39 @@ class Menu:
         if self._assigning:
             return "press 4–9 = slot   any other key cancels"
         if self._confirm_delete:
-            return "BKSP again = DELETE   any other key cancels"
+            return "0 again = DELETE   any other key cancels"
         if self._midi_editing:
-            return "type 0–127   ENTER confirm   BKSP delete digit"
+            return "type 0–127   ENTER confirm   − delete digit"
         if self._settings_editing:
-            return "+/BKSP or 4/6 change value   ENTER done"
+            return "+/− or 4/6 change value   ENTER done"
 
         if page == "INPUT":
             view = self._input_view
             if view == "WIZARD":
                 return {"OFFER": "any pad key start   ENTER start   . skip",
-                        "WALK":  "press the pad key   BKSP skip   . stop",
+                        "WALK":  "press the pad key   − skip   . stop",
                         "DONE":  "ENTER close"}.get(self._wiz_phase, "")
             if view == "DEVICES":
-                return "+/BKSP or 8/2 scroll   5/ENTER select   . back"
+                return "+/− scroll   5/ENTER select   . back"
             if view == "LEARN":
                 return ("press a key on the pad   (wait = exit)"
                         if self._learn_code is None else
-                        "+/BKSP or 8/2 scroll   ENTER bind   . back")
-            return "+/BKSP or 8/2 scroll   4/6 cols·rows   7/9 page"
+                        "+/− scroll   ENTER bind   . back")
+            return "+/− scroll   4/6 cols·rows   7/9 page"
 
-        # BKSP is the down key everywhere EXCEPT these two, where the page
-        # claims it — so those say so instead of pretending it scrolls.
+        # +/− scroll on every page without exception, so the only per-page
+        # difference left is what 0 does.
         if page == "BROWSER":
-            return "8/2 scroll   + up   BKSP = delete   7/9 page   . close"
+            return "+/− scroll   5 load   0 = delete   7/9 page   . close"
         if page == "MIDI":
-            return "8/2 scroll   + up   BKSP = reset   7/9 page   . close"
+            return "+/− scroll   4/6 ±5   0 = reset   7/9 page   . close"
         if page == "IMPORT":
-            return ("+/BKSP or 8/2 scroll   7/9 page   . eject"
+            return ("+/− scroll   5 copy   7/9 page   . eject"
                     if self._usb_dev else
-                    "+/BKSP or 8/2 scroll   7/9 page   . close")
+                    "+/− scroll   5 mount   7/9 page   . close")
         if page == "SETTINGS":
-            return "+/BKSP or 8/2 scroll   4/6 ±   7/9 page   . close"
-        return "+/BKSP or 8/2 scroll   7/9 page   . close"
+            return "+/− scroll   4/6 ±   ENTER edit   7/9 page   . close"
+        return "+/− scroll   5 load   7/9 page   . close"
 
     def _render_wizard(self, draw, font_lg, font_md, font_sm, W, H, palette):
         """The calibration walk owns the whole screen — one instruction, large,
@@ -1586,8 +1714,16 @@ class Menu:
                       anchor="mm")
             draw.text((cx, 92),  name[:30], font=font_sm, fill=C_VALUE,
                       anchor="mm")
-            draw.text((cx, 140), "NOT MAPPED YET", font=font_sm, fill=C_DIM,
-                      anchor="mm")
+            # A lockout reason names the missing controls, so it can outgrow the
+            # panel — the recovery matters more than the detail, so it wraps to
+            # the second line rather than being cut.
+            _reason = self._wiz_reason or "NOT MAPPED YET"
+            _lock   = _reason.startswith("NO KEY FOR")
+            draw.text((cx, 132 if _lock else 140), _reason[:42], font=font_sm,
+                      fill=C_EDIT if _lock else C_DIM, anchor="mm")
+            if len(_reason) > 42:
+                draw.text((cx, 150), _reason[42:84], font=font_sm, fill=C_EDIT,
+                          anchor="mm")
             draw.text((cx, 178), "PRESS ANY KEY ON THE PAD",
                       font=font_md, fill=C_HL, anchor="mm")
             draw.text((cx, 206), "to teach it the controls",
@@ -1639,13 +1775,18 @@ class Menu:
             draw.rectangle([bx0 + 1, by + 1, bx0 + 1 + fill_w, by + 5],
                            fill=C_ACCENT)
 
-        draw.text((cx, 118), "PRESS THE KEY FOR", font=font_sm, fill=C_DIM,
+        optional = self._wiz_optional()
+        draw.text((cx, 118), "PRESS THE KEY FOR" if not optional else
+                  "OPTIONAL — PRESS A SPARE KEY FOR",
+                  font=font_sm, fill=C_DIM if not optional else C_ACCENT,
                   anchor="mm")
         draw.text((cx, 158), label[:18], font=font_lg, fill=C_HL, anchor="mm")
         if self._learn_status:
             draw.text((cx, 214), self._learn_status[:44], font=font_sm,
                       fill=C_ACCENT, anchor="mm")
-        draw.text((cx, 246), "a key you've already used gets reassigned",
+        draw.text((cx, 246),
+                  "no spare key? wait — it'll skip" if optional else
+                  "a key you've already used gets reassigned",
                   font=font_sm, fill=C_DIM, anchor="mm")
 
     def _render_settings_list(self, draw, font, W, H, palette, y0=62):

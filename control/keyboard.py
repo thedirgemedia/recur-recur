@@ -20,13 +20,23 @@ LIVE — in every context, even over an open menu page. Pressing the key of the
 tab you're already on cycles that tab's sub-screens (a 3x3 slot GRID, then a
 PARAMS screen for tabs that have one).
 
-The . key is the odd one out — one press, meaning set by how deep you are
-(see _dot_press). At the top level (a grid screen, no menu) it's the
-SETTINGS tab key, exactly like the other four are for their tab. Anywhere
-deeper it goes UP one level instead: cancels an in-progress menu sub-action,
-else closes an open menu page, else exits param edit mode, else drops a
-params screen back to its grid. It is checked before the menu.active branch
-in _dispatch, so it works over an open menu page too.
+Panic gesture: hold any three keys at once for two seconds on one device and
+the calibration offer appears, whatever the keymap says (see _track_panic).
+This is the way back from a map that binds the navigation keys to nothing —
+it reads raw keycodes, so it cannot itself be unbound.
+
+The . key is BACK, and only that: it steps out one level per press — cancels
+an in-progress menu sub-action, else closes an open menu page, else exits
+param edit mode, else drops a params screen back to its grid — until you are
+at the top level, where it does nothing. It is checked before the menu.active
+branch in _dispatch, so it works over an open menu page too.
+
+SETTINGS is a destination rather than a level, so it has its own key (bind
+SETTINGS TAB in the calibration walk) and toggles: press to show it, press
+again to return to the tab you were on. Note this means a device with no
+SETTINGS key bound cannot reach the SETTINGS tab at all — and therefore not
+BROWSER/MIDI/IMPORT/INPUT either, since those are its sub-screens and grid
+cells. The panic gesture (three keys held) is the way back in if that happens.
 
 Grid screens (keys 7 8 9 / 4 5 6 / 1 2 3, matching their on-screen position):
   SHADER grid — tap: load/unload the one active generative shader (tap the
@@ -180,6 +190,16 @@ SPEED_STEP = 0.1   # step size for sampler speed (0.1–4.0 range)
 # How long a grid key must be held before it's treated as a hold rather than
 # a tap (SHADER/FX grids only — see _HOLD_TABS).
 HOLD_THRESHOLD = 0.4   # seconds
+
+# Panic gesture: hold PANIC_KEYS keys at once for PANIC_HOLD seconds on any one
+# device to force the calibration offer. Tracked on RAW keycodes ahead of
+# _resolve(), so it is the one control that survives a keymap broken badly
+# enough that nothing on screen can be navigated (see Menu._unnavigable). Three
+# simultaneous keys can't happen while playing — keys are pressed one at a time
+# — so it needs no dedicated key, and works on a device with no map at all.
+PANIC_KEYS = 3
+PANIC_HOLD = 2.0       # seconds
+
 _HOLD_TABS = (0, 1, 2, 3)   # every tab whose grids have tap/hold semantics
                             # (LIVE joined when its grid became a preset store)
                          # (SAMPLER hold opens a clip's per-clip settings)
@@ -187,6 +207,7 @@ _HOLD_TABS = (0, 1, 2, 3)   # every tab whose grids have tap/hold semantics
 # Display tab → instrument mode, for the 000 key. FX (1) and SETTINGS (4) are
 # absent: neither is a mode, they act on whatever mode is already running.
 _TAB_MODES = {0: "SHADER", 2: "SAMPLER", 3: "LIVE"}
+_SETTINGS_TAB = 4
 
 # Numpad key → grid position (top-left=0 … bottom-right=8), matching display layout:
 #   7 8 9   →   0 1 2
@@ -260,6 +281,18 @@ class KeyboardController:
         # Hold-vs-tap detection for the SHADER/FX grids (see _on_key_down).
         self._hold_timers = {}   # key name -> pending threading.Timer
 
+        # Tab the dedicated SETTINGS key was pressed from, so pressing it again
+        # goes back there rather than stranding you on SETTINGS.
+        self._settings_origin = None
+
+        # Panic gesture (see PANIC_KEYS). Raw keycodes currently held, per
+        # device node, so the count is per-keyboard rather than across all of
+        # them — holding one key on each of three keyboards isn't the gesture.
+        self._down         = {}     # device path -> set of raw keycodes down
+        self._panic_timer  = None
+        self._panic_fired  = False  # latched until the keys are released, so a
+                                    # 4th key can't re-trigger the same hold
+
     # ------------------------------------------------------------- lifecycle
     def start(self):
         if not HAVE_EVDEV:
@@ -329,11 +362,73 @@ class KeyboardController:
                 return n
         return DEFAULT_MAP.get(code)
 
+    # ------------------------------------------------------------ panic gesture
+    def _track_panic(self, dev, ev):
+        """Watch raw key-downs for the PANIC_KEYS-keys-held gesture.
+
+        Deliberately upstream of _resolve() and of the primary source filter:
+        the situation this exists for is a keymap that resolves the keys you
+        need to nothing, and a device that may not be primary. Observing only —
+        never consumes the event.
+        """
+        down = self._down.setdefault(dev.path, set())
+        if ev.value == 1:
+            down.add(ev.code)
+            if (len(down) >= PANIC_KEYS and self._panic_timer is None
+                    and not self._panic_fired):
+                t = threading.Timer(PANIC_HOLD, self._fire_panic,
+                                    args=(_dev_vidpid(dev), dev.name))
+                t.daemon = True
+                self._panic_timer = t
+                t.start()
+        else:
+            down.discard(ev.code)
+            if len(down) < PANIC_KEYS:
+                self._cancel_panic()
+                self._panic_fired = False
+
+    def _cancel_panic(self):
+        t, self._panic_timer = self._panic_timer, None
+        if t is not None:
+            t.cancel()
+
+    def _fire_panic(self, vidpid, name):
+        """The hold completed: force the calibration offer for that device.
+
+        offer=True rather than starting the walk outright — an offer is
+        answered by any key and times out on its own, so a gesture triggered by
+        accident costs a glance at the screen rather than an 18-step walk.
+        """
+        self._panic_timer = None
+        self._panic_fired = True
+        # Already in the wizard: there is nothing to recover from, and firing
+        # here would reset a walk in progress back to OFFER while keeping its
+        # partial bindings — which is how a stale duplicate outlives a re-walk.
+        if getattr(self.inst.menu, "_input_view", "MENU") == "WIZARD":
+            log.info("panic gesture ignored — wizard already open")
+            return
+        log.warning("panic gesture: %d keys held on %s %s — offering calibration",
+                    PANIC_KEYS, vidpid, name)
+        try:
+            self.inst.osd.show("PANIC — CALIBRATE PAD?")
+            self.inst.menu.start_calibration({"vidpid": vidpid,
+                                              "name": name or "pad"},
+                                             offer=True,
+                                             reason="PANIC KEY HOLD")
+        except Exception as e:
+            log.warning("panic calibration: %s", e)
+
     def _handle_event(self, dev, ev):
         """Process one EV_KEY event from any keyboard node."""
         if ev.value == 2:        # OS auto-repeat while held — hold uses our timer
             return
         menu = self.inst.menu
+
+        # Panic gesture first, on the raw code: it must fire from any state,
+        # including one where LEARN is swallowing key-downs or the map resolves
+        # to nothing. It only observes — the event still falls through to
+        # whatever would normally handle it.
+        self._track_panic(dev, ev)
 
         # INPUT-page LEARN: consume the raw key-down to bind it, never dispatch.
         # Works even on a code nothing maps yet (that's the point of learning).
@@ -344,6 +439,16 @@ class KeyboardController:
         if ev.value == 1 and getattr(menu, "_input_learn", False):
             want = getattr(menu, "_learn_dev", None)
             if want is None or _dev_vidpid(dev) == want:
+                # ONE KEY AT A TIME. The walk asks for a single key, so a
+                # key-down arriving while another is already held on that
+                # device is part of a chord — a panic hold, a fumbled press —
+                # and is never an answer to the prompt on screen. Binding it
+                # silently corrupted maps: a panic gesture mid-walk answered
+                # three consecutive prompts with the three keys being held.
+                # Swallowed rather than dispatched: during capture no key
+                # should reach the perform handlers either.
+                if len(self._down.get(dev.path, ())) > 1:
+                    return
                 menu.learn_key(ev.code, _dev_vidpid(dev))
                 return
 
@@ -381,6 +486,11 @@ class KeyboardController:
         last_scan = 0.0
 
         def _drop(path):
+            # Unplugging never sends the key-ups, so drop this node's held-key
+            # set too — otherwise phantom codes linger and the next two real
+            # presses would look like a panic hold.
+            self._down.pop(path, None)
+            self._cancel_panic()
             d = open_devs.pop(path, None)
             if d is None:
                 return
@@ -531,6 +641,35 @@ class KeyboardController:
               and self._param_layer in (0, 1, 5)):
             self._open_lfo_settings(int(name) - 1, _disp)
 
+    def _settings_press(self):
+        """A dedicated SETTINGS key: a TOGGLE, not another tab cycle.
+
+        Pressing it from anywhere shows SETTINGS; pressing it again puts you
+        back on the tab you left, which is the part '.' could never do — it has
+        no memory of where you came from, so it stranded you on tab 4 (open it
+        from SHADER and repeated presses ping-pong SETTINGS_GRID/BROWSER
+        forever). Landing on the grid rather than resuming a sub-screen keeps
+        one press = one predictable place.
+        """
+        _disp = getattr(self.inst, "display", None)
+        if _disp is None:
+            return
+        self._clear_param_edit()
+        menu = self.inst.menu
+        if _disp._active_tab == _SETTINGS_TAB:
+            back = (self._settings_origin
+                    if self._settings_origin is not None else 0)
+            self._settings_origin = None
+            if menu.active:
+                menu.active = False
+                menu._cancel_edits()
+            _disp.set_tab(back)
+            _disp.go_to_grid_screen()
+            return
+        self._settings_origin = _disp._active_tab
+        _disp.set_tab(_SETTINGS_TAB)
+        _disp.go_to_grid_screen()
+
     def _dot_press(self):
         """'.' — a single press whose meaning depends on how deep you are.
         Step back one level if there is one, otherwise open SETTINGS:
@@ -577,11 +716,14 @@ class KeyboardController:
             _disp.go_to_grid_screen()
             return
 
-        # Already at the top level — nothing to back out of, so this is the
-        # SETTINGS tab key (and cycles its sub-screens when already there).
+        # Already at the top level — nothing left to back out of, so this does
+        # nothing. '.' used to double as the SETTINGS tab key here, which made
+        # its meaning depend on invisible state and gave it no way home: it has
+        # no memory of the tab you came from, so opening SETTINGS with it left
+        # you alternating SETTINGS_GRID/BROWSER with no route back. SETTINGS is
+        # a destination, not a level, so it belongs on its own key (bind
+        # SETTINGS TAB — see _settings_press).
         self._clear_param_edit()
-        if _disp:
-            _disp.set_tab(4)
 
     def _force_tab_mode(self):
         """ENTER on a grid screen: put the active tab's mode on the screen.
@@ -610,6 +752,9 @@ class KeyboardController:
         # checked here, ahead of the menu.active branch below, so it stays
         # reachable while a menu page is open.
         _disp = getattr(self.inst, "display", None)
+        if name == "SET":
+            self._settings_press()
+            return
         if name == ".":
             self._dot_press()
             return
@@ -820,10 +965,10 @@ class KeyboardController:
         from config import PRESET_STORES
         inst  = self.inst
         _disp = getattr(inst, "display", None)
-        if name in ("+", "8"):
+        if name == "+":
             self._preset_opt_idx = max(0, self._preset_opt_idx - 1)
             return
-        if name in ("BKSP", "2"):
+        if name == "BKSP":
             self._preset_opt_idx = min(len(_PRESET_OPTS) - 1,
                                        self._preset_opt_idx + 1)
             return

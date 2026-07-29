@@ -1,6 +1,6 @@
 # recur-recur — Operator Manual
 
-*Accurate as of 2026-07-23. Generated from the actual code paths — where the
+*Accurate as of 2026-07-29. Generated from the actual code paths — where the
 code and older docs disagreed, this manual follows the code.*
 
 ---
@@ -92,7 +92,7 @@ context (even while a menu page is open):
 | **/** | FX |
 | **\*** | SAMPLER |
 | **-** | LIVE |
-| **.** | SETTINGS — *or* back out one level, depending on where you are (see below) |
+| **.** | back out one level. At the top level it does nothing |
 
 Pressing Num/\//\*/- for the tab you're **already on** cycles that tab's
 sub-screens (a 3×3 slot **grid** first, then a **params** screen for tabs
@@ -108,13 +108,33 @@ menu page.
 | **LIVE** | **PRESETS** (whole state) |
 | **SETTINGS** | menu-page grid → BROWSER → MIDI |
 
-**.** is the odd one out — a single press whose meaning depends on how deep
-you currently are. At the **top level** (a grid screen, no menu open) it's
-the SETTINGS tab key, exactly like the other four are for their tab.
-**Anywhere deeper it goes up one level** instead: it cancels an in-progress
-menu sub-action (assign / CC-edit / confirm-delete / USB browse) if one's
-active, else closes an open menu page, else exits param edit mode, else
-drops a params screen back to its grid.
+**.** is **back**: it goes up one level, cancelling an in-progress menu
+sub-action (assign / CC-edit / confirm-delete / USB browse) if one's active,
+else closing an open menu page, else exiting param edit mode, else dropping a
+params screen back to its grid.
+
+**.** steps out one level per press and stops when there's nothing left to
+step out of — it never *goes* anywhere, so its meaning never depends on where
+you happen to be. Pressing it at the top level does nothing.
+
+### The SETTINGS key
+
+SETTINGS is a destination, not a level, so it lives on its own key rather than
+on **.**. Bind one to **SETTINGS TAB** — the calibration walk asks for it as an
+optional last step, or add it later in EDIT KEYS.
+
+- It is a **toggle**: press it from any tab to show SETTINGS, press it again to
+  return **to the tab you came from**. Both directions land on that tab's grid,
+  so one press always puts you somewhere predictable.
+- It works from anywhere, including over an open menu page.
+
+> **A device with no SETTINGS key bound cannot reach the SETTINGS tab** — and
+> so cannot reach BROWSER, MIDI, IMPORT or INPUT either, since those are its
+> sub-screens and grid cells. A 17-key numpad has exactly 18 keys for 18 other
+> controls and none to spare, so it needs **.** to keep doubling as SETTINGS;
+> that is what the numpad's own keymap preset is for. If you do strand
+> yourself, the **panic hold** (any three keys for two seconds) still opens
+> the calibration walk.
 
 > **Note:** these keys only change what the SPI display is showing — they do
 > **not** switch the instrument's SAMPLER/SHADER/LIVE mode. Mode is switched
@@ -131,7 +151,7 @@ position (7 = top-left … 3 = bottom-right):
 |---|---|
 | **1–9** | select that grid cell (see per-tab behaviour below) |
 | **+** | previous page (SHADER / FX grids and all three preset grids paginate 9 at a time) |
-| **Bksp** | next page (same screens) |
+| **−** | next page (same screens) |
 | **0** | toggle **STAGED** mode (SAMPLER grid only) — footer pill shows amber `STAGED` (clip picks wait for **Enter**) vs. green `LIVE` (clip picks apply immediately). SHADER and FX grid taps always apply immediately regardless of this setting. Turning STAGED back off discards anything pending |
 | **Enter** | push all staged picks to the live output |
 | **000** | toggle the temporal trail (works from any screen) |
@@ -205,7 +225,7 @@ rows) with two interaction modes:
 | Key | Outside edit mode | Inside edit mode |
 |---|---|---|
 | **+** | scroll selection up the list | increase the selected parameter |
-| **Bksp** | scroll selection down the list | decrease the selected parameter |
+| **−** | scroll selection down the list | decrease the selected parameter |
 | **1 / 2 / 3** (tap) | assign **LFO 1/2/3** to the highlighted param (tap again to clear) | *(no effect)* |
 | **1 / 2 / 3** (hold) | open that **LFO's settings** screen — SHADER/FX/CLIP screens only (see below) | *(no effect)* |
 | **4** | **MIDI-assign** the highlighted param (see below) | *(no effect)* |
@@ -215,7 +235,7 @@ rows) with two interaction modes:
 | **000** | toggle the temporal trail | toggle the temporal trail |
 
 The selected row is **cyan**; entering edit mode turns the header and that
-row **amber**, so it's visually obvious whether +/Bksp will move the
+row **amber**, so it's visually obvious whether +/− will move the
 selection or change a value.
 
 **LFO / MIDI on CLIP settings** — the CLIP settings screen (see below) accepts
@@ -243,7 +263,7 @@ with `DEFAULT: <name>`.
 The three LFOs (assigned with keys 1/2/3) each carry their own shape, depth and
 rate. Edit one by **holding** its cell (1/2/3) on any SHADER, FX or CLIP params
 screen — that opens a five-row editor for that single LFO, driven like any
-params list (scroll with +/Bksp, **Enter** to edit, +/Bksp to change, key **9**
+params list (scroll with +/−, **Enter** to edit, +/− to change, key **9**
 = DEFAULT):
 
 | Row | Meaning |
@@ -295,7 +315,7 @@ in `prefs.json` / presets as `shader_chain` / `shader_params_chain` /
 again) to open its CLIP settings. Every clip remembers its own settings —
 they're keyed by clip path, applied automatically each time the clip loads,
 and persist in `prefs.json` under `clip_settings`. The rows, edited like any
-other params list (scroll with +/Bksp, **Enter** to edit, +/Bksp to change):
+other params list (scroll with +/−, **Enter** to edit, +/− to change):
 
 | Row | Range | Meaning |
 |---|---|---|
@@ -360,7 +380,7 @@ Global hue/saturation and the shader↔video and overlay blend
 **mode/amount/source** details are still fully implemented in
 `engine/shader.py` / `main.py` and loaded/saved with presets and `prefs.json`
 — but no numpad key, grid cell, or SPI screen currently exposes them (the old
-Bksp-cycled COLOUR/BLEND layers were dropped when the tab/grid interface
+The old Bksp-cycled COLOUR/BLEND layers were dropped when the tab/grid interface
 replaced the old scheme). See *Known issues*. Some remain reachable via MIDI
 CC (`blend_amt`, `ovl_opacity`, `trl_decay` are user-assignable targets) or
 via the SETTINGS menu's on/off toggles and FX/GEN cycle rows.
@@ -399,13 +419,13 @@ fine: you can have `P01` and `P07` with nothing between them.
 | **1–9**, tap | load that preset (an empty cell says so — hold it instead) |
 | **1–9**, hold on an **empty** cell | save the current state into that cell |
 | **1–9**, hold on a **filled** cell | open its options: **OVERWRITE WITH CURRENT** / **DELETE** |
-| **+** / **Bksp** | previous / next page of 9 |
+| **+** / **−** | previous / next page of 9 |
 
 Saving and placing are the same act, which is why these grids need no
 separate assign mode. The header shows how many of the visible nine are
 filled and which page you're on.
 
-**Options screen** — `+`/`Bksp` choose the action, **Enter** fires it, **.**
+**Options screen** — `+`/`−` choose the action, **Enter** fires it, **.**
 backs out to the grid without doing anything.
 
 **Independence.** The two stack stores never touch each other or the rest of
@@ -472,17 +492,24 @@ closes the page and jumps to that tab.
 
 | Key | Action in menu |
 |---|---|
-| **8 / 2** | selection up / down |
+| **+ / −** | scroll up / down. The **only** scroll keys, and they scroll on **every** page with no exceptions. On SETTINGS they step the value instead while a row is in edit mode |
 | **4 / 6** | adjust value (SETTINGS, MIDI pages; INPUT cols/rows) |
 | **5** | primary action: load (BROWSER/SHADERS), activate (SETTINGS), edit CC (MIDI), mount/copy (IMPORT), open row/pick (INPUT) |
 | **Enter** | SETTINGS: open the highlighted row for editing (or fire an action row); BROWSER/SHADERS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
 | **7 / 9** | previous / next page (wraps) |
-| **+** | scroll up (alternative to 8) — steps the value instead while a SETTINGS row is in edit mode |
-| **Bksp** | scroll down — **except** on MIDI (reset CC) and BROWSER (arm/confirm delete), where the page claims it. On SETTINGS it steps the value instead while a row is in edit mode |
+| **0** | delete / reset the highlighted row: BROWSER arms then confirms a delete, MIDI resets that CC to its built-in default. Does nothing on other pages |
 
-The footer line on every menu page states that page's actual keys, including
-where **Bksp** is *not* scroll-down, so you never have to remember the
-exceptions.
+> **On key names.** A macropad has blank keycaps, so this manual names the
+> controls by what they *do*. **+** and **−** are the scroll pair — on a
+> labelled numpad those are the `+` and `Backspace` keys in the right-hand
+> column, but on a pad they are whichever two keys you taught during
+> calibration. The names in the calibration walk match this table.
+
+Scrolling used to also work on `8`/`2`, and **−** used to be taken over by
+BROWSER and MIDI for their delete/reset. Both are gone: one pair of keys
+scrolls, everywhere, and destructive row actions live on **0**.
+
+The footer line on every menu page states that page's actual keys.
 
 While a menu page is open, every setting you change (overlay/blend toggles,
 FX/GEN cycling, params, MIDI CC bindings) applies to the live output
@@ -499,8 +526,8 @@ one; for clips from a mounted removable drive it shows a short drive label.
 - **5** — stage the highlighted clip; it loads to the live output when you leave the page.
 - **Enter, then a key 4–9** — assign the highlighted clip to that performance
   slot (any other key cancels). A clip can hold only one slot; assigning moves it.
-- **Bksp, then Bksp again** — delete the highlighted clip file. The first press
-  arms it (`BKSP again = DELETE FILE`); any other key cancels. Only internal
+- **0, then 0 again** — delete the highlighted clip file. The first press
+  arms it (`0 again = DELETE FILE`); any other key cancels. Only internal
   `clips/` files can be deleted (removable drives are read-only); the file is
   removed from disk and cleared from any slot it held.
 
@@ -517,13 +544,13 @@ deterministic pick.
 
 The SETTINGS page header shows the Pi's current IP address (useful for SSH
 when the display is the only UI available). Rows are a plain scrolling list,
-grouped under headers — **+**/**Bksp** move the selection up/down (headers
+grouped under headers — **+**/**−** move the selection up/down (headers
 are skipped), **Enter** opens the highlighted row for editing.
 
 Editing works like the params screens: **Enter** on a value row turns the row
-amber and puts it in **edit mode**, where **+**/**Bksp** step the value
+amber and puts it in **edit mode**, where **+**/**−** step the value
 (`‹ value ›` arrows show this is live); **Enter** again closes edit mode and
-returns +/Bksp to scrolling. The three SYSTEM rows are *actions*, not values —
+returns +/− to scrolling. The three SYSTEM rows are *actions*, not values —
 **Enter** fires them immediately rather than opening edit mode. (**4**/**6**
 still adjust the highlighted value directly, in or out of edit mode.)
 
@@ -551,9 +578,9 @@ for FX/GEN, but no rows for their mode/amount/source/palette/hue/sat details
 Per-target CC overrides. Defaults shown in brackets `[64]`; user overrides
 shown as `CC 64` (highlighted).
 - **4 / 6** — step the override ±5.
-- **Bksp** — reset the highlighted target to its built-in default.
+- **0** — reset the highlighted target to its built-in default.
 - **5** — numeric entry: type digits (3 digits auto-commit, clamped to 127),
-  **Enter** confirms (empty Enter also resets to default), **Bksp** deletes
+  **Enter** confirms (empty Enter also resets to default), **−** deletes
   a digit, any navigation key cancels.
 
 ### IMPORT page (USB → internal)
@@ -566,7 +593,7 @@ shows `RUN install-usb-import.sh`.
 - In the file list, **5** copies the highlighted file into `clips/` (a `✓`
   marks files already imported; same-named files are skipped). Imported clips
   are rescanned immediately, so they appear in BROWSER right away.
-- **Enter** (or **.**) ejects the drive and returns to the drive list. **Bksp**
+- **Enter** (or **.**) ejects the drive and returns to the drive list. **−**
   scrolls the file list here, it does not eject.
 - The drive is always unmounted when you leave the page or close the menu.
 
@@ -580,23 +607,72 @@ keyboard plugged in alongside it.
 and hasn't been taught this rig's controls yet, recur says so on the SPI display
 at boot: `PAD DETECTED / PRESS ANY KEY ON THE PAD`. Pressing any pad key starts
 a guided walk that asks for one control at a time — `PRESS THE KEY FOR:
-SHADER TAB`, then `FX TAB`, and so on through all 18 — and you answer each by
+SHADER TAB`, then `FX TAB`, and so on through all 19 — and you answer each by
 pressing the key you want it on. You choose the physical layout; the walk just
 makes sure nothing is missed. At the end the pad is mapped **and made the
 primary device**, so only it drives the live output.
 
+- **The last step, SETTINGS TAB, is optional** and says so on screen
+  (`OPTIONAL — PRESS A SPARE KEY FOR`). Bind it if your pad has a key going
+  spare: it gives SETTINGS its own toggle key and simplifies **.** to
+  back-only (see *The SETTINGS key*). If you have no key to spare — a 17-key
+  numpad has none — just **wait ~12 s and it skips itself**, because from the
+  pad alone every key you press would bind rather than pass. Skipping it is a
+  choice, not a fault: **FIX MISSING** never counts it as a gap.
 - The walk asks *action → key*; **EDIT KEYS** (below) asks *key → action*.
   Use the walk for a new pad, EDIT KEYS to fix one key afterwards.
 - Pressing a key you've already used reassigns it — the screen says which
   action it was taken from, so you can put that one somewhere else.
-- With a second keyboard plugged in, **BKSP** skips a step and **.** stops the
+- **One key per action.** The walk asks for each control exactly once, so
+  answering a prompt also **frees any other key that held that control**
+  (`freed 6` on the status line). This is what makes a re-walk a real repair:
+  a stray binding cannot outlive it. Earlier builds only ever *added* the key
+  you pressed, so a stray survived every subsequent walk.
+- **Only one key at a time counts.** A key pressed while another is still held
+  is treated as part of a chord, not as an answer, and is ignored — so a
+  fumbled press or a panic hold can't answer three prompts at once.
+- With a second keyboard plugged in, **−** skips a step and **.** stops the
   walk. Bindings made so far are kept; the pad is *not* promoted to primary
   from a stopped walk, so you can't strand yourself on a half-mapped pad.
-- If nobody answers, the offer clears itself after ~15 s and a walk in progress
+- If nobody answers, the offer clears itself after ~60 s and a walk in progress
   after ~45 s per step.
 - **CALIBRATE PAD** on the INPUT page runs the same walk on demand.
-- The offer only appears once: recur records which device the keymap was
-  learned on. **CLEAR MAP** brings it back.
+- Once a pad is calibrated the offer stops appearing: recur records which device
+  the keymap was learned on. **CLEAR MAP** brings it back — as does breaking the
+  map badly enough to lock yourself out, below.
+
+### Getting back in when the keys stop working
+
+Two safety nets, because a keymap is *keycode → action*: rebinding a key can
+leave a control with **no key at all**, and if that control is how you scroll or
+confirm, you can no longer reach the page that would fix it.
+
+- **The boot offer re-appears on a lockout.** At startup recur checks that
+  something is bound for each of *scroll down, scroll up, confirm* and *back*
+  (**5** counts as **Enter** for confirm; scrolling has one key each way, so
+  those two have no alternative). If any of the four has nothing at all, the
+  calibration offer appears even though the pad is "already calibrated", and
+  names what's unreachable. **So a power-cycle is always a way back in** — the
+  offer is answered by pressing *any* key, which is the one thing a pad with a
+  broken map can still do.
+- **The panic hold.** Hold **any three keys at once for two seconds** on the
+  same device and the calibration offer appears immediately, from anywhere —
+  mid-performance, mid-menu, even while the wizard itself is on screen. It is
+  read from raw keycodes before the keymap is consulted, so it can't be unbound
+  and works on a device that has never been mapped. Three keys at once can't
+  happen while playing, which is why it needs no key of its own.
+
+  It only *offers*: press any key to start the walk, or ignore it and it clears
+  itself after ~60 s. It does nothing while the calibration wizard is already
+  open — you're already where it would take you.
+
+A gap that isn't a lockout — say **STAGED / DELETE** with no key, while
+scrolling and confirming still work — is not worth interrupting you for, so
+neither net fires. Use **FIX MISSING** for
+those; the INPUT page shows a count.
+
+Failing all of that, unplugging the pad drops the primary-device filter, so any
+ordinary USB keyboard can drive the menu with the built-in numpad map.
 - Set each pad key to a **single, unmodified** keystroke in the pad's own
   configuration software. A key that sends a combo (Ctrl+Shift+X) or a macro
   will bind whichever keystroke lands first, which may not be the one you want.
@@ -614,23 +690,25 @@ The page opens on a short row list:
   is just for the on-screen layout; you don't set orientation separately —
   press-to-learn binds whatever key you press, so you hold the pad the way
   you'll use it and press keys in reading order.
-- **CALIBRATE PAD** — **5/Enter** runs the full 18-step walk described above.
+- **CALIBRATE PAD** — **5/Enter** runs the full 19-step walk described above.
 - **FIX MISSING** — shows how many controls have **no key at all** and, on
   **5/Enter**, runs a short press-only walk over just those. A keymap is
   keycode → action, so rebinding a key can silently leave a control stranded —
-  and a missing `Bksp` or `.` is the worst case, because it's the key you'd
+  and a missing `−` or `.` is the worst case, because it's the key you'd
   need to navigate to the fix. This is press-only for that reason: it never
   requires scrolling. It does *not* change the primary device.
-- **EDIT KEYS** — **5/Enter** starts **press-to-learn** (below). Any control
-  with no key is flagged `· no key` in the action list.
+- **EDIT KEYS** — **5/Enter** starts **press-to-learn** (below). In the action
+  list, a control with no key is flagged `· no key` and one sitting on more
+  than one key is flagged `· 2 keys`, so both kinds of fault are visible while
+  you're choosing what to bind.
 - **CLEAR MAP** — **5/Enter** wipes all learned bindings, falling back to the
   built-in numpad map (so a plain USB numpad works again with no config). It
   also forgets which pad was calibrated, so the boot offer returns.
 
 **Press-to-learn.** After EDIT KEYS the screen prompts `PRESS A KEY ON THE PAD`.
-Press a physical key → its action list appears; scroll with **+/Bksp** and press
+Press a physical key → its action list appears; scroll with **+/−** and press
 **Enter** to bind that key to the highlighted action (tab select, grid slot 1–9,
-`+`/`Bksp`, `Enter`, `.` back, `0` staged, or **— unbind —**). It then re-arms
+`+`/`−`, `Enter`, `.` back, `0` staged/delete, or **— unbind —**). It then re-arms
 for the next key, so you can walk the whole pad: *press key → pick action →
 press key → pick action*. **.** steps back (from picking → back to armed; from
 armed → out to the row list). An armed prompt with no key pressed times out
@@ -681,8 +759,8 @@ immediately, so a learned layout survives a restart.
 2. To tune a chained FX's params (or check/adjust a *different* member
    without disturbing the others), **hold** its key — that opens its params
    screen without adding/removing anything.
-3. On an FX's params screen: scroll with **+ / Bksp**, jump to a row with
-   **1–9**, press **Enter** to edit the highlighted row, then **+ / Bksp** to
+3. On an FX's params screen: scroll with **+ / −**, jump to a row with
+   **1–9**, press **Enter** to edit the highlighted row, then **+ / −** to
    step its value, **Enter** again to stop editing. The last two rows —
    `BLEND` and `BLD AMT` — set how this layer composites with whatever's
    below it (default `NORMAL` = plain pass-through, no compositing).
@@ -693,7 +771,7 @@ immediately, so a learned layout survives a restart.
 1. Chain 2+ FX as above. Each one defaults to `NORMAL` blend (just its own
    effect, no interaction with the layers below).
 2. Hold a chained FX's key to open its params, scroll to `BLEND`, press
-   **Enter**, then **+ / Bksp** to pick a mode (screen, multiply, overlay,
+   **Enter**, then **+ / −** to pick a mode (screen, multiply, overlay,
    difference, displace, hue/luminosity/color, …). Scroll to `BLD AMT` to
    dial the strength back from full (1.0) toward invisible (0.0).
 3. Chain-slot 0 (the bottom of the FX stack) only blends when there's a real
@@ -709,8 +787,8 @@ immediately, so a learned layout survives a restart.
    without disturbing the others), **hold** its key — that opens its params
    screen, adding it to the stack first if it wasn't already there (without
    removing anything else already stacked).
-3. On a shader's params screen: scroll with **+ / Bksp**, jump to a row with
-   **1–9**, **Enter** to edit the highlighted row, then **+ / Bksp** to step
+3. On a shader's params screen: scroll with **+ / −**, jump to a row with
+   **1–9**, **Enter** to edit the highlighted row, then **+ / −** to step
    its value, **Enter** again to stop editing. Slots above the bottom (1+)
    also get `BLEND` / `BLD AMT` rows — see *Parameter editing* → SHADER
    above.
@@ -917,7 +995,7 @@ just shows up there — there's no separate `PAL` slot any more).
 **starfield** has two independent warp-speed emitters, each with full per-emitter
 controls (15 params total). The SHADER params screen scrolls (see *Parameter
 editing*), so all 15 are reachable: **1–9** still jumps straight to p1–p9,
-and **+ / Bksp** scroll on to p10–p15 (emitter 2's Y position, star count,
+and **+ / −** scroll on to p10–p15 (emitter 2's Y position, star count,
 trail, palette, opacity, and the global zoom). Knobs and MIDI still only
 reach p1–p4 either way.
 
@@ -1027,6 +1105,8 @@ would come up unmapped after every power-cut. Log line to confirm:
 | Black HDMI output | `journalctl -u recur -n 50`; `/tmp/mpv.err`; both HDMI DRM connectors need `hdmi_force_hotplug=1` in `/boot/firmware/config.txt` |
 | Numpad / pad dead | unplug/replug — the controller rescans every 2 s; check `journalctl` for `[kbd] input node:` (each keyboard it opened) and `[kbd] primary input:` (which one drives play). If the primary named there isn't the device in your hands, set it on the INPUT page |
 | Pad presses do nothing but the menu still works | the pad has no keymap — INPUT → **CALIBRATE PAD**, or unplug/replug to get the boot offer |
+| Can't scroll or confirm anywhere — the map is broken | hold **any 3 keys for 2 s** for the panic offer, or power-cycle (the boot offer re-appears on a lockout). `journalctl -u recur \| grep lockout` names the missing controls |
+| One control does nothing, the rest are fine | a gap, not a lockout — INPUT → **FIX MISSING** walks just the unbound ones |
 | Shader doesn't change | mpv caches by path — the engine writes unique temp paths; if stuck, restart the service |
 | Recording produces no file | `/tmp/ffmpeg-rec.err`; the service unit needs `CAP_SYS_ADMIN` (rerun `install-service.sh`) |
 | Camera won't start in LIVE | `/tmp/rpicam.err`; CSI camera must be detected by `rpicam-vid`; USB cams must be plain V4L2 capture nodes |
