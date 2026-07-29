@@ -148,8 +148,11 @@ class Menu:
         # Calibration wizard (WIZARD view) — see _wizard_* below.
         self._wiz_phase    = ""       # "OFFER" | "WALK" | "DONE"
         self._wiz_pad      = None     # {'vidpid','name'} being calibrated
-        self._wiz_step     = 0        # index into WIZARD_STEPS
+        self._wiz_step     = 0        # index into _wiz_steps
         self._wiz_bound    = 0        # keys actually bound this run
+        self._wiz_steps    = WIZARD_STEPS   # the walk (all controls, or just gaps)
+        self._wiz_title    = "CALIBRATE"
+        self._wiz_promote  = True     # make the pad primary when the walk finishes
 
     def open_page(self, page_name):
         """Open a menu page by name, running its leave/enter hooks.
@@ -916,6 +919,9 @@ class Menu:
         self._wiz_phase   = ""
         self._wiz_pad     = None
         self._wiz_step    = 0
+        self._wiz_steps   = WIZARD_STEPS
+        self._wiz_title   = "CALIBRATE"
+        self._wiz_promote = True
         self._cancel_learn_timer()
 
     def _cancel_learn_timer(self):
@@ -935,17 +941,52 @@ class Menu:
         except Exception as e:
             log.warning("input save_prefs: %s", e)
 
+    def _missing_actions(self):
+        """Controls with NO key bound to them, in WIZARD_STEPS order.
+
+        A keymap is a code→action dict, so nothing stops a rebind from leaving
+        a control with no key at all — and a missing BKSP or '.' is crippling
+        precisely because it's the key you'd navigate with to go fix it. Only
+        meaningful once a keymap exists: with none, the built-in numpad map is
+        in force and nothing is missing.
+        """
+        km = self.inst.cfg.keymap
+        if not km:
+            return []
+        bound = set(km.values())
+        return [(lbl, nm) for lbl, nm in WIZARD_STEPS if nm not in bound]
+
     def _input_menu_items(self):
         """(id, label, value) for the INPUT row list."""
-        cfg = self.inst.cfg
+        cfg  = self.inst.cfg
+        gaps = self._missing_actions()
         return [
             ("device", "PRIMARY DEVICE", cfg.input_primary or "auto (any)"),
             ("cols",   "COLS",           str(cfg.pad_cols)),
             ("rows",   "ROWS",           str(cfg.pad_rows)),
             ("wizard", "CALIBRATE PAD",  f"{len(WIZARD_STEPS)} steps ■"),
+            ("gaps",   "FIX MISSING",    (f"{len(gaps)} unbound ■" if gaps
+                                          else "all bound")),
             ("edit",   "EDIT KEYS",      f"{len(cfg.keymap)} mapped ■"),
             ("clear",  "CLEAR MAP",      "reset ■"),
         ]
+
+    def _wizard_target(self):
+        """Which device a walk should capture from: a recognized pad if one is
+        attached, else the current primary (so the walk also works for an
+        ordinary keyboard you want to re-map wholesale), else the device the
+        existing keymap was learned on."""
+        cfg = self.inst.cfg
+        pad = self.inst.kb.detect_pad()
+        if pad is not None:
+            return pad
+        for vp in (cfg.input_primary, cfg.keymap_dev):
+            if vp:
+                match = next((d for d in self.inst.kb.list_keyboards()
+                              if d["vidpid"] == vp), None)
+                if match:
+                    return match
+        return None
 
     def _input_adjust(self, d):
         """4/6 on the INPUT row list: step COLS / ROWS (1..12)."""
@@ -973,17 +1014,25 @@ class Menu:
             self._input_view = "DEVICES"
             self.sel = 0
         elif rid == "wizard":
-            # Calibrate a recognized pad if one is attached, else whatever is
-            # currently primary (so the walk also works for an ordinary
-            # keyboard you want to re-map wholesale).
-            pad = self.inst.kb.detect_pad()
-            if pad is None and self.inst.cfg.input_primary:
-                pad = next((d for d in self.inst.kb.list_keyboards()
-                            if d["vidpid"] == self.inst.cfg.input_primary), None)
+            pad = self._wizard_target()
             if pad is None:
                 self.inst.osd.show("NO PAD DETECTED — set PRIMARY first")
                 return
             self.start_calibration(pad, offer=False)
+        elif rid == "gaps":
+            # A short wizard over only the unbound controls. Press-only, so it
+            # works even when the missing control is the one you'd need to
+            # scroll the EDIT KEYS list with.
+            gaps = self._missing_actions()
+            if not gaps:
+                self.inst.osd.show("EVERY CONTROL HAS A KEY")
+                return
+            pad = self._wizard_target()
+            if pad is None:
+                self.inst.osd.show("NO PAD DETECTED — set PRIMARY first")
+                return
+            self.start_calibration(pad, offer=False, steps=gaps,
+                                   title="FIX MISSING", promote=False)
         elif rid == "edit":
             self._input_view = "LEARN"
             self.sel = 0
@@ -1120,12 +1169,20 @@ class Menu:
         except Exception as e:
             log.warning("calibration offer: %s", e)
 
-    def start_calibration(self, pad, offer=False):
+    def start_calibration(self, pad, offer=False, steps=None,
+                          title="CALIBRATE", promote=True):
         """Open the INPUT page on the wizard. offer=True asks first (the boot
-        path); False starts the walk immediately (the CALIBRATE PAD row)."""
-        self._wiz_pad   = pad
-        self._wiz_step  = 0
-        self._wiz_bound = 0
+        path); False starts the walk immediately (the CALIBRATE PAD row).
+
+        `steps` defaults to every control; FIX MISSING passes just the unbound
+        ones and promote=False, since repairing a gap shouldn't quietly change
+        which device is primary."""
+        self._wiz_pad     = pad
+        self._wiz_step    = 0
+        self._wiz_bound   = 0
+        self._wiz_steps   = steps if steps else WIZARD_STEPS
+        self._wiz_title   = title
+        self._wiz_promote = promote
         self._learn_status = ""
         self.page   = PAGES.index("INPUT")
         self.sel    = 0
@@ -1154,7 +1211,7 @@ class Menu:
             return
         if self._wiz_phase != "WALK":
             return
-        label, name = WIZARD_STEPS[self._wiz_step]
+        label, name = self._wiz_steps[self._wiz_step]
         km   = self.inst.cfg.keymap
         key  = str(code)
         prev = km.get(key)
@@ -1170,9 +1227,9 @@ class Menu:
 
     def _wizard_advance(self, skip=False):
         if skip:
-            self._learn_status = f"skipped {WIZARD_STEPS[self._wiz_step][0]}"
+            self._learn_status = f"skipped {self._wiz_steps[self._wiz_step][0]}"
         self._wiz_step += 1
-        if self._wiz_step >= len(WIZARD_STEPS):
+        if self._wiz_step >= len(self._wiz_steps):
             self._wizard_done()
         else:
             self._arm_learn(dev=self._wiz_pad["vidpid"],
@@ -1187,8 +1244,9 @@ class Menu:
         self._learn_dev   = None
         self._cancel_learn_timer()
         if self._wiz_pad:
-            cfg.input_primary = self._wiz_pad["vidpid"]
-            cfg.keymap_dev    = self._wiz_pad["vidpid"]
+            cfg.keymap_dev = self._wiz_pad["vidpid"]
+            if self._wiz_promote:
+                cfg.input_primary = self._wiz_pad["vidpid"]
         self._wiz_phase = "DONE"
         self._save_prefs()
         log.info("pad calibrated: %s — %d keys mapped, now primary",
@@ -1439,7 +1497,11 @@ class Menu:
                               font=font_sm, fill=C_EDIT)
                 cur  = (cfg.keymap.get(str(self._learn_code))
                         if self._learn_code is not None else None)
-                rows = [(lbl, nm == cur) for lbl, nm in INPUT_ACTIONS]
+                # Flag controls that currently have NO key at all, so a gap is
+                # visible at the moment you're choosing what to bind.
+                gaps = {nm for _l, nm in self._missing_actions()}
+                rows = [(lbl + ("   · no key" if nm in gaps else ""),
+                         nm == cur) for lbl, nm in INPUT_ACTIONS]
                 self._render_list(draw, font_sm, W, H - 24, palette, rows, y0=64)
                 if self._learn_status:
                     draw.text((W // 2, H - 32), self._learn_status[:40],
@@ -1460,17 +1522,56 @@ class Menu:
 
         # footer hint
         draw.line([0, H - 22, W, H - 22], fill=C_DIM, width=1)
-        if page == "INPUT" and self._input_view == "WIZARD":
-            hint = {"OFFER": "any pad key start   ENTER start   . skip",
-                    "WALK":  "press the pad key   BKSP skip   . stop",
-                    "DONE":  "ENTER close"}.get(self._wiz_phase, "")
-        elif page == "SETTINGS":
-            hint = ("+/BKSP change value   ENTER done"
-                    if self._settings_editing else
-                    "+/BKSP scroll   ENTER edit/do   7/9 page")
-        else:
-            hint = "+/BKSP scroll   4/6 adjust   5 ok   ENTER action   7/9 page"
-        draw.text((W // 2, H - 11), hint, font=font_sm, fill=C_DIM, anchor="mm")
+        draw.text((W // 2, H - 11), self._footer_hint(page), font=font_sm,
+                  fill=C_DIM, anchor="mm")
+
+    def _footer_hint(self, page):
+        """The footer key legend, per page and per sub-mode.
+
+        It used to be one generic string on every page, which was wrong more
+        often than right: BKSP scrolls on most pages but DELETES on BROWSER and
+        RESETS on MIDI, and 4/6 adjust nothing at all on BROWSER, SHADERS and
+        IMPORT. The top-of-page line says what the page DOES; this says how to
+        move around it, so the two don't repeat each other.
+        """
+        # Sub-modes first — while one is active it owns the keyboard, so the
+        # page's normal legend would be a lie.
+        if self._assigning:
+            return "press 4–9 = slot   any other key cancels"
+        if self._confirm_delete:
+            return "BKSP again = DELETE   any other key cancels"
+        if self._midi_editing:
+            return "type 0–127   ENTER confirm   BKSP delete digit"
+        if self._settings_editing:
+            return "+/BKSP or 4/6 change value   ENTER done"
+
+        if page == "INPUT":
+            view = self._input_view
+            if view == "WIZARD":
+                return {"OFFER": "any pad key start   ENTER start   . skip",
+                        "WALK":  "press the pad key   BKSP skip   . stop",
+                        "DONE":  "ENTER close"}.get(self._wiz_phase, "")
+            if view == "DEVICES":
+                return "+/BKSP or 8/2 scroll   5/ENTER select   . back"
+            if view == "LEARN":
+                return ("press a key on the pad   (wait = exit)"
+                        if self._learn_code is None else
+                        "+/BKSP or 8/2 scroll   ENTER bind   . back")
+            return "+/BKSP or 8/2 scroll   4/6 cols·rows   7/9 page"
+
+        # BKSP is the down key everywhere EXCEPT these two, where the page
+        # claims it — so those say so instead of pretending it scrolls.
+        if page == "BROWSER":
+            return "8/2 scroll   + up   BKSP = delete   7/9 page   . close"
+        if page == "MIDI":
+            return "8/2 scroll   + up   BKSP = reset   7/9 page   . close"
+        if page == "IMPORT":
+            return ("+/BKSP or 8/2 scroll   7/9 page   . eject"
+                    if self._usb_dev else
+                    "+/BKSP or 8/2 scroll   7/9 page   . close")
+        if page == "SETTINGS":
+            return "+/BKSP or 8/2 scroll   4/6 ±   7/9 page   . close"
+        return "+/BKSP or 8/2 scroll   7/9 page   . close"
 
     def _render_wizard(self, draw, font_lg, font_md, font_sm, W, H, palette):
         """The calibration walk owns the whole screen — one instruction, large,
@@ -1491,30 +1592,43 @@ class Menu:
                       font=font_md, fill=C_HL, anchor="mm")
             draw.text((cx, 206), "to teach it the controls",
                       font=font_sm, fill=C_DIM, anchor="mm")
-            draw.text((cx, 246), f"{len(WIZARD_STEPS)} keys, one prompt each",
+            draw.text((cx, 246), f"{len(self._wiz_steps)} keys, one prompt each",
                       font=font_sm, fill=C_DIM, anchor="mm")
             return
 
         if self._wiz_phase == "DONE":
-            draw.text((cx, 76),  "PAD CALIBRATED", font=font_md, fill=C_ACCENT,
-                      anchor="mm")
-            draw.text((cx, 116), f"{len(self.inst.cfg.keymap)} keys mapped",
-                      font=font_md, fill=C_HL, anchor="mm")
-            draw.text((cx, 158), "PRIMARY DEVICE:", font=font_sm, fill=C_DIM,
-                      anchor="mm")
-            draw.text((cx, 180), name[:30], font=font_sm, fill=C_VALUE,
-                      anchor="mm")
-            draw.text((cx, 224), "the pad now drives the instrument",
-                      font=font_sm, fill=C_DIM, anchor="mm")
+            gaps = len(self._missing_actions())
+            if self._wiz_promote:
+                draw.text((cx, 76), "PAD CALIBRATED", font=font_md,
+                          fill=C_ACCENT, anchor="mm")
+                draw.text((cx, 116), f"{len(self.inst.cfg.keymap)} keys mapped",
+                          font=font_md, fill=C_HL, anchor="mm")
+                draw.text((cx, 158), "PRIMARY DEVICE:", font=font_sm,
+                          fill=C_DIM, anchor="mm")
+                draw.text((cx, 180), name[:30], font=font_sm, fill=C_VALUE,
+                          anchor="mm")
+                draw.text((cx, 224), "the pad now drives the instrument",
+                          font=font_sm, fill=C_DIM, anchor="mm")
+            else:
+                draw.text((cx, 88), "KEYS BOUND", font=font_md, fill=C_ACCENT,
+                          anchor="mm")
+                draw.text((cx, 132), f"{self._wiz_bound} fixed",
+                          font=font_md, fill=C_HL, anchor="mm")
+                draw.text((cx, 186),
+                          "every control has a key" if not gaps else
+                          f"{gaps} still with no key",
+                          font=font_sm, fill=C_DIM if not gaps else C_EDIT,
+                          anchor="mm")
             draw.text((cx, 246), "fix single keys with EDIT KEYS",
                       font=font_sm, fill=C_DIM, anchor="mm")
             return
 
         # WALK — progress, then the one action being asked for.
-        total = len(WIZARD_STEPS)
+        total = len(self._wiz_steps)
         step  = min(self._wiz_step, total - 1)
-        label = WIZARD_STEPS[step][0]
-        draw.text((10, 44), f"CALIBRATE {name[:16]}", font=font_sm, fill=C_DIM)
+        label = self._wiz_steps[step][0]
+        draw.text((10, 44), f"{self._wiz_title} {name[:16]}", font=font_sm,
+                  fill=C_DIM)
         draw.text((W - 10, 44), f"{step + 1} / {total}", font=font_sm,
                   fill=C_DIM, anchor="rt")
 

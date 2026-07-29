@@ -478,7 +478,11 @@ closes the page and jumps to that tab.
 | **Enter** | SETTINGS: open the highlighted row for editing (or fire an action row); BROWSER/SHADERS: start slot-assign; IMPORT: eject; elsewhere same as 5 |
 | **7 / 9** | previous / next page (wraps) |
 | **+** | scroll up (alternative to 8) — steps the value instead while a SETTINGS row is in edit mode |
-| **Bksp** | scroll down (SETTINGS — steps the value instead while a row is in edit mode); reset CC (MIDI); eject (IMPORT); arm/confirm delete (BROWSER) |
+| **Bksp** | scroll down — **except** on MIDI (reset CC) and BROWSER (arm/confirm delete), where the page claims it. On SETTINGS it steps the value instead while a row is in edit mode |
+
+The footer line on every menu page states that page's actual keys, including
+where **Bksp** is *not* scroll-down, so you never have to remember the
+exceptions.
 
 While a menu page is open, every setting you change (overlay/blend toggles,
 FX/GEN cycling, params, MIDI CC bindings) applies to the live output
@@ -562,7 +566,8 @@ shows `RUN install-usb-import.sh`.
 - In the file list, **5** copies the highlighted file into `clips/` (a `✓`
   marks files already imported; same-named files are skipped). Imported clips
   are rescanned immediately, so they appear in BROWSER right away.
-- **Enter** (or **Bksp**) ejects the drive and returns to the drive list.
+- **Enter** (or **.**) ejects the drive and returns to the drive list. **Bksp**
+  scrolls the file list here, it does not eject.
 - The drive is always unmounted when you leave the page or close the menu.
 
 ### INPUT page (USB keyboard config)
@@ -610,7 +615,14 @@ The page opens on a short row list:
   press-to-learn binds whatever key you press, so you hold the pad the way
   you'll use it and press keys in reading order.
 - **CALIBRATE PAD** — **5/Enter** runs the full 18-step walk described above.
-- **EDIT KEYS** — **5/Enter** starts **press-to-learn** (below).
+- **FIX MISSING** — shows how many controls have **no key at all** and, on
+  **5/Enter**, runs a short press-only walk over just those. A keymap is
+  keycode → action, so rebinding a key can silently leave a control stranded —
+  and a missing `Bksp` or `.` is the worst case, because it's the key you'd
+  need to navigate to the fix. This is press-only for that reason: it never
+  requires scrolling. It does *not* change the primary device.
+- **EDIT KEYS** — **5/Enter** starts **press-to-learn** (below). Any control
+  with no key is flagged `· no key` in the action list.
 - **CLEAR MAP** — **5/Enter** wipes all learned bindings, falling back to the
   built-in numpad map (so a plain USB numpad works again with no config). It
   also forgets which pad was calibrated, so the boot offer returns.
