@@ -82,6 +82,11 @@ Diagnostics: mpv errors in `/tmp/mpv.err`, camera errors in `/tmp/rpicam.err`.
 └──────┴──────┴──────┴──────┘
 ```
 
+> **The `000` key is not usable.** It has no keycode of its own — it emits
+> three rapid `KEY_KP0` presses, arriving as three plain `0`s — so nothing
+> binds it. Earlier revisions of this manual described it as a global trail
+> toggle; that toggle is the SETTINGS menu's **TRAIL** row (and MIDI CC 81).
+
 The SPI display is organised as five **tabs** — SHADER, FX, SAMPLER, LIVE,
 SETTINGS — and the top-row keys are permanently bound to them, in *every*
 context (even while a menu page is open):
@@ -136,11 +141,15 @@ optional last step, or add it later in EDIT KEYS.
 > yourself, the **panic hold** (any three keys for two seconds) still opens
 > the calibration walk.
 
-> **Note:** these keys only change what the SPI display is showing — they do
-> **not** switch the instrument's SAMPLER/SHADER/LIVE mode. Mode is switched
-> by the GPIO mode button, MIDI (CC 80/82/83 or notes 120/122/123), or the
-> SETTINGS menu's `MODE` row (see *Menu system*). See *Known issues* — there
-> is currently no numpad key bound to mode switching.
+> **Note:** these keys only change what the SPI display is showing — pressing
+> the SAMPLER tab key does **not** by itself put the instrument in SAMPLER
+> mode. **Enter on that tab's grid screen is what commits it** (with nothing
+> staged), and it is the only numpad route into SHADER / SAMPLER / LIVE. Mode
+> also changes via the GPIO mode button, MIDI (CC 80/82/83 or notes
+> 120/122/123), the SETTINGS menu's `MODE` row, or loading a preset.
+>
+> Enter only does this on the **grid** screen. On a tab's params screen it
+> toggles param edit mode instead — see *Known issues*.
 
 ### The 3×3 grid (first screen of SHADER / FX / SAMPLER / LIVE / SETTINGS)
 
@@ -153,8 +162,7 @@ position (7 = top-left … 3 = bottom-right):
 | **+** | previous page (SHADER / FX grids and all three preset grids paginate 9 at a time) |
 | **−** | next page (same screens) |
 | **0** | toggle **STAGED** mode (SAMPLER grid only) — footer pill shows amber `STAGED` (clip picks wait for **Enter**) vs. green `LIVE` (clip picks apply immediately). SHADER and FX grid taps always apply immediately regardless of this setting. Turning STAGED back off discards anything pending |
-| **Enter** | push all staged picks to the live output |
-| **000** | toggle the temporal trail (works from any screen) |
+| **Enter** | push all staged picks to the live output — **or, when nothing is staged, commit this tab's mode** to the instrument (SHADER / SAMPLER / LIVE; FX and SETTINGS aren't modes and just say so) |
 
 Per-tab grid behaviour — **SHADER and FX use tap/hold**, distinguished by how
 long the key is held (see *Numpad layout* → *Tap vs. hold*); the other three
@@ -232,7 +240,6 @@ rows) with two interaction modes:
 | **9** | **DEFAULT** — reset this screen's target to its authored defaults (see below) | *(no effect)* |
 | **Enter** | enter edit mode on the highlighted parameter | exit edit mode |
 | **0** | toggle STAGED / LIVE | toggle STAGED / LIVE |
-| **000** | toggle the temporal trail | toggle the temporal trail |
 
 The selected row is **cyan**; entering edit mode turns the header and that
 row **amber**, so it's visually obvious whether +/− will move the
@@ -387,8 +394,8 @@ via the SETTINGS menu's on/off toggles and FX/GEN cycle rows.
 
 The trail's **on/off, echo count, delay, blend mode and per-echo opacity** are
 no longer stranded — they're editable **per clip** on the CLIP settings screen
-(above). The old global `000`-key trail toggle still flips `trail_on` for the
-current source, but the per-clip screen is the real control now.
+(above). The SETTINGS menu's **TRAIL** row still flips `trail_on` for the current
+source, but the per-clip screen is the real control now.
 
 Note: a generative shader's own **palette param (p4)** is *not* in this list
 — it's an ordinary shader parameter, so if the shader's source defines a
@@ -474,21 +481,16 @@ There is **no touch input** — all control is numpad / MIDI / GPIO.
 
 ## Menu system
 
-Menu pages are reached through the **SETTINGS tab** (key **.** from any grid
-screen): its grid has six cells — BROWSER (key **7**), SHADERS (**8**),
+Menu pages are reached through the **SETTINGS tab** (the key you bound to
+**SETTINGS TAB**): its grid has six cells — BROWSER (key **7**), SHADERS (**8**),
 SETTINGS (**9**), MIDI (**4**), IMPORT (**5**), INPUT (**6**) — and pressing
 one jumps straight into that page. Presets are *not* here any more; they are grids on
 the SHADER, FX and LIVE tabs (see *Preset grids*). To back out of a
-page, press **.** again — this cancels any in-progress sub-action first
-(assign / CC-edit / confirm-delete / USB browse) if one's active, otherwise
-closes the page back to the SETTINGS grid; pressing any *other* tab key also
-closes the page and jumps to that tab.
-
-> **Note:** because **.** now backs out of an open page rather than
-> advancing, it no longer cycles onward through SETTINGS' own BROWSER/MIDI
-> sub-screens — pressing it on the SETTINGS grid opens BROWSER, and pressing
-> it again returns to the grid. Both pages remain reachable from the
-> SETTINGS grid cells (BROWSER = key 7, MIDI = key 5).
+page, press **.** — this cancels any in-progress sub-action first (assign /
+CC-edit / confirm-delete / USB browse) if one's active, otherwise closes the
+page back to the SETTINGS grid. Pressing any *other* tab key also closes the
+page and jumps to that tab, and pressing the **SETTINGS key** again returns
+you to the tab you came from.
 
 | Key | Action in menu |
 |---|---|
@@ -613,12 +615,14 @@ makes sure nothing is missed. At the end the pad is mapped **and made the
 primary device**, so only it drives the live output.
 
 - **The last step, SETTINGS TAB, is optional** and says so on screen
-  (`OPTIONAL — PRESS A SPARE KEY FOR`). Bind it if your pad has a key going
-  spare: it gives SETTINGS its own toggle key and simplifies **.** to
-  back-only (see *The SETTINGS key*). If you have no key to spare — a 17-key
-  numpad has none — just **wait ~12 s and it skips itself**, because from the
-  pad alone every key you press would bind rather than pass. Skipping it is a
-  choice, not a fault: **FIX MISSING** never counts it as a gap.
+  (`OPTIONAL — PRESS A SPARE KEY FOR`). **Bind it if you possibly can** — it is
+  the only way to reach the SETTINGS tab, and therefore the only way to reach
+  BROWSER, MIDI, IMPORT and INPUT (see *The SETTINGS key*). If you genuinely
+  have no key to spare — a 17-key numpad has none — just **wait ~12 s and it
+  skips itself**, because from the pad alone every key you press would bind
+  rather than pass. Skipping it is a choice, not a fault: **FIX MISSING**
+  never counts it as a gap. If you skip it and then need a menu, the **panic
+  hold** (any three keys for two seconds) reopens this walk.
 - The walk asks *action → key*; **EDIT KEYS** (below) asks *key → action*.
   Use the walk for a new pad, EDIT KEYS to fix one key afterwards.
 - Pressing a key you've already used reassigns it — the screen says which
@@ -728,7 +732,7 @@ immediately, so a learned layout survives a restart.
 ## Workflows
 
 ### Build a performance set
-1. Press **.** (SETTINGS tab) → tap the **BROWSER** cell. Highlight a clip,
+1. Press the **SETTINGS key** → tap the **BROWSER** cell. Highlight a clip,
    press **Enter**, then press the slot key (4–9) to assign it.
 2. Repeat for up to six clips. (SHADERS also lets you assign a generative
    shader to a slot, but nothing currently reads that assignment back — see
@@ -811,8 +815,8 @@ Two independent recorders exist in the codebase, with two different outputs:
 Open a clip's **CLIP settings** (hold it on the SAMPLER grid) and set
 **TRAIL** on, then dial **TRL STEP** (echo count), **TRL TIME** (delay),
 **TRL MODE** (blend) and **TRL BLEND** (per-echo opacity). It's per clip, so
-each clip keeps its own trail. The old **000** key still toggles the current
-source's trail globally, but the CLIP screen is the real control now. The
+each clip keeps its own trail. The SETTINGS menu's **TRAIL** row still toggles the
+current source's trail globally, but the CLIP screen is the real control now. The
 global hue/saturation and blend mode/amount/source details remain without a
 live surface besides MIDI CC (`blend_amt`, `ovl_opacity`, `trl_decay`) — see
 *Known issues*.
@@ -820,7 +824,7 @@ live surface besides MIDI CC (`blend_amt`, `ovl_opacity`, `trl_decay`) — see
 ### Map a MIDI controller
 1. Plug in — connects automatically within 3 s.
 2. Defaults work for most controllers (mod wheel = p1, etc. — see *MIDI reference*).
-3. To rebind: **.** (SETTINGS tab) → **MIDI** cell → highlight target → **5**
+3. To rebind: **SETTINGS key** → **MIDI** cell → highlight target → **5**
    → type the CC number → **Enter**. User overrides win over built-ins.
 
 ### Keep your setup
@@ -838,8 +842,8 @@ so reload a saved session with SETTINGS → **RESTART SAME** (see *State files* 
 ### Trail — echo time delay
 Edited **per clip** on the CLIP settings screen (hold a clip): **TRL STEP**
 (echo count 1–5), **TRL TIME** (delay to the furthest echo), **TRL MODE**
-(blend mode) and **TRL BLEND** (per-echo opacity). The **000** key still
-toggles the current source's trail globally. Two underlying types exist in
+(blend mode) and **TRL BLEND** (per-echo opacity). The SETTINGS menu's
+**TRAIL** row still toggles the current source's trail globally. Two underlying types exist in
 `prefs.json`/presets (`trail_blend_type`); the CLIP screen drives the **MODE**
 type — the OPACITY type is engine-only, not exposed live:
 
@@ -863,7 +867,7 @@ shows.
 A GLSL trail would need cross-frame feedback (this frame reading last frame's
 accumulator); the Pi 5 V3D / libplacebo renderer does not persist feedback
 textures between frames (verified with controlled render tests), so it cannot
-be done on this hardware. The **000** key refuses in SHADER mode
+be done on this hardware. `trail_toggle()` refuses in SHADER mode
 (`TRAIL N/A IN SHADER`); a per-clip trail can still be set there but stays
 hidden behind the shader. The trail is effectively a SAMPLER / LIVE feature.
 
@@ -1133,10 +1137,14 @@ were not carried over to the new one — they remain fully implemented
 elsewhere (engine code, `prefs.json`/preset fields, MIDI) but currently have
 no live control path from the numpad:
 
-- **No numpad key switches the instrument's SAMPLER/SHADER/LIVE mode.** The
-  top-row keys only pick which *display tab* is showing. Mode changes only
-  via the GPIO mode button (BCM 5), MIDI (CC 80/82/83, notes 120/122/123),
-  the SETTINGS menu's `MODE` row, or loading a preset that specifies one.
+- **Display tab is not instrument mode.** The top-row keys only pick which
+  *display tab* is showing; **Enter** on that tab's **grid** screen is what
+  commits the mode, and it is the only numpad route into SHADER / SAMPLER /
+  LIVE. The trap is that Enter does this on the grid screen *only* — on a
+  tab's params screen the same key toggles param edit mode, which on LIVE
+  (no params) looks like a dead key. Mode also changes via the GPIO mode
+  button (BCM 5), MIDI (CC 80/82/83, notes 120/122/123), the SETTINGS menu's
+  `MODE` row, or loading a preset that specifies one.
 - **COLOUR / BLEND "layers" are unreachable.** `KeyboardController` still has
   the stepping logic for hue, saturation, and shader/overlay blend
   mode/amount/source (`control/keyboard.py` `_step_param`, layers 2–3), but
