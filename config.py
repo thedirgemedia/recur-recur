@@ -4,6 +4,7 @@
 import os
 import json
 import logging
+import threading
 
 log = logging.getLogger("config")
 
@@ -32,6 +33,55 @@ PRESET_STORES = {
 
 class Config:
     def __init__(self, args=None):
+        """Every persistent setting the instrument has, grouped by domain.
+
+        This is the app's real schema, so it is laid out as one, rather than
+        as one 277-line attribute dump. Each _init_* below owns exactly one
+        domain and they are called in dependency order — a few groups read
+        what an earlier one set (the composite override below needs output,
+        width/height and fps), so the order here is load-bearing, not
+        cosmetic.
+        """
+        # cfg is shared mutable state across ten modules and several threads.
+        # Scalar attributes are safe under the GIL — a rebind is atomic — but
+        # ITERATION is not: a dict that grows or shrinks while another thread
+        # walks it raises "dictionary changed size during iteration". The
+        # display thread walks clip_settings and midi_target_cc every frame
+        # while the keyboard, MIDI and menu threads write them, and the render
+        # loop's broad except would swallow the result as one dropped frame.
+        # This lock guards only those iterate-from-another-thread dicts; it is
+        # deliberately not a general "lock all of cfg". Created first so no
+        # group below can run before it exists.
+        self._lock = threading.RLock()
+
+        self._init_session(args)
+        self._init_playback()
+        self._init_slots()
+        self._init_input()
+        self._init_presets()
+        self._init_camera()
+        self._init_shader_chain()
+        self._init_fx_chain()
+        self._init_current()
+        self._init_midi()
+        self._init_blend()
+        self._init_lfos()
+        self._init_overlay()
+        self._init_video()
+        self._init_clip_settings()
+        self._init_trail()
+        self._init_colour()
+
+        # composite needs SD-friendly geometry — reads output/width/height/fps,
+        # so it has to run after every group above.
+        if self.output == "composite":
+            self.width, self.height = 720, 576   # PAL; use 720x480 for NTSC
+            self.fps = 25
+
+        self._validate()
+
+    def _init_session(self, args):
+        """Session config derived from the command line, plus where things live."""
         # output: 'hdmi' or 'composite'
         self.output      = getattr(args, "output", "hdmi")
         self.start_mode  = getattr(args, "mode", "SHADER")
@@ -54,6 +104,8 @@ class Config:
         self.use_midi = not getattr(args, "no_midi", False)
         self.use_gpio = not getattr(args, "no_gpio", False)
 
+    def _init_playback(self):
+        """How video is driven: the mpv IPC socket and the two frame rates."""
         # mpv IPC socket — how we drive the video player
         self.mpv_socket = "/tmp/recur-mpv.sock"
         self.fps        = 30
@@ -65,6 +117,8 @@ class Config:
         # Runtime-only, never persisted.
         self.render_fps = None
 
+    def _init_slots(self):
+        """Numpad slot assignments — key number to clip / shader."""
         # Numpad key-to-clip slot assignments.  Maps key number (4–9) to the
         # absolute path of the assigned clip, or None if the slot is empty.
         # Assigned from the BROWSER menu (ENTER, then a slot key 4–9).
@@ -81,6 +135,8 @@ class Config:
         # to keys from a menu page; now a preset's grid position IS its
         # identity — see preset_name() — so there is nothing to assign.)
 
+    def _init_input(self):
+        """USB input device + keymap, owned by the INPUT menu page."""
         # Input-device / keymap config — driven by the USB INPUT menu page.
         #   input_primary : "vid:pid" (hex) of the chosen performance controller,
         #                   or "" for auto (any USB keyboard drives play). Only
@@ -108,12 +164,16 @@ class Config:
         self.pad_cols      = 6
         self.pad_rows      = 4
 
+    def _init_presets(self):
+        """Preset bookkeeping."""
         # Bumped whenever a preset file is written or removed. The display
         # caches its rendered frame against a state tuple; without this it
         # would have to stat every visible slot every frame to notice a save.
         # Runtime-only, never persisted.
         self.preset_gen = 0
 
+    def _init_camera(self):
+        """Camera capture resolution."""
         # Camera capture resolution.  The IMX708 has one native low-res sensor
         # mode (1536×864); the ISP then scales down to whatever we request here.
         # Lower = less encode/decode work = less lag.  Default 640×360 keeps
@@ -122,6 +182,8 @@ class Config:
         self.camera_height = 360
         self.CAMERA_RESOLUTIONS = [(320, 180), (640, 360), (1280, 720)]
 
+    def _init_shader_chain(self):
+        """Generative shader chain (up to 4 stacked slots)."""
         # Generative shader chain: up to 4 generative shaders stacked in
         # sequence, mirroring the FX chain below. shader_params_chain[i]
         # holds slot i's own p1-p10; shader_blend_chain[i] holds slot i's
@@ -137,6 +199,9 @@ class Config:
         # Backward-compat aliases: always kept in sync via _sync_shader_compat().
         self.params             = {f"p{n}": 0.5 for n in range(1, 11)}
         self.shader_layer_blend = {"mode": "normal", "amt": 1.0}
+
+    def _init_fx_chain(self):
+        """FX shader chain (up to 4 stacked slots)."""
         # FX chain: up to 3 FX shader names stacked in sequence.
         # fx_params_chain[i] holds the independent params for chain slot i.
         # fx_edit_slot selects which chain slot the params screen edits.
@@ -157,6 +222,8 @@ class Config:
         self.fx_blend   = {"mode": "normal", "amt": 1.0}
         self.current_fx = None
 
+    def _init_current(self):
+        """What is selected right now, and the FX exclusion sets."""
         # currently selected files / mode
         self.current_mode   = "SHADER"
         self.current_clip   = None
@@ -174,6 +241,8 @@ class Config:
         # black at the corners.
         self.rotating_fx = {"mirror.glsl", "rotate_zoom.glsl", "kaleido_warp.glsl"}
 
+    def _init_midi(self):
+        """User MIDI CC assignments."""
         # User-defined MIDI CC assignments — map target name → CC number (0–127).
         # None means "use the built-in default from midi.py".
         # Targets: p1 p2 p3 p4  blend_amt ovl_opacity trl_decay
@@ -183,6 +252,8 @@ class Config:
         #          mode_sampler mode_shader mode_live
         self.midi_target_cc: dict = {}
 
+    def _init_blend(self):
+        """SHADER-mode blending and the shared blend-mode palettes."""
         # SHADER mode: FX stacked on top of the generative shader.
         # Set True when +/- is pressed in SHADER mode; cleared on mode entry.
         self.shader_fx_stack = False
@@ -209,6 +280,8 @@ class Config:
         self.shader_blend_source  = "clip"
         self.SHADER_BLEND_SOURCES = ("clip", "live")
 
+    def _init_lfos(self):
+        """The three GPU-evaluated LFOs and their musical divisions."""
         # ── LFOs ─────────────────────────────────────────────────────────────
         # Three LFOs that can drive any shader/FX param. They are evaluated on
         # the GPU (engine/shader.py substitutes a recur_lfo() call in place of a
@@ -231,6 +304,8 @@ class Config:
         self.LFO_BEATS  = (0.125, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0)
         self.LFO_BEAT_LABELS = ("1/8", "1/4", "1/2", "1", "2", "4", "8", "16")
 
+    def _init_overlay(self):
+        """V-overlay: self-blend of the current frame."""
         # V-overlay state: self-blend of the current frame using overlay_mode,
         # mixed at overlay_blend_amount (OVL OPC). No time delay — echoes are
         # the trail's job now.
@@ -245,6 +320,8 @@ class Config:
                               "linearlight", "pinlight", "hardmix",
                               "grainmerge", "grainextract")
 
+    def _init_video(self):
+        """Mode cycling and aspect-ratio scaling."""
         # Whether LIVE mode appears in the ENTER-key cycle. When False,
         # cycle_mode() skips LIVE: SAMPLER → SHADER → SAMPLER.
         self.live_mode_enabled = True
@@ -256,6 +333,8 @@ class Config:
         self.video_scale_mode  = "fit"
         self.VIDEO_SCALE_MODES = ("fit", "fill", "stretch")
 
+    def _init_clip_settings(self):
+        """Per-clip playback settings, keyed by clip path."""
         # Per-clip playback settings (SAMPLER / LIVE), reached by long-pressing
         # a clip on the SAMPLER grid. Keyed by clip path; each clip remembers
         # its own orientation, zoom, speed, direction and trail so loading it
@@ -275,6 +354,8 @@ class Config:
         self.VIDEO_ZOOM_MAX     = 4.0
         self.CLIP_TRAIL_MAX     = 5
 
+    def _init_trail(self):
+        """Temporal trail — the time-delayed echo chain."""
         # Temporal trail — echo time delay.
         # Toggle: 000 key.  Mode: menu TRAIL MODE row.  Decay: FX layer TRL DEC param.
         # Two blend types selectable from menu TRAIL TYPE row:
@@ -296,19 +377,14 @@ class Config:
                                   "subtract", "lighten", "darken", "phoenix", "negation", "divide")
         self.TRAIL_BLEND_TYPES = ("mode", "opacity")
 
+    def _init_colour(self):
+        """Global colour control, applied last in every mode."""
         # Global colour control (GLSL pass applied last in every mode).
         #   color_hue: hue rotation in turns, 0..1 (= 0..360°); 0 = no shift
         #   color_sat: saturation multiplier, 0 = greyscale, 1 = normal, 2 = vivid
         self.color_hue = 0.0
         self.color_sat = 1.0
         self.COLOR_SAT_MAX = 2.0
-
-        # composite needs SD-friendly geometry
-        if self.output == "composite":
-            self.width, self.height = 720, 576   # PAL; use 720x480 for NTSC
-            self.fps = 25
-
-        self._validate()
 
     # --------------------------------------------------------- prefs persistence
     PREFS_PATH = os.path.join(_PROJECT_ROOT, 'prefs.json')
@@ -367,7 +443,20 @@ class Config:
         """Store one per-clip setting (no-op without a path)."""
         if not path:
             return
-        self.clip_settings.setdefault(path, {})[key] = value
+        with self._lock:
+            self.clip_settings.setdefault(path, {})[key] = value
+
+    def clip_reset(self, path):
+        """Restore one clip to CLIP_DEFAULTS, keeping any LFO bindings."""
+        if not path:
+            return
+        with self._lock:
+            self.clip_settings.setdefault(path, {}).update(self.CLIP_DEFAULTS)
+
+    def clip_snapshot(self, path):
+        """A private copy of one clip's settings, safe to iterate off-thread."""
+        with self._lock:
+            return dict(self.clip_settings.get(path, {}) or {})
 
     def clip_lfo(self, path, target):
         """LFO index bound to a per-clip continuous target ('zoom'/'speed'),
@@ -382,10 +471,26 @@ class Config:
         """Bind (idx) or clear (idx=None) an LFO on a per-clip target."""
         if not path:
             return
-        if idx is None:
-            self.clip_settings.get(path, {}).pop("lfo_" + target, None)
-        else:
-            self.clip_settings.setdefault(path, {})["lfo_" + target] = int(idx)
+        with self._lock:
+            if idx is None:
+                self.clip_settings.get(path, {}).pop("lfo_" + target, None)
+            else:
+                self.clip_settings.setdefault(path, {})["lfo_" + target] = int(idx)
+
+    # ---- MIDI CC assignments: same story, same lock -------------------------
+
+    def midi_cc_snapshot(self):
+        """A private copy of the CC map, safe to iterate off-thread."""
+        with self._lock:
+            return dict(self.midi_target_cc)
+
+    def midi_cc_set(self, target, cc):
+        with self._lock:
+            self.midi_target_cc[target] = cc
+
+    def midi_cc_pop(self, target):
+        with self._lock:
+            return self.midi_target_cc.pop(target, None)
 
     def _sync_shader_compat(self):
         """Keep backward-compat aliases (current_shader / params /
@@ -512,6 +617,14 @@ class Config:
 
     def save_prefs(self, sampler_mode=None):
         data = {key: getattr(self, key, None) for key in self._PREFS_ATTRS}
+        # json.dump walks these, and it can run on any thread that saves —
+        # so hand it private copies rather than the live dicts another thread
+        # may be writing. clip_settings is nested, so copy the inner dicts too.
+        with self._lock:
+            data['clip_settings']  = {p: dict(v) for p, v in self.clip_settings.items()}
+            data['midi_target_cc'] = dict(self.midi_target_cc)
+        data['keymap'] = dict(self.keymap)
+        data['lfos']   = [dict(l) for l in self.lfos]
         data['params']              = dict(self.params)
         data['shader_chain']        = list(self.shader_chain)
         data['shader_params_chain'] = [dict(p) for p in self.shader_params_chain]

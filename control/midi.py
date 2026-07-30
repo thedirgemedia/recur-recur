@@ -308,7 +308,9 @@ class MidiController:
         # lookup is cached (rebuilt lazily via invalidate_cc_map) so this is
         # O(1) instead of scanning the whole map on every CC message.
         if self._cc_reverse is None:
-            user_map: dict = getattr(self.inst.cfg, 'midi_target_cc', {})
+            # Snapshot: this runs on the MIDI thread while the menu and numpad
+            # threads edit the map, and building the reverse map iterates it.
+            user_map: dict = self.inst.cfg.midi_cc_snapshot()
             self._cc_reverse = {cc_: target for target, cc_ in user_map.items()
                                  if cc_ is not None}
         target = self._cc_reverse.get(cc)

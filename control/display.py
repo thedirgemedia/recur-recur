@@ -28,6 +28,28 @@ FB_W  = 480
 FB_H  = 320
 FPS   = 20
 
+# The render loop skips render+convert entirely when the param signature is
+# unchanged (see _render_loop). KEEPALIVE_S bounds how long anything the
+# signature does NOT cover can stay stale on the panel: at least one full
+# render+sample-compare happens this often no matter what. Measured costs that
+# justify the gate: signature 0.006 ms, PIL render 4.17 ms, RGB565 convert
+# 1.53 ms — the signature is ~950x cheaper than the frame it avoids.
+KEEPALIVE_S = 0.5
+
+# Dirty-row updates. A full 480x320x2 frame is 307200 bytes ≈ 307 ms of bus
+# time at SPI_SPEED, so a full refresh caps out near 3 fps no matter what FPS
+# says — writing only the rows that changed is what makes menu scrolling and
+# LFO-driven params keep up. Most screens change a few rows, not the panel.
+ROW_BYTES = FB_W * 2
+BAND_MERGE_GAP = 8      # bridge gaps this small rather than open a new window
+FULL_WRITE_FRAC = 0.75  # past this share of the panel, just write the frame
+
+# Timeline geometry. Module-level because the render loop signatures the
+# playhead at the same pixel resolution _draw_timeline draws it — if these
+# disagree, the playhead either stutters or redraws pointlessly.
+TL_X = 10
+TL_W = FB_W - 20
+
 # Fixed key order for the param-signature change detector below — avoids a
 # sorted() + lambda call on cfg.params/fx_params every render tick when the
 # key set (p1..p10, f1..f5) never actually changes.
@@ -157,6 +179,37 @@ def _to_spi_bytes(img):
             out[j + 1] = v & 0xFF
             j += 2
         return bytes(out)
+
+
+def _dirty_bands(cur, prev):
+    """Row bands that differ between two RGB565 frames, as [(r0, r1), ...].
+
+    [] means the frames are identical. Bands separated by fewer than
+    BAND_MERGE_GAP unchanged rows are merged: opening a second window costs a
+    CASET+RASET+RAMWR round trip, which outweighs pushing a few unchanged rows
+    through a window that is already open.
+    """
+    if HAS_NUMPY:
+        a = np.frombuffer(cur,  dtype=np.uint8).reshape(FB_H, ROW_BYTES)
+        b = np.frombuffer(prev, dtype=np.uint8).reshape(FB_H, ROW_BYTES)
+        changed = np.flatnonzero((a != b).any(axis=1)).tolist()
+    else:
+        # memoryview slices don't copy, so this stays cheap without numpy.
+        mc, mp = memoryview(cur), memoryview(prev)
+        changed = [i for i in range(FB_H)
+                   if mc[i * ROW_BYTES:(i + 1) * ROW_BYTES]
+                   != mp[i * ROW_BYTES:(i + 1) * ROW_BYTES]]
+    if not changed:
+        return []
+    bands = []
+    start = last = changed[0]
+    for r in changed[1:]:
+        if r - last > BAND_MERGE_GAP:
+            bands.append((start, last))
+            start = r
+        last = r
+    bands.append((start, last))
+    return bands
 
 
 def _load_font(size):
@@ -424,6 +477,33 @@ class DisplayController:
 
     # ── render loop ───────────────────────────────────────────────────────────
 
+    def _timeline_sig(self, inst, _kb, _smp):
+        """Signature terms for the SAMPLER playhead, or None when it isn't shown.
+
+        The playhead moves every frame while a clip plays, so signaturing it
+        unconditionally would defeat the render gate on every tab — including
+        the four that never draw a timeline. So mirror _render's routing and
+        signature it only while the one screen that draws it is actually up
+        (_render_sampler_tab is the sole caller of _draw_timeline).
+        """
+        if _smp is None or TABS[self._active_tab] != "SAMPLER":
+            return None
+        screen = _TAB_SCREENS[self._active_tab][self._tab_screen[self._active_tab]]
+        if (screen.endswith("_GRID")
+                or getattr(_kb, "_preset_opts", None) is not None
+                or getattr(_kb, "_lfo_screen", False)
+                or getattr(_kb, "_param_layer", 0) == 5):   # CLIP settings
+            return None
+        dur = float(getattr(_smp, "duration", 0.0) or 0.0)
+        pos = float(getattr(_smp, "time_pos", 0.0) or 0.0)
+        # Quantise to what is actually visible — the playhead's pixel column and
+        # the 0.1 s resolution of the position readout — so sub-pixel drift
+        # doesn't trigger a redraw that would look identical.
+        return (round(pos, 1), round(dur, 1),
+                round(float(getattr(_smp, "in_pt", 0.0) or 0.0), 2),
+                getattr(_smp, "out_pt", None),
+                int(max(0.0, min(pos, dur)) / dur * TL_W) if dur > 0 else 0)
+
     def _render_loop(self):
         font_lg = _load_font(38)
         font_md = _load_font(20)
@@ -436,15 +516,10 @@ class DisplayController:
             log.error("SPI display init failed: %s", e)
             return
 
-        last_snapshot  = b""
+        last_data      = None
         last_param_sig = None
+        last_render    = 0.0
         frame_n = 0
-        # Sample 128 evenly-spaced bytes as a cheap pixel-change detector.
-        # Pixel sampling alone can miss small bar-fill changes (e.g. p5 at low
-        # values has a short bar; none of the 128 sample points may land in the
-        # changed region).  A secondary param-signature tuple catches any cfg
-        # or selection change that the pixel samples would miss.
-        _STEP = (FB_W * FB_H * 2) // 128
         try:
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -453,6 +528,7 @@ class DisplayController:
                     cfg  = inst.cfg
                     _kb  = getattr(inst, "kb", None)
                     _rec = getattr(inst, "recorder", None)
+                    _smp = getattr(inst, "sampler", None)
                     param_sig = (
                         tuple(cfg.params.get(k, 0.5) for k in _P_SIG_KEYS),
                         tuple(cfg.fx_params.get(k, 0.5) for k in _F_SIG_KEYS),
@@ -471,9 +547,10 @@ class DisplayController:
                         getattr(cfg, "shader_blend_source", ""),
                         getattr(cfg, "trail_on",      False),
                         getattr(cfg, "current_clip",  None),
-                        tuple(sorted(
-                            (getattr(cfg, "clip_settings", {}) or {})
-                            .get(getattr(cfg, "current_clip", None), {}).items())),
+                        # Snapshots, not the live dicts: the keyboard/MIDI/menu
+                        # threads write these while this thread walks them.
+                        tuple(sorted(cfg.clip_snapshot(
+                            getattr(cfg, "current_clip", None)).items())),
                         getattr(_kb, "_param_idx",   0),
                         getattr(_kb, "_param_layer", 0),
                         getattr(_kb, "_editing_param", False),
@@ -484,7 +561,7 @@ class DisplayController:
                         round(getattr(cfg, "lfo_bpm", 120.0), 2),
                         getattr(_kb, "_midi_assign", False),
                         getattr(_kb, "_midi_cc_buf", ""),
-                        tuple(sorted(getattr(cfg, "midi_target_cc", {}).items())),
+                        tuple(sorted(cfg.midi_cc_snapshot().items())),
                         getattr(cfg, "current_shader", None),
                         getattr(cfg, "current_fx",     None),
                         tuple(getattr(cfg, "shader_chain", [])),
@@ -511,26 +588,66 @@ class DisplayController:
                         tuple(self._grid_pending),
                         self._fx_grid_offset,
                         self._shader_grid_offset,
+                        # Drawn by the tab screens but tracked by nothing above.
+                        # They change on events rather than per frame, so they
+                        # cost the gate nothing and save a keepalive-long wait
+                        # before the panel catches up.
+                        getattr(_smp, "mode", ""),
+                        round(float(getattr(_smp, "speed", 1.0) or 1.0), 3),
+                        getattr(_smp, "_active_source", None),
+                        getattr(cfg, "camera_width",  0),
+                        getattr(cfg, "camera_height", 0),
+                        self._cached_ip,
+                        self._timeline_sig(inst, _kb, _smp),
                     )
-                    img  = self._render(font_lg, font_md, font_sm)
-                    data = _to_spi_bytes(img)
-                    # The menu changes in small ways the 128-byte sample and the
-                    # fixed param_sig don't capture (page swap, selection move, a
-                    # single value flipping). While it's open, compare the FULL
-                    # frame so every visible change is redrawn; the status view
-                    # keeps the cheap sampled compare.
                     _menu = getattr(inst, "menu", None)
-                    if _menu is not None and _menu.active:
-                        snap = data
-                    else:
-                        snap = data[::_STEP]
-                    if snap != last_snapshot or param_sig != last_param_sig:
-                        disp.write_frame(data)
-                        last_snapshot  = snap
+                    menu_active = _menu is not None and _menu.active
+                    # Signature-first gate. Building param_sig costs ~0.006 ms;
+                    # the render+convert it can skip costs ~5.7 ms, so testing
+                    # first is ~950x cheaper than the frame it avoids — this is
+                    # what keeps the display thread off the CPU in steady state.
+                    # Two things still force a render: the menu, whose state is
+                    # not in the signature at all (so the signature cannot say
+                    # whether it changed), and the keepalive, which bounds how
+                    # long anything unsignatured can stay stale. The sampled
+                    # pixel compare below still gates the SPI write, so a
+                    # keepalive render that changed nothing costs no bus time.
+                    if (menu_active or param_sig != last_param_sig
+                            or (t0 - last_render) >= KEEPALIVE_S):
+                        last_render = t0
+                        img  = self._render(font_lg, font_md, font_sm)
+                        data = _to_spi_bytes(img)
+                        # The row diff is an exact comparison, so it replaces
+                        # the old sampled 128-byte detector outright — that
+                        # sample could miss a short bar fill, which is why a
+                        # param signature had to back it up on the write path.
+                        # Here the signature only gates the RENDER; what
+                        # reaches the panel is decided by the pixels alone.
+                        if last_data is None:
+                            disp.write_frame(data)      # first frame: no baseline
+                            rows = FB_H
+                        else:
+                            bands = _dirty_bands(data, last_data)
+                            rows  = sum(r1 - r0 + 1 for r0, r1 in bands)
+                            if rows >= FB_H * FULL_WRITE_FRAC:
+                                disp.write_frame(data)
+                                rows = FB_H
+                            else:
+                                for r0, r1 in bands:
+                                    disp.write_rows(
+                                        data[r0 * ROW_BYTES:(r1 + 1) * ROW_BYTES],
+                                        r0, r1)
+                        # Always adopt the signature we just rendered, even if
+                        # nothing reached the panel: a cfg change that isn't
+                        # visible on this screen would otherwise leave the
+                        # signature permanently mismatched and pin the loop at
+                        # a full render every tick.
                         last_param_sig = param_sig
-                        frame_n += 1
-                        log.debug("frame %d written (%.0f ms)",
-                                  frame_n, (time.monotonic() - t0) * 1000)
+                        last_data      = data
+                        if rows:
+                            frame_n += 1
+                            log.debug("frame %d written (%d rows, %.0f ms)",
+                                      frame_n, rows, (time.monotonic() - t0) * 1000)
                 except Exception as e:
                     log.warning("render error: %s", e)
                 self._stop.wait(1.0 / FPS)
@@ -1407,9 +1524,7 @@ class DisplayController:
         out_pt = getattr(s, "out_pt",   None)
         pos    = getattr(s, "time_pos", 0.0)
 
-        TL_X = 10
         TL_Y = y_base
-        TL_W = FB_W - 20
         TL_H = 8
 
         d.rectangle([TL_X, TL_Y, TL_X + TL_W, TL_Y + TL_H], fill=C_BAR_TRACK)

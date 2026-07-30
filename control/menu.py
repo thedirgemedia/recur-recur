@@ -633,7 +633,7 @@ class Menu:
         if not (0 <= self.sel < len(MIDI_TARGETS)):
             return
         target = MIDI_TARGETS[self.sel]
-        self.inst.cfg.midi_target_cc.pop(target, None)
+        self.inst.cfg.midi_cc_pop(target)
         self.inst.midi.invalidate_cc_map()
         log.info("midi %s → default", target)
 
@@ -678,7 +678,7 @@ class Menu:
         if not (0 <= self.sel < len(MIDI_TARGETS)):
             return
         target = MIDI_TARGETS[self.sel]
-        self.inst.cfg.midi_target_cc[target] = val
+        self.inst.cfg.midi_cc_set(target, val)
         self.inst.midi.invalidate_cc_map()
         self._midi_editing   = False
         self._midi_input_buf = ""
